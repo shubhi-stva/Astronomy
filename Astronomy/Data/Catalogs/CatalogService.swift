@@ -21,6 +21,15 @@ actor CatalogService {
 
     private var cachedStars: [Star]?
     private var cachedConstellationLines: [ConstellationLineSegment]?
+    private var cachedConstellations: [Constellation]?
+
+    /// Loads (and caches) the constellation name/centre table used for labels.
+    func loadConstellations() async throws -> [Constellation] {
+        if let cachedConstellations { return cachedConstellations }
+        let items: [Constellation] = try Self.decodeBundledJSON(named: "constellation_names")
+        cachedConstellations = items
+        return items
+    }
 
     /// Loads (and caches) the bundled star catalog. Decoding happens on this
     /// actor's background executor, not the main thread.

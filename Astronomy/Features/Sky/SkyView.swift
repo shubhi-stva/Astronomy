@@ -23,11 +23,23 @@ struct SkyView: View {
                     onDrag: { dx, dy, size in
                         viewModel.camera.applyDrag(deltaX: dx, deltaY: dy, viewportSize: size)
                     },
+                    onPanEnded: { vx, vy, size in
+                        viewModel.handlePanEnded(velocityX: vx, velocityY: vy, viewportSize: size)
+                    },
                     onZoom: { delta in
                         viewModel.camera.applyZoom(delta: delta)
                     },
+                    onZoomFactor: { factor in
+                        viewModel.handleZoomFactor(factor)
+                    },
                     onSelect: { object in
                         viewModel.selectedObject = object
+                    },
+                    onFocus: { object in
+                        viewModel.flyToFocus(on: object)
+                    },
+                    onLabels: { labels in
+                        viewModel.labels = labels
                     }
                 )
                 .ignoresSafeArea()
@@ -35,6 +47,9 @@ struct SkyView: View {
                 .onChange(of: proxy.size) { _, newSize in
                     viewModel.viewportSize = newSize
                 }
+
+                SkyLabelsOverlay(labels: viewModel.labels)
+                    .allowsHitTesting(false)
 
                 VStack {
                     HStack(alignment: .top) {

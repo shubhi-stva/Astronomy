@@ -2,11 +2,18 @@
 //  SkyRenderer.swift
 //  Astronomy
 //
-//  MetalKit render pass for the sky: stars, Sun/Moon/planets as instanced
-//  point sprites (single draw call), plus constellation lines as a line
-//  list (single draw call). Projection from RA/Dec -> Alt/Az -> screen NDC
-//  happens on the CPU once per frame using CoordinateTransformService; the
-//  GPU only rasterizes the already-projected points/lines.
+//  MetalKit render pass for the sky. Three passes per frame, back to front:
+//
+//    1. Full-screen background (horizon/atmosphere gradient + Milky Way),
+//       driven entirely by uniforms — see SkyBackgroundUniforms.swift.
+//    2. Constellation lines, as one line list.
+//    3. Point sprites — stars, their glow haloes, Sun/Moon/planets and the
+//       selection ring — as one instanced draw call.
+//
+//  Projection from RA/Dec -> Alt/Az -> screen NDC happens on the CPU once per
+//  frame using CoordinateTransformService; the GPU only rasterizes the
+//  already-projected geometry. The same pass also emits the bounded set of
+//  label candidates the SwiftUI overlay draws.
 //
 
 import Foundation
@@ -20,12 +27,28 @@ final class SkyRenderer: NSObject, MTKViewDelegate {
     private let commandQueue: MTLCommandQueue
     private let pointPipelineState: MTLRenderPipelineState
     private let linePipelineState: MTLRenderPipelineState
+    private let backgroundPipelineState: MTLRenderPipelineState
 
     /// Supplies the latest frame data; set by the owning SwiftUI view.
     var frameDataProvider: (() -> SkyFrameData)?
 
+    /// Receives the laid-out labels for the SwiftUI overlay, throttled.
+    var labelSink: (@MainActor ([SkyLabel]) -> Void)?
+
     /// Last frame's projected objects, kept for hit-testing on click.
     private(set) var lastProjectedObjects: [ProjectedObject] = []
+    private(set) var lastViewportSize: CGSize = .zero
+
+    private let labelEngine = LabelLayoutEngine()
+    private var lastLabelPublish: CFTimeInterval = 0
+    private var lastPublishedLabels: [SkyLabel] = []
+
+    /// Labels are the only SwiftUI content driven by the sky. Republishing at
+    /// the full display rate would invalidate the overlay 60-120 times a
+    /// second for no visible benefit, so the layout is pushed at ~30 Hz —
+    /// still faster than the eye tracks a fading label, and half the SwiftUI
+    /// diffing work.
+    private static let labelPublishInterval: CFTimeInterval = 1.0 / 30.0
 
     init?(device: MTLDevice) {
         self.device = device
@@ -42,6 +65,8 @@ final class SkyRenderer: NSObject, MTKViewDelegate {
             pointDescriptor.colorAttachments[0].isBlendingEnabled = true
             pointDescriptor.colorAttachments[0].rgbBlendOperation = .add
             pointDescriptor.colorAttachments[0].alphaBlendOperation = .add
+            // Additive-over-alpha: stars and their haloes accumulate light
+            // rather than occluding each other.
             pointDescriptor.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
             pointDescriptor.colorAttachments[0].sourceAlphaBlendFactor = .sourceAlpha
             pointDescriptor.colorAttachments[0].destinationRGBBlendFactor = .one
@@ -60,6 +85,13 @@ final class SkyRenderer: NSObject, MTKViewDelegate {
             lineDescriptor.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
             lineDescriptor.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
             linePipelineState = try device.makeRenderPipelineState(descriptor: lineDescriptor)
+
+            let backgroundDescriptor = MTLRenderPipelineDescriptor()
+            backgroundDescriptor.vertexFunction = library.makeFunction(name: "backgroundVertexShader")
+            backgroundDescriptor.fragmentFunction = library.makeFunction(name: "backgroundFragmentShader")
+            backgroundDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+            backgroundDescriptor.colorAttachments[0].isBlendingEnabled = false
+            backgroundPipelineState = try device.makeRenderPipelineState(descriptor: backgroundDescriptor)
         } catch {
             return nil
         }
@@ -81,119 +113,77 @@ final class SkyRenderer: NSObject, MTKViewDelegate {
               let descriptor = view.currentRenderPassDescriptor,
               let commandBuffer = commandQueue.makeCommandBuffer() else { return }
 
-        descriptor.colorAttachments[0].clearColor = MTLClearColor(red: 0.02, green: 0.03, blue: 0.07, alpha: 1.0)
+        lastViewportSize = frameData.viewportSize
 
-        let (pointVertices, projected) = buildPointVertices(frameData: frameData)
-        let lineVertices = buildLineVertices(frameData: frameData)
-        lastProjectedObjects = projected
+        var build = SkyGeometryBuilder(frameData: frameData)
+        build.run()
+        lastProjectedObjects = build.projectedObjects
 
         guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else { return }
 
-        if !lineVertices.isEmpty {
+        // 1. Background.
+        var uniforms = SkyBackgroundUniforms.make(frameData: frameData)
+        encoder.setRenderPipelineState(backgroundPipelineState)
+        encoder.setFragmentBytes(&uniforms, length: MemoryLayout<SkyBackgroundUniforms>.stride, index: 0)
+        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+
+        // 2. Constellation lines.
+        if !build.lineVertices.isEmpty {
             encoder.setRenderPipelineState(linePipelineState)
-            let length = MemoryLayout<LineVertex>.stride * lineVertices.count
-            if let buffer = device.makeBuffer(bytes: lineVertices, length: length, options: .storageModeShared) {
+            let length = MemoryLayout<LineVertex>.stride * build.lineVertices.count
+            if let buffer = device.makeBuffer(bytes: build.lineVertices, length: length, options: .storageModeShared) {
                 encoder.setVertexBuffer(buffer, offset: 0, index: 0)
-                encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: lineVertices.count)
+                encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: build.lineVertices.count)
             }
         }
 
-        if !pointVertices.isEmpty {
+        // 3. Point sprites (glow haloes first, then cores — see the builder).
+        if !build.pointVertices.isEmpty {
             encoder.setRenderPipelineState(pointPipelineState)
-            let length = MemoryLayout<PointVertex>.stride * pointVertices.count
-            if let buffer = device.makeBuffer(bytes: pointVertices, length: length, options: .storageModeShared) {
+            let length = MemoryLayout<PointVertex>.stride * build.pointVertices.count
+            if let buffer = device.makeBuffer(bytes: build.pointVertices, length: length, options: .storageModeShared) {
                 encoder.setVertexBuffer(buffer, offset: 0, index: 0)
-                encoder.drawPrimitives(type: .point, vertexStart: 0, vertexCount: pointVertices.count)
+                encoder.drawPrimitives(type: .point, vertexStart: 0, vertexCount: build.pointVertices.count)
             }
         }
 
         encoder.endEncoding()
         commandBuffer.present(drawable)
         commandBuffer.commit()
+
+        publishLabelsIfNeeded(candidates: build.labelCandidates, viewportSize: frameData.viewportSize)
     }
 
-    // MARK: - Buffer construction
+    private func publishLabelsIfNeeded(candidates: [SkyLabelCandidate], viewportSize: CGSize) {
+        guard let labelSink else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now - lastLabelPublish >= Self.labelPublishInterval else { return }
+        lastLabelPublish = now
 
-    private func buildPointVertices(frameData: SkyFrameData) -> ([PointVertex], [ProjectedObject]) {
-        var vertices: [PointVertex] = []
-        vertices.reserveCapacity(frameData.stars.count + frameData.solarSystemObjects.count)
-        var projected: [ProjectedObject] = []
-
-        let aspect = Float(frameData.viewportSize.height / max(frameData.viewportSize.width, 1))
-
-        for star in frameData.stars {
-            let object = star.asCelestialObject
-            guard let ndc = project(object.equatorial, frameData: frameData, aspect: aspect) else { continue }
-            let color = StarAppearance.color(colorIndex: star.colorIndex)
-            let size = StarAppearance.pointSize(forMagnitude: star.magnitude)
-            vertices.append(PointVertex(positionNDC: SIMD2(Float(ndc.x), Float(ndc.y)), color: color, pointSize: size))
-            projected.append(ProjectedObject(object: object, ndcPosition: ndc))
-        }
-
-        for object in frameData.solarSystemObjects {
-            guard let ndc = project(object.equatorial, frameData: frameData, aspect: aspect) else { continue }
-            let color: SIMD4<Float>
-            let size: Float
-            switch object.kind {
-            case .sun: color = StarAppearance.sunColor; size = 22
-            case .moon: color = StarAppearance.moonColor; size = 18
-            case .planet: color = StarAppearance.planetColor; size = 8
-            case .star: color = StarAppearance.color(colorIndex: nil); size = 4
-            }
-            vertices.append(PointVertex(positionNDC: SIMD2(Float(ndc.x), Float(ndc.y)), color: color, pointSize: size))
-            projected.append(ProjectedObject(object: object, ndcPosition: ndc))
-        }
-
-        return (vertices, projected)
-    }
-
-    private func buildLineVertices(frameData: SkyFrameData) -> [LineVertex] {
-        guard !frameData.starsByID.isEmpty else { return [] }
-        var vertices: [LineVertex] = []
-        vertices.reserveCapacity(frameData.constellationLines.count * 2)
-        let aspect = Float(frameData.viewportSize.height / max(frameData.viewportSize.width, 1))
-
-        for segment in frameData.constellationLines {
-            guard let s1 = frameData.starsByID[segment.starID1],
-                  let s2 = frameData.starsByID[segment.starID2] else { continue }
-            let eq1 = EquatorialCoordinate(rightAscensionDegrees: s1.ra, declinationDegrees: s1.dec)
-            let eq2 = EquatorialCoordinate(rightAscensionDegrees: s2.ra, declinationDegrees: s2.dec)
-            guard let ndc1 = project(eq1, frameData: frameData, aspect: aspect),
-                  let ndc2 = project(eq2, frameData: frameData, aspect: aspect) else { continue }
-            // Skip segments that wrap unreasonably far across the screen (projection seam).
-            if simd_distance(ndc1, ndc2) > 1.2 { continue }
-            vertices.append(LineVertex(positionNDC: SIMD2(Float(ndc1.x), Float(ndc1.y)), color: StarAppearance.constellationLineColor))
-            vertices.append(LineVertex(positionNDC: SIMD2(Float(ndc2.x), Float(ndc2.y)), color: StarAppearance.constellationLineColor))
-        }
-        return vertices
-    }
-
-    private func project(_ equatorial: EquatorialCoordinate, frameData: SkyFrameData, aspect: Float) -> SIMD2<Double>? {
-        let horizontal = CoordinateTransformService.horizontal(
-            from: equatorial,
-            observer: frameData.observerLocation,
-            julianDay: frameData.julianDay
-        )
-        guard horizontal.altitudeDegrees > -5 else { return nil } // small margin below horizon
-        guard let ndc = CoordinateTransformService.stereographicProject(
-            horizontal: horizontal,
-            center: frameData.cameraCenter,
-            fieldOfViewDegrees: frameData.cameraFieldOfViewDegrees
-        ) else { return nil }
-        // Correct X for aspect ratio so circles stay circular on non-square viewports.
-        let corrected = SIMD2(ndc.x * Double(aspect), ndc.y)
-        return corrected
+        let labels = labelEngine.layout(candidates: candidates, viewportSize: viewportSize)
+        guard labels != lastPublishedLabels else { return }
+        lastPublishedLabels = labels
+        labelSink(labels)
     }
 
     // MARK: - Hit testing
 
-    /// Finds the nearest projected object to a normalized-device-coordinate
-    /// click point, within a small screen-space tolerance.
-    func nearestObject(toNDC point: SIMD2<Double>, toleranceNDC: Double = 0.05) -> CelestialObject? {
+    /// Finds the nearest projected object to a viewport normalized-device
+    /// coordinate click point, within a small screen-space tolerance.
+    ///
+    /// Tolerance is expressed in *points* and converted using the viewport
+    /// size, so the click target is the same physical size regardless of the
+    /// window's aspect ratio.
+    func nearestObject(toViewportNDC point: SIMD2<Double>, tolerancePoints: Double = 22) -> CelestialObject? {
+        let width = max(Double(lastViewportSize.width), 1)
+        let height = max(Double(lastViewportSize.height), 1)
+
         var best: (object: CelestialObject, distance: Double)?
         for projected in lastProjectedObjects {
-            let d = simd_distance(projected.ndcPosition, point)
-            if d < toleranceNDC, (best == nil || d < best!.distance) {
+            let dxPoints = (projected.ndcPosition.x - point.x) * width / 2
+            let dyPoints = (projected.ndcPosition.y - point.y) * height / 2
+            let d = (dxPoints * dxPoints + dyPoints * dyPoints).squareRoot()
+            if d < tolerancePoints, best == nil || d < best!.distance {
                 best = (projected.object, d)
             }
         }

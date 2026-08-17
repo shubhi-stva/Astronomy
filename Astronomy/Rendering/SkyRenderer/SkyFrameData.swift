@@ -15,6 +15,7 @@ struct SkyFrameData {
     var stars: [Star]
     var solarSystemObjects: [CelestialObject]
     var constellationLines: [ConstellationLineSegment]
+    var constellations: [Constellation] = []
     var starsByID: [Int: Star]
 
     var observerLocation: GeographicLocation
@@ -24,6 +25,27 @@ struct SkyFrameData {
     var cameraFieldOfViewDegrees: Double
 
     var viewportSize: CGSize
+
+    /// Sun position in horizontal coordinates, precomputed once per frame and
+    /// reused for twilight tinting and the Moon's bright-limb orientation.
+    var sunHorizontal: HorizontalCoordinate?
+    /// Sun/Moon equatorial positions, kept for phase computation.
+    var sunEquatorial: EquatorialCoordinate?
+    var moonEquatorial: EquatorialCoordinate?
+
+    /// Overall Milky Way opacity multiplier (0 disables the layer).
+    var milkyWayStrength: Double = 1.0
+
+    /// Identifier of the currently selected object, so the renderer can draw a
+    /// selection ring and boost that object's label priority.
+    var selectedObjectID: String?
+
+    /// Illuminated fraction of the Moon's disk (Meeus ch. 48), 0...1.
+    /// Defaults to a full disk if the ephemeris hasn't been computed yet.
+    var moonIlluminatedFraction: Double {
+        guard let sunEquatorial, let moonEquatorial else { return 1.0 }
+        return MoonPhase.illuminatedFraction(sun: sunEquatorial, moon: moonEquatorial)
+    }
 
     static let empty = SkyFrameData(
         stars: [],

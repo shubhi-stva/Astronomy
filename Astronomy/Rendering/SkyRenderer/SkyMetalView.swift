@@ -2,9 +2,15 @@
 //  SkyMetalView.swift
 //  Astronomy
 //
-//  NSViewRepresentable wrapping an MTKView, plus a small interactive
-//  subclass that turns mouse drag / scroll / click into camera pan, zoom,
-//  and object-selection callbacks.
+//  NSViewRepresentable wrapping an MTKView, plus an interactive subclass that
+//  turns macOS input into camera gestures:
+//
+//   * Trackpad two-finger swipe (primary navigation) — arrives purely through
+//     `scrollWheel` with `hasPreciseScrollingDeltas`, no mouse button needed.
+//     Release velocity feeds a short momentum glide.
+//   * Pinch-magnify (`NSMagnificationGestureRecognizer`) — smooth zoom.
+//   * Mouse click-drag (secondary navigation) and mouse-wheel zoom.
+//   * Single click selects; double click flies the camera to the object.
 //
 
 import SwiftUI
@@ -14,8 +20,12 @@ import simd
 struct SkyMetalView: NSViewRepresentable {
     var frameDataProvider: @MainActor () -> SkyFrameData
     var onDrag: @MainActor (CGFloat, CGFloat, CGSize) -> Void
+    var onPanEnded: @MainActor (CGFloat, CGFloat, CGSize) -> Void
     var onZoom: @MainActor (Double) -> Void
+    var onZoomFactor: @MainActor (Double) -> Void
     var onSelect: @MainActor (CelestialObject?) -> Void
+    var onFocus: @MainActor (CelestialObject?) -> Void
+    var onLabels: @MainActor ([SkyLabel]) -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -25,12 +35,14 @@ struct SkyMetalView: NSViewRepresentable {
         let device = MTLCreateSystemDefaultDevice()
         let view = InteractiveMTKView(frame: .zero, device: device)
         view.colorPixelFormat = .bgra8Unorm
-        view.clearColor = MTLClearColor(red: 0.02, green: 0.03, blue: 0.07, alpha: 1.0)
+        view.clearColor = MTLClearColor(red: 0.008, green: 0.012, blue: 0.03, alpha: 1.0)
         view.enableSetNeedsDisplay = false
         view.isPaused = false
-        view.preferredFramesPerSecond = 30
-        view.dragHandler = onDrag
-        view.zoomHandler = onZoom
+        // Match the display's native refresh rate. Per-frame CPU work is a
+        // single pass over the ~5k-star catalog (a few trig ops each, well
+        // under a millisecond) plus a bounded label layout, so 60-120 Hz is
+        // comfortable and makes panning feel continuous rather than steppy.
+        view.preferredFramesPerSecond = 60
 
         if let device, let renderer = SkyRenderer(device: device) {
             renderer.frameDataProvider = frameDataProvider
@@ -38,23 +50,37 @@ struct SkyMetalView: NSViewRepresentable {
             view.delegate = renderer
         }
 
-        let coordinator = context.coordinator
-        view.clickHandler = { [weak coordinator] ndc in
-            let object = coordinator?.renderer?.nearestObject(toNDC: ndc)
-            onSelect(object)
-        }
+        view.installGestureRecognizers()
+        configure(view, context: context)
         return view
     }
 
     func updateNSView(_ nsView: InteractiveMTKView, context: Context) {
-        nsView.dragHandler = onDrag
-        nsView.zoomHandler = onZoom
-        let coordinator = context.coordinator
-        nsView.clickHandler = { [weak coordinator] ndc in
-            let object = coordinator?.renderer?.nearestObject(toNDC: ndc)
-            onSelect(object)
+        configure(nsView, context: context)
+        // Track the window's actual refresh capability once we're on screen.
+        if let maxFPS = nsView.window?.screen?.maximumFramesPerSecond, maxFPS > 0 {
+            nsView.preferredFramesPerSecond = maxFPS
         }
-        context.coordinator.renderer?.frameDataProvider = frameDataProvider
+    }
+
+    private func configure(_ view: InteractiveMTKView, context: Context) {
+        view.dragHandler = onDrag
+        view.panEndedHandler = onPanEnded
+        view.zoomHandler = onZoom
+        view.zoomFactorHandler = onZoomFactor
+
+        let coordinator = context.coordinator
+        coordinator.renderer?.frameDataProvider = frameDataProvider
+        coordinator.renderer?.labelSink = onLabels
+
+        view.clickHandler = { [weak coordinator] ndc, clickCount in
+            let object = coordinator?.renderer?.nearestObject(toViewportNDC: ndc)
+            if clickCount >= 2 {
+                onFocus(object)
+            } else {
+                onSelect(object)
+            }
+        }
     }
 
     @MainActor
@@ -63,17 +89,66 @@ struct SkyMetalView: NSViewRepresentable {
     }
 }
 
-/// MTKView subclass that converts macOS mouse events into camera gestures.
+/// MTKView subclass that converts macOS mouse/trackpad events into camera
+/// gestures.
 final class InteractiveMTKView: MTKView {
 
     var dragHandler: (@MainActor (CGFloat, CGFloat, CGSize) -> Void)?
+    /// Called on gesture release with a velocity in points/second.
+    var panEndedHandler: (@MainActor (CGFloat, CGFloat, CGSize) -> Void)?
     var zoomHandler: (@MainActor (Double) -> Void)?
-    var clickHandler: (@MainActor (SIMD2<Double>) -> Void)?
+    var zoomFactorHandler: (@MainActor (Double) -> Void)?
+    var clickHandler: (@MainActor (SIMD2<Double>, Int) -> Void)?
 
     private var lastDragLocation: CGPoint?
     private var mouseDownLocation: CGPoint?
 
+    /// Rolling estimate of trackpad swipe speed, in points/second, used to seed
+    /// the momentum glide when the fingers lift.
+    private var scrollVelocity: CGVector = .zero
+    private var lastScrollTime: CFTimeInterval?
+
+    private var magnificationBase: Double = 1.0
+
+    /// Single place to flip trackpad pan direction if it ever reads inverted on
+    /// a given system configuration. +1 means "content follows the fingers".
+    static let trackpadPanSignX: CGFloat = 1
+    static let trackpadPanSignY: CGFloat = 1
+
     override var acceptsFirstResponder: Bool { true }
+
+    func installGestureRecognizers() {
+        let magnify = NSMagnificationGestureRecognizer(target: self, action: #selector(handleMagnify(_:)))
+        addGestureRecognizer(magnify)
+    }
+
+    // MARK: - Pinch to zoom
+
+    @objc private func handleMagnify(_ recognizer: NSMagnificationGestureRecognizer) {
+        switch recognizer.state {
+        case .began:
+            magnificationBase = 1.0
+        case .changed:
+            // `magnification` is cumulative for the gesture; convert to the
+            // incremental factor since the previous callback so the camera sees
+            // a smooth multiplicative stream.
+            let cumulative = 1.0 + Double(recognizer.magnification)
+            guard cumulative > 0.01, magnificationBase > 0.01 else { return }
+            let incremental = cumulative / magnificationBase
+            magnificationBase = cumulative
+            // Pinching *out* (positive magnification) should zoom in, i.e.
+            // shrink the field of view.
+            let fovFactor = 1.0 / incremental
+            let handler = zoomFactorHandler
+            Task { @MainActor in handler?(fovFactor) }
+        case .ended, .cancelled, .failed:
+            magnificationBase = 1.0
+        default:
+            break
+        }
+    }
+
+    // MARK: - Mouse drag (secondary navigation)
 
     override func mouseDown(with event: NSEvent) {
         let location = convert(event.locationInWindow, from: nil)
@@ -88,14 +163,11 @@ final class InteractiveMTKView: MTKView {
             return
         }
         let dx = location.x - last.x
-        // Flip Y: AppKit's Y grows upward, screen-space drag feel expects downward-positive.
+        // Flip Y: AppKit's Y grows upward; the drag convention is
+        // downward-positive.
         let dy = -(location.y - last.y)
         lastDragLocation = location
-        let size = bounds.size
-        let handler = dragHandler
-        Task { @MainActor in
-            handler?(dx, dy, size)
-        }
+        emitDrag(dx: dx, dy: dy)
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -114,16 +186,96 @@ final class InteractiveMTKView: MTKView {
         let ndcX = Double((location.x / size.width) * 2 - 1)
         let ndcY = Double((location.y / size.height) * 2 - 1)
         let handler = clickHandler
+        let clicks = event.clickCount
         Task { @MainActor in
-            handler?(SIMD2(ndcX, ndcY))
+            handler?(SIMD2(ndcX, ndcY), clicks)
         }
     }
 
+    // MARK: - Trackpad swipe / mouse wheel
+
     override func scrollWheel(with event: NSEvent) {
-        let delta = event.scrollingDeltaY
-        let handler = zoomHandler
-        Task { @MainActor in
-            handler?(Double(-delta))
+        if event.hasPreciseScrollingDeltas {
+            handleTrackpadPan(event)
+        } else {
+            // Classic mouse wheel: zoom.
+            let delta = event.scrollingDeltaY
+            let handler = zoomHandler
+            Task { @MainActor in handler?(Double(-delta)) }
         }
+    }
+
+    private func handleTrackpadPan(_ event: NSEvent) {
+        let phase = event.phase
+        let momentumPhase = event.momentumPhase
+
+        if phase.contains(.began) {
+            scrollVelocity = .zero
+            lastScrollTime = nil
+            // Cancel any residual glide from the previous swipe.
+            let size = bounds.size
+            let handler = panEndedHandler
+            Task { @MainActor in handler?(0, 0, size) }
+        }
+
+        // macOS already synthesizes momentum scroll events for trackpads. We
+        // ignore them and run our own (shorter, more damped) glide, so the sky
+        // doesn't drift for seconds after a flick.
+        guard momentumPhase == [] else {
+            if momentumPhase.contains(.began) { emitMomentum() }
+            return
+        }
+
+        // With macOS "natural scrolling", AppKit's precise scrolling deltas are
+        // already expressed so that the *content* follows the fingers: a
+        // positive scrollingDeltaY corresponds to content moving down the
+        // screen, a positive scrollingDeltaX to content moving right. That is
+        // exactly the drag convention `applyDrag` expects (rightward-positive
+        // X, downward-positive Y), so the deltas pass straight through.
+        //
+        // If a user has natural scrolling disabled, AppKit reports
+        // `isDirectionInvertedFromDevice`; we honour it so the gesture always
+        // feels like dragging the sky itself rather than scrolling a document.
+        let inversion: CGFloat = event.isDirectionInvertedFromDevice ? -1 : 1
+        let dx = event.scrollingDeltaX * inversion * Self.trackpadPanSignX
+        let dy = event.scrollingDeltaY * inversion * Self.trackpadPanSignY
+
+        let now = ProcessInfo.processInfo.systemUptime
+        if let last = lastScrollTime {
+            let dt = max(1.0 / 240.0, min(0.05, now - last))
+            let instantaneous = CGVector(dx: dx / dt, dy: dy / dt)
+            // Light exponential smoothing so a single jittery event doesn't
+            // dominate the release velocity.
+            scrollVelocity = CGVector(
+                dx: scrollVelocity.dx * 0.6 + instantaneous.dx * 0.4,
+                dy: scrollVelocity.dy * 0.6 + instantaneous.dy * 0.4
+            )
+        }
+        lastScrollTime = now
+
+        emitDrag(dx: dx, dy: dy)
+
+        if phase.contains(.ended) || phase.contains(.cancelled) {
+            if phase.contains(.cancelled) {
+                scrollVelocity = .zero
+            }
+            emitMomentum()
+        }
+    }
+
+    private func emitMomentum() {
+        let size = bounds.size
+        let velocity = scrollVelocity
+        scrollVelocity = .zero
+        lastScrollTime = nil
+        let handler = panEndedHandler
+        Task { @MainActor in handler?(velocity.dx, velocity.dy, size) }
+    }
+
+    private func emitDrag(dx: CGFloat, dy: CGFloat) {
+        guard dx != 0 || dy != 0 else { return }
+        let size = bounds.size
+        let handler = dragHandler
+        Task { @MainActor in handler?(dx, dy, size) }
     }
 }
