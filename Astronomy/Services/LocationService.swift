@@ -32,7 +32,7 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
 
     private let manager = CLLocationManager()
     private let geocoder = CLGeocoder()
-    private var geocodeTask: Task<Void, Never>?
+    private nonisolated(unsafe) var geocodeTask: Task<Void, Never>?
 
     override init() {
         super.init()
@@ -61,19 +61,23 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
             longitude: currentLocation.longitudeDegrees
         )
         geocodeTask = Task { [weak self] in
-            let placemarks = try? await location.reverseGeocoded(using: CLGeocoder())
-            guard !Task.isCancelled, let self else { return }
-            guard let placemark = placemarks?.first else { return }
-            let name = [placemark.locality, placemark.administrativeArea ?? placemark.country]
-                .compactMap { $0 }
-                .first.map { locality -> String in
-                    if let region = placemark.administrativeArea, region != locality {
-                        return "\(locality), \(region)"
-                    }
-                    return locality
-                }
-            self.placeName = name ?? placemark.name
+            guard let self else { return }
+            let placemarks = try? await self.geocoder.reverseGeocodeLocation(location)
+            guard !Task.isCancelled, let placemark = placemarks?.first else { return }
+            self.placeName = Self.displayName(for: placemark)
         }
+    }
+
+    /// Prefers "City, Region", falling back through the coarser fields so
+    /// remote/ocean coordinates still get something meaningful (or nothing).
+    static func displayName(for placemark: CLPlacemark) -> String? {
+        if let locality = placemark.locality {
+            if let region = placemark.administrativeArea, region != locality {
+                return "\(locality), \(region)"
+            }
+            return locality
+        }
+        return placemark.administrativeArea ?? placemark.country ?? placemark.name
     }
 
     func requestSystemLocation() {
@@ -90,6 +94,7 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
                 latitudeDegrees: coordinate.latitude,
                 longitudeDegrees: coordinate.longitude
             )
+            self.resolvePlaceName()
         }
     }
 

@@ -54,7 +54,6 @@ struct SkyView: View {
                 VStack {
                     HStack(alignment: .top) {
                         SearchBarView(viewModel: viewModel)
-                            .frame(width: 320)
 
                         Spacer()
 

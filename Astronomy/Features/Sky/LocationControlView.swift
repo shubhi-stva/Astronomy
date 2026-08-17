@@ -29,7 +29,7 @@ struct LocationControlView: View {
                     HStack(spacing: 6) {
                         Image(systemName: "location")
                         Text(locationSummary)
-                            .font(.callout.monospacedDigit())
+                            .font(viewModel.location.placeName == nil ? .callout.monospacedDigit() : .callout)
                     }
                     .foregroundStyle(SkyPalette.chromeText)
                 }
@@ -67,7 +67,12 @@ struct LocationControlView: View {
         }
     }
 
+    /// Reverse-geocoded place name once it resolves; formatted coordinates
+    /// until then (and permanently, if geocoding fails or is offline).
     private var locationSummary: String {
+        if let place = viewModel.location.placeName, !place.isEmpty {
+            return place
+        }
         let loc = viewModel.location.currentLocation
         return String(format: "%.2f, %.2f", loc.latitudeDegrees, loc.longitudeDegrees)
     }
