@@ -24,16 +24,56 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
     /// any arrive later, will not silently overwrite a manual choice.
     private(set) var isManualOverride = false
 
+    /// Human-readable place name for `currentLocation`, resolved
+    /// asynchronously by reverse geocoding. `nil` until (or unless) it
+    /// resolves — the UI falls back to formatted coordinates, so geocoding
+    /// never blocks anything.
+    private(set) var placeName: String?
+
     private let manager = CLLocationManager()
+    private let geocoder = CLGeocoder()
+    private var geocodeTask: Task<Void, Never>?
 
     override init() {
         super.init()
         manager.delegate = self
+        resolvePlaceName()
+    }
+
+    deinit {
+        geocodeTask?.cancel()
     }
 
     func setManualLocation(latitudeDegrees: Double, longitudeDegrees: Double) {
         currentLocation = GeographicLocation(latitudeDegrees: latitudeDegrees, longitudeDegrees: longitudeDegrees)
         isManualOverride = true
+        resolvePlaceName()
+    }
+
+    /// Kicks off (or restarts) reverse geocoding for the current location.
+    /// Failures are silent: a missing network or a rate-limited geocoder just
+    /// leaves `placeName` nil and the UI showing coordinates.
+    private func resolvePlaceName() {
+        geocodeTask?.cancel()
+        placeName = nil
+        let location = CLLocation(
+            latitude: currentLocation.latitudeDegrees,
+            longitude: currentLocation.longitudeDegrees
+        )
+        geocodeTask = Task { [weak self] in
+            let placemarks = try? await location.reverseGeocoded(using: CLGeocoder())
+            guard !Task.isCancelled, let self else { return }
+            guard let placemark = placemarks?.first else { return }
+            let name = [placemark.locality, placemark.administrativeArea ?? placemark.country]
+                .compactMap { $0 }
+                .first.map { locality -> String in
+                    if let region = placemark.administrativeArea, region != locality {
+                        return "\(locality), \(region)"
+                    }
+                    return locality
+                }
+            self.placeName = name ?? placemark.name
+        }
     }
 
     func requestSystemLocation() {
