@@ -12,7 +12,8 @@ import SwiftData
 struct AstronomyApp: App {
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
-            Item.self,
+            SavedLocation.self,
+            UserPreference.self,
         ])
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
 
@@ -25,8 +26,10 @@ struct AstronomyApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            SkyView()
+                .frame(minWidth: 900, minHeight: 600)
         }
         .modelContainer(sharedModelContainer)
+        .windowStyle(.hiddenTitleBar)
     }
 }
