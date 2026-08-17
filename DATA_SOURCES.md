@@ -91,3 +91,44 @@ truncated Meeus series for full VSOP87/ELP2000 term tables, or bundling
 precomputed short-arc ephemeris data — the `EphemerisService` facade is the
 single seam to change; nothing downstream (`SkyRenderer`, `SkyViewModel`)
 depends on how positions are computed.
+
+## Constellation names/centres — `Astronomy/Data/Catalogs/constellation_names.json`
+
+- **Source**: hand-compiled table of the 88 IAU constellations with an
+  approximate figure centroid (RA/Dec) for each, used only to place the
+  constellation name label (`Constellation.swift`). These are eyeballed
+  centres of the stick-figure line art already bundled in
+  `constellations.json`, not the official IAU boundary centroids — good to
+  a few degrees, which does not matter at label scale.
+- **License**: original data compiled for this project; no upstream license
+  applies.
+
+## Milky Way band — procedural, not imagery
+
+- **What it is**: the background pass (`Shaders.metal`,
+  `backgroundFragmentShader`) paints a soft additive band that is brightest
+  along the galactic equator and fades with galactic latitude and toward
+  the galactic anticentre. **This is an analytic approximation, not a
+  photographic or survey-derived image of the Milky Way.** No star-density
+  map, extinction map, or astrophotography imagery is used or embedded.
+- **How it's computed**: `Core/Coordinates/GalacticCoordinates.swift`
+  builds the equatorial -> galactic rotation matrix directly from the
+  IAU 1958 galactic coordinate system's defining directions, expressed in
+  J2000 equatorial coordinates (values as quoted in the Hipparcos/Tycho
+  catalogue introduction, ESA SP-1200 Vol. 1 Sect. 1.5.3):
+  - North galactic pole: RA 192.85948°, Dec +27.12825°
+  - Galactic centre: RA 266.40510°, Dec -28.93617°
+  The CPU precomputes one 3x3 camera-to-galactic rotation per frame
+  (`SkyBackgroundUniforms.swift`); the fragment shader applies it per pixel
+  to get galactic latitude `b` and longitude `l`, then shapes the band with
+  a Gaussian-like falloff in `sin(b)` (narrow near the equator, symmetric
+  above/below) multiplied by a broad brightening toward `l = 0`
+  (`towardCenter` in `Shaders.metal`) so the band reads brightest near
+  Sagittarius/the galactic centre direction and dims toward the anticentre.
+- **Limitations**: no fine structure (dust lanes, the Great Rift, individual
+  star clouds), no seasonal/hemisphere brightness asymmetry beyond the
+  smooth galactic-latitude falloff, and no attempt to match real integrated
+  surface brightness. It is a deliberately subtle, additively-blended,
+  scientifically-*oriented* placeholder — real astronomical imagery (e.g. a
+  Milky Way panorama) would be a legitimate future upgrade, and should keep
+  this same coordinate-transform seam if added.

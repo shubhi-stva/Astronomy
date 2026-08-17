@@ -18,9 +18,10 @@ Astronomy/
   Data/
     Catalogs/            Bundled stars.json / constellations.json + CatalogService.
   Rendering/
-    Camera/              Camera (yaw/pitch state, pan/zoom).
-    SkyRenderer/          MTKView delegate, buffer construction, hit testing.
-    Shaders/              Shaders.metal.
+    Camera/              Camera (Alt/Az state, pan/zoom, momentum, focus flights).
+    SkyRenderer/          MTKView delegate, geometry building, background uniforms, hit testing.
+    Labels/               LabelLayoutEngine (collision/priority) + SkyLabelsOverlay (SwiftUI).
+    Shaders/              Shaders.metal (background, line, point-sprite passes).
   Features/
     Sky/                  SwiftUI feature: SkyView + subviews + SkyViewModel.
   Services/               LocationService (CoreLocation + manual override).
@@ -53,6 +54,69 @@ This keeps the render loop's CPU cost bounded and predictable regardless of
 catalog size, and keeps SwiftUI doing what it's good at: the floating
 chrome (search, info panel, time bar, location control) layered on top via
 `ZStack`.
+
+## Render passes (per frame, back to front)
+
+1. **Background pass** — one full-screen triangle, no geometry. The fragment
+   shader *inverts* the stereographic projection per pixel to recover the sky
+   direction, then paints the horizon/atmosphere gradient and the procedural
+   Milky Way band. Choosing per-pixel projection inversion over a cheaper
+   screen-space "distance from a horizon line" gradient keeps the sky exactly
+   consistent with the star projection at any camera orientation — including
+   looking straight up, where a screen-space horizon line degenerates. All the
+   per-frame work is two 3x3 rotation matrices built on the CPU
+   (`SkyBackgroundUniforms.swift`): camera->horizontal (gives altitude, hence
+   the twilight tinting driven by the Sun's altitude through the civil /
+   nautical / astronomical bands) and camera->galactic (gives the Milky Way's
+   `b`/`l`; see DATA_SOURCES.md for the approximation's provenance and limits).
+2. **Line pass** — constellation lines as one line list, muted blue-grey with
+   an FOV-dependent alpha.
+3. **Point-sprite pass** — stars, their glow haloes, the Sun/Moon/planets and
+   the selection ring, all in one `MTLPrimitiveType.point` draw call with a
+   per-vertex `shape` selector (`PointSpriteShape`) that the fragment shader
+   branches on: soft radial glow, crisp star core, solid disk, Moon with a
+   terminator, or a ring.
+
+`SkyGeometryBuilder` is the CPU half: it consumes one `SkyFrameData` snapshot
+and emits the vertex buffers, the hit-test table, and the label candidates.
+Faint stars are rejected by a magnitude-vs-FOV comparison *before* any
+trigonometry, so the trig cost scales with what's actually drawn, not with
+catalog size.
+
+## Label engine
+
+Labels are the only SwiftUI content driven by the sky, so their count is
+bounded (tens, never thousands). `SkyGeometryBuilder` emits *candidates* with
+a priority (selected > Sun/Moon > planets > bright named stars > constellation
+names) and an FOV-derived strength; `LabelLayoutEngine` does a single greedy
+pass, keeping a candidate only if its approximate screen bounding box doesn't
+overlap an already-placed higher-priority one, capped at 44 labels. The engine
+is stateful across frames purely for hysteresis: a label placed last frame
+defends its spot with a slightly shrunken box and a tie-break bonus, so labels
+near a collision boundary don't strobe while panning. The layout is published
+to SwiftUI through `SkyRenderer.labelSink` at ~30 Hz (half the render rate) and
+only when it actually changed, and `SkyLabelsOverlay` animates opacity so
+labels fade rather than pop.
+
+## Navigation and momentum
+
+`InteractiveMTKView` turns macOS input into camera gestures: trackpad
+two-finger swipe (primary; arrives through `scrollWheel` with
+`hasPreciseScrollingDeltas`, no button held, honouring
+`isDirectionInvertedFromDevice` so the content always follows the fingers),
+`NSMagnificationGestureRecognizer` for pinch-zoom, mouse click-drag as
+secondary navigation, mouse wheel for zoom, single click to select and double
+click to fly to an object.
+
+Continuous behaviour lives in `Camera`, not in SwiftUI animations: release
+velocity seeds an exponentially-damped momentum glide (~0.55 s to a stop) and
+double-click starts a smootherstep-eased flight interpolating Alt/Az and field
+of view over ~0.75 s. Both are integrated by `Camera.tick()`, called once per
+frame from `SkyViewModel.currentFrameData()` using wall-clock deltas, so the
+camera stays the single source of truth for where we're looking and behaves
+identically at 60 or 120 Hz. `preferredFramesPerSecond` tracks the display's
+native refresh rate rather than a fixed 30, which is what makes panning read as
+continuous.
 
 ## Why SwiftData for persistence
 

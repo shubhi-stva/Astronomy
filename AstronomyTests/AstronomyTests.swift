@@ -134,3 +134,68 @@ final class SunPositionTests: XCTestCase {
         XCTAssertEqual(sun.declinationDegrees, 0.0, accuracy: 0.5)
     }
 }
+
+final class ProjectionAspectTests: XCTestCase {
+
+    func testSquareViewportLeavesNDCUnchanged() throws {
+        let ndc = SIMD2<Double>(0.4, -0.6)
+        let corrected = CoordinateTransformService.aspectCorrected(ndc, viewportSize: CGSize(width: 800, height: 800))
+        XCTAssertEqual(corrected.x, ndc.x, accuracy: 1e-9)
+        XCTAssertEqual(corrected.y, ndc.y, accuracy: 1e-9)
+    }
+
+    func testLandscapeViewportScalesYNotX() throws {
+        // 2:1 landscape window: X (horizontal FOV) must pass through
+        // unchanged, Y (vertical) scales by width/height = 2.
+        let ndc = SIMD2<Double>(0.5, 0.5)
+        let corrected = CoordinateTransformService.aspectCorrected(ndc, viewportSize: CGSize(width: 1600, height: 800))
+        XCTAssertEqual(corrected.x, 0.5, accuracy: 1e-9)
+        XCTAssertEqual(corrected.y, 1.0, accuracy: 1e-9)
+    }
+
+    func testPortraitViewportScalesYDown() throws {
+        // Tall window: width/height = 0.5, so Y should shrink, not X.
+        let ndc = SIMD2<Double>(0.5, 0.8)
+        let corrected = CoordinateTransformService.aspectCorrected(ndc, viewportSize: CGSize(width: 800, height: 1600))
+        XCTAssertEqual(corrected.x, 0.5, accuracy: 1e-9)
+        XCTAssertEqual(corrected.y, 0.4, accuracy: 1e-9)
+    }
+
+    func testAspectUncorrectedIsInverse() throws {
+        let ndc = SIMD2<Double>(0.3, -0.2)
+        let size = CGSize(width: 1200, height: 700)
+        let roundTripped = CoordinateTransformService.aspectUncorrected(
+            CoordinateTransformService.aspectCorrected(ndc, viewportSize: size),
+            viewportSize: size
+        )
+        XCTAssertEqual(roundTripped.x, ndc.x, accuracy: 1e-9)
+        XCTAssertEqual(roundTripped.y, ndc.y, accuracy: 1e-9)
+    }
+}
+
+final class MoonPhaseTests: XCTestCase {
+
+    func testFullMoonAtOppositionIsFullyIlluminated() throws {
+        // Opposition: Moon exactly 180 deg from the Sun in RA, same Dec.
+        let sun = EquatorialCoordinate(rightAscensionDegrees: 10, declinationDegrees: 5)
+        let moon = EquatorialCoordinate(rightAscensionDegrees: 190, declinationDegrees: 5)
+        let k = MoonPhase.illuminatedFraction(sun: sun, moon: moon)
+        XCTAssertEqual(k, 1.0, accuracy: 0.01)
+    }
+
+    func testNewMoonAtConjunctionIsUnilluminated() throws {
+        // Conjunction: Moon at (nearly) the same equatorial position as the Sun.
+        let sun = EquatorialCoordinate(rightAscensionDegrees: 200, declinationDegrees: -3)
+        let moon = EquatorialCoordinate(rightAscensionDegrees: 200, declinationDegrees: -3)
+        let k = MoonPhase.illuminatedFraction(sun: sun, moon: moon)
+        XCTAssertEqual(k, 0.0, accuracy: 0.01)
+    }
+
+    func testQuarterMoonIsHalfIlluminated() throws {
+        // 90 deg elongation on the celestial equator gives k = 0.5.
+        let sun = EquatorialCoordinate(rightAscensionDegrees: 0, declinationDegrees: 0)
+        let moon = EquatorialCoordinate(rightAscensionDegrees: 90, declinationDegrees: 0)
+        let k = MoonPhase.illuminatedFraction(sun: sun, moon: moon)
+        XCTAssertEqual(k, 0.5, accuracy: 0.01)
+    }
+}
