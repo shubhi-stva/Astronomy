@@ -43,9 +43,11 @@ struct SkyGeometryBuilder {
     private var glowVertices: [PointVertex] = []
     private var coreVertices: [PointVertex] = []
 
-    /// Below-horizon objects are culled with a small margin so bodies right on
-    /// the horizon don't blink out.
-    private static let horizonMarginDegrees = -2.0
+    /// "See-through Earth": nothing is culled for being below the horizon any
+    /// more. An object is hidden **only** when it falls inside the opaque
+    /// terrain band at its own azimuth (see `TerrainProfile`); everything
+    /// underneath keeps rendering in its true position, dimmed to match the
+    /// dimmed background the shader paints there.
 
     init(frameData: SkyFrameData) {
         self.frameData = frameData
@@ -98,10 +100,17 @@ struct SkyGeometryBuilder {
             let strength = isCardinal ? 0.9 : intercardinalStrength * 0.75
             guard strength > 0.02 else { continue }
 
-            let horizontal = HorizontalCoordinate(altitudeDegrees: 0, azimuthDegrees: point.azimuth)
-            // `cullBelowHorizon: false` because the marker sits exactly *on*
-            // the horizon, and the shared cull uses a small negative margin.
-            guard let ndc = project(horizontal: horizontal, cullBelowHorizon: false),
+            // Placed a fraction of a degree *above* the local skyline rather
+            // than at altitude 0, so the marker always sits on the sky side of
+            // the rolling-hills silhouette instead of being swallowed by the
+            // opaque band where the terrain happens to rise above 0.
+            let horizontal = HorizontalCoordinate(
+                altitudeDegrees: TerrainProfile.skylineAltitudeDegrees(azimuthDegrees: point.azimuth) + 0.4,
+                azimuthDegrees: point.azimuth
+            )
+            // `applyTerrainOcclusion: false` because the marker is deliberately
+            // pinned to the skyline the occlusion test is defined against.
+            guard let ndc = project(horizontal: horizontal, applyTerrainOcclusion: false),
                   isOnScreen(ndc, margin: 0.02) else { continue }
 
             labelCandidates.append(
@@ -123,18 +132,42 @@ struct SkyGeometryBuilder {
     // MARK: - Projection
 
     /// Projects an equatorial coordinate to viewport NDC, or nil if it is
-    /// below the horizon / outside the projection's valid region.
+    /// hidden behind the terrain band / outside the projection's valid region.
     private func project(_ equatorial: EquatorialCoordinate) -> SIMD2<Double>? {
+        projectShaded(equatorial)?.ndc
+    }
+
+    /// Projection plus the terrain brightness multiplier for the direction.
+    ///
+    /// One call does both because they need the same horizontal coordinate:
+    /// the occlusion test and the dimming are both functions of (altitude,
+    /// azimuth), and recomputing the transform for each would double the cost
+    /// of the hottest loop in the frame.
+    private func projectShaded(
+        _ equatorial: EquatorialCoordinate
+    ) -> (ndc: SIMD2<Double>, dimming: Double)? {
         let horizontal = CoordinateTransformService.horizontal(
             from: equatorial,
             observer: frameData.observerLocation,
             julianDay: frameData.julianDay
         )
-        return project(horizontal: horizontal)
+        guard let ndc = project(horizontal: horizontal) else { return nil }
+        return (ndc, TerrainProfile.dimming(
+            altitudeDegrees: horizontal.altitudeDegrees,
+            azimuthDegrees: horizontal.azimuthDegrees
+        ))
     }
 
-    private func project(horizontal: HorizontalCoordinate, cullBelowHorizon: Bool = true) -> SIMD2<Double>? {
-        if cullBelowHorizon, horizontal.altitudeDegrees < Self.horizonMarginDegrees { return nil }
+    /// - Parameter applyTerrainOcclusion: when true (the default) the point is
+    ///   rejected if it lies inside the opaque skyline band. Pass false for
+    ///   markers that are *meant* to sit on the skyline, and for reference
+    ///   directions (the Sun's screen position for the bright-limb angle) that
+    ///   must resolve whether or not they are visible.
+    private func project(horizontal: HorizontalCoordinate, applyTerrainOcclusion: Bool = true) -> SIMD2<Double>? {
+        if applyTerrainOcclusion, TerrainProfile.isOccluded(
+            altitudeDegrees: horizontal.altitudeDegrees,
+            azimuthDegrees: horizontal.azimuthDegrees
+        ) { return nil }
         guard let ndc = CoordinateTransformService.stereographicProject(
             horizontal: horizontal,
             center: frameData.cameraCenter,
@@ -180,14 +213,20 @@ struct SkyGeometryBuilder {
             // than skipping one star.
             if star.magnitude >= magnitudeLimit { break }
 
-            let visibility = StarAppearance.visibility(
+            let baseVisibility = StarAppearance.visibility(
                 magnitude: star.magnitude,
                 fieldOfViewDegrees: fov,
                 sunAltitudeDegrees: sunAltitude
             )
-            guard visibility > 0.02 else { continue }
+            guard baseVisibility > 0.02 else { continue }
 
-            guard let ndc = project(star.equatorial), isOnScreen(ndc) else { continue }
+            guard let shaded = projectShaded(star.equatorial) else { continue }
+            let ndc = shaded.ndc
+            guard isOnScreen(ndc) else { continue }
+            // Sub-horizon stars are folded into the same alpha every other
+            // brightness factor already multiplies, so they sit consistently
+            // with the dimmed background rather than on a parallel path.
+            let visibility = baseVisibility * shaded.dimming
 
             var color = StarAppearance.color(colorIndex: star.colorIndex)
             color.w = Float(visibility)
@@ -312,13 +351,19 @@ struct SkyGeometryBuilder {
         for segment in frameData.constellationLines {
             guard let s1 = frameData.starsByID[segment.starID1],
                   let s2 = frameData.starsByID[segment.starID2] else { continue }
-            guard let ndc1 = project(s1.equatorial), let ndc2 = project(s2.equatorial) else { continue }
+            guard let e1 = projectShaded(s1.equatorial), let e2 = projectShaded(s2.equatorial) else { continue }
+            let ndc1 = e1.ndc, ndc2 = e2.ndc
             // Skip segments that wrap unreasonably far across the screen
             // (projection seam) or that are entirely off-screen.
             if simd_distance(ndc1, ndc2) > 1.5 { continue }
             if !isOnScreen(ndc1, margin: 1.0) && !isOnScreen(ndc2, margin: 1.0) { continue }
-            lineVertices.append(LineVertex(positionNDC: SIMD2(Float(ndc1.x), Float(ndc1.y)), color: color))
-            lineVertices.append(LineVertex(positionNDC: SIMD2(Float(ndc2.x), Float(ndc2.y)), color: color))
+            // Dim per endpoint, so a figure straddling the skyline fades along
+            // the segment instead of stepping at the crossing.
+            var c1 = color, c2 = color
+            c1.w *= Float(e1.dimming)
+            c2.w *= Float(e2.dimming)
+            lineVertices.append(LineVertex(positionNDC: SIMD2(Float(ndc1.x), Float(ndc1.y)), color: c1))
+            lineVertices.append(LineVertex(positionNDC: SIMD2(Float(ndc2.x), Float(ndc2.y)), color: c2))
         }
     }
 
@@ -335,7 +380,9 @@ struct SkyGeometryBuilder {
         guard strength > 0.05 else { return }
 
         for constellation in frameData.constellations {
-            guard let ndc = project(constellation.equatorial), isOnScreen(ndc, margin: 0.0) else { continue }
+            guard let shaded = projectShaded(constellation.equatorial) else { continue }
+            let ndc = shaded.ndc
+            guard isOnScreen(ndc, margin: 0.0) else { continue }
             labelCandidates.append(
                 SkyLabelCandidate(
                     id: "constellation-\(constellation.name)",
@@ -343,7 +390,11 @@ struct SkyGeometryBuilder {
                     ndc: CGPoint(x: ndc.x, y: ndc.y),
                     priority: .constellation,
                     style: .constellation,
-                    strength: strength,
+                    // Sub-horizon constellations are still named, dimmed to
+                    // match. Strength feeds the same priority/collision
+                    // machinery, so weaker sub-horizon labels lose ties to
+                    // above-horizon ones and the band cannot fill with text.
+                    strength: strength * shaded.dimming,
                     verticalOffsetPoints: 0
                 )
             )
@@ -391,14 +442,19 @@ struct SkyGeometryBuilder {
                 majorAxisArcmin: dso.majorAxisArcmin,
                 minorAxisArcmin: dso.minorAxisArcmin
             )
-            let visibility = StarAppearance.visibility(
+            let baseVisibility = StarAppearance.visibility(
                 magnitude: detectionMagnitude,
                 fieldOfViewDegrees: fov,
                 sunAltitudeDegrees: sunAltitude
             ) * twilightFactor
-            guard visibility > 0.02 else { continue }
+            guard baseVisibility > 0.02 else { continue }
 
-            guard let ndc = project(dso.equatorial), isOnScreen(ndc, margin: 0.35) else { continue }
+            guard let shaded = projectShaded(dso.equatorial) else { continue }
+            let ndc = shaded.ndc
+            guard isOnScreen(ndc, margin: 0.35) else { continue }
+            // Below the skyline M31 still draws — same position, same
+            // orientation, same ellipse — only dimmed.
+            let visibility = baseVisibility * shaded.dimming
 
             let size = StarAppearance.deepSkyPointSize(
                 majorAxisArcmin: dso.majorAxisArcmin,
@@ -522,7 +578,7 @@ struct SkyGeometryBuilder {
         let horizontal = CoordinateTransformService.horizontal(
             from: offset, observer: frameData.observerLocation, julianDay: frameData.julianDay
         )
-        guard let offsetNDC = project(horizontal: horizontal, cullBelowHorizon: false) else { return nil }
+        guard let offsetNDC = project(horizontal: horizontal, applyTerrainOcclusion: false) else { return nil }
         let d = offsetNDC - centerNDC
         guard simd_length(d) > 1e-9 else { return nil }
         return atan2(d.y, d.x)
@@ -540,13 +596,15 @@ struct SkyGeometryBuilder {
             let horizontal = CoordinateTransformService.horizontal(
                 from: eq, observer: frameData.observerLocation, julianDay: frameData.julianDay
             )
-            return project(horizontal: horizontal, cullBelowHorizon: false)
+            return project(horizontal: horizontal, applyTerrainOcclusion: false)
         }
 
         let sunAltitude = frameData.sunAltitudeDegrees
 
         for object in frameData.solarSystemObjects {
-            guard let ndc = project(object.equatorial), isOnScreen(ndc, margin: 0.25) else { continue }
+            guard let shaded = projectShaded(object.equatorial) else { continue }
+            let ndc = shaded.ndc
+            guard isOnScreen(ndc, margin: 0.25) else { continue }
 
             // Solar-system bodies are exempt from the magnitude cutoff
             // entirely, at every hour of the day. A planetarium's job is to
@@ -557,12 +615,16 @@ struct SkyGeometryBuilder {
             // they read as dimmer against a bright sky, but the multiplier
             // bottoms out at `daylightContrastFloor` and never reaches zero.
             // The Sun and Moon skip even that — they *are* the daylight.
+            //
+            // The terrain dimming is folded in on top: a planet below the
+            // skyline is still drawn at its true position, just dimmer, to
+            // match the dimmed sky it now sits against.
             let visibility: Double
             switch object.kind {
             case .sun, .moon:
-                visibility = 1.0
+                visibility = shaded.dimming
             default:
-                visibility = SkyBrightness.starContrast(sunAltitudeDegrees: sunAltitude)
+                visibility = SkyBrightness.starContrast(sunAltitudeDegrees: sunAltitude) * shaded.dimming
             }
 
             let position = SIMD2(Float(ndc.x), Float(ndc.y))
@@ -597,9 +659,11 @@ struct SkyGeometryBuilder {
                     softness: 40.0
                 )
                 appendGlow(at: position, color: StarAppearance.sunColor,
-                           size: Float(glowSize), alpha: 0.40)
+                           size: Float(glowSize), alpha: 0.40 * alpha)
+                var sunColor = StarAppearance.sunColor
+                sunColor.w *= alpha
                 coreVertices.append(
-                    PointVertex(positionNDC: position, color: StarAppearance.sunColor,
+                    PointVertex(positionNDC: position, color: sunColor,
                                 pointSize: size, shape: PointSpriteShape.sunDisk.rawValue,
                                 param2: detail)
                 )
@@ -610,12 +674,14 @@ struct SkyGeometryBuilder {
                     at: position,
                     color: StarAppearance.moonColor,
                     size: size * 2.6,
-                    alpha: Float(0.06 + 0.22 * k)
+                    alpha: Float(0.06 + 0.22 * k) * alpha
                 )
+                var moonColor = StarAppearance.moonColor
+                moonColor.w *= alpha
                 coreVertices.append(
                     PointVertex(
                         positionNDC: position,
-                        color: StarAppearance.moonColor,
+                        color: moonColor,
                         pointSize: size,
                         shape: PointSpriteShape.moon.rawValue,
                         param0: Float(k),

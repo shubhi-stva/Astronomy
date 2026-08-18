@@ -253,6 +253,59 @@ static inline float henyeyGreenstein(float cosTheta, float g) {
     return (1.0 - g2) / (4.0 * M_PI_F * pow(max(denom, 1e-4f), 1.5f));
 }
 
+// ---------------------------------------------------------------------------
+//  TERRAIN PROFILE — mirror of TerrainProfile.swift
+//
+//  These three functions MUST stay byte-for-byte equivalent to the Swift copy
+//  in `Astronomy/Rendering/SkyRenderer/TerrainProfile.swift`. Swift decides
+//  which *objects* are hidden; this decides where the silhouette is *painted*.
+//  If they disagree, stars clip against a skyline that is not where it is
+//  drawn. Any edit here must be mirrored there, and the Swift unit tests pin
+//  the expected values at fixed azimuths.
+// ---------------------------------------------------------------------------
+
+constant float kTerrainAmplitude1 = 0.90;
+constant float kTerrainAmplitude2 = 0.60;
+constant float kTerrainAmplitude3 = 0.40;
+constant float kTerrainAmplitude4 = 0.25;
+constant float kTerrainPhase1 = 37.0;
+constant float kTerrainPhase2 = 113.0;
+constant float kTerrainPhase3 = 211.0;
+constant float kTerrainPhase4 = 67.0;
+
+/// Thickness of the opaque silhouette band, in degrees below the skyline.
+constant float kTerrainBandThicknessDeg = 12.0;
+/// Brightness multiplier applied to the sky below the band.
+constant float kTerrainBelowDimming = 0.55;
+/// Degrees over which that dimming eases in below the band's bottom edge.
+constant float kTerrainDimmingEaseDeg = 2.5;
+/// Softening of the band's TOP edge, in degrees. A fraction of a degree on
+/// purpose: enough to antialias, never enough to look blurry.
+constant float kTerrainEdgeSoftnessDeg = 0.10;
+
+/// Altitude of the skyline, in degrees, at the given azimuth. Four sinusoids
+/// at integer frequencies (1, 2, 3, 5), so exactly periodic over 0-360 and
+/// seamless at due north; each has zero mean, so the mean skyline is alt 0.
+/// MIRRORS `TerrainProfile.skylineAltitudeDegrees`.
+static inline float terrainSkylineDegrees(float azDeg) {
+    const float d = M_PI_F / 180.0f;
+    float a = azDeg * d;
+    return kTerrainAmplitude1 * sin(a * 1.0f + kTerrainPhase1 * d)
+         + kTerrainAmplitude2 * sin(a * 2.0f + kTerrainPhase2 * d)
+         + kTerrainAmplitude3 * sin(a * 3.0f + kTerrainPhase3 * d)
+         + kTerrainAmplitude4 * sin(a * 5.0f + kTerrainPhase4 * d);
+}
+
+/// Brightness multiplier for the sky at this altitude: 1 above the skyline,
+/// easing to `kTerrainBelowDimming` a couple of degrees below the band.
+/// MIRRORS `TerrainProfile.dimming`.
+static inline float terrainDimming(float altDeg, float skylineDeg) {
+    if (altDeg > skylineDeg) { return 1.0f; }
+    float bottom = skylineDeg - kTerrainBandThicknessDeg;
+    float t = smoothstep(0.0f, kTerrainDimmingEaseDeg, bottom - altDeg);
+    return mix(1.0f, kTerrainBelowDimming, t);
+}
+
 /// Analytic Milky Way. Purely procedural: a Gaussian band around the galactic
 /// equator, brightened toward the galactic centre (l ~ 0) and thinned toward
 /// the anticentre, with a soft dust lane cut through the middle of the band.
@@ -312,6 +365,33 @@ fragment float4 backgroundFragmentShader(
     float3 local = directionFromNDC(in.ndc, u);
     float3 horizontal = normalize(u.cameraToHorizontal * local);
     float altDeg = asin(clamp(horizontal.y, -1.0f, 1.0f)) * (180.0f / M_PI_F);
+    // Horizontal frame is X = East, Y = Zenith, Z = South (see
+    // `CoordinateTransformService.unitDirection`), and azimuth is measured from
+    // north increasing eastward, so north is -Z: az = atan2(East, North).
+    float azDeg = atan2(horizontal.x, -horizontal.z) * (180.0f / M_PI_F);
+
+    // --- See-through Earth: three zones in altitude ------------------------
+    //   1. above the skyline           -> sky, unchanged
+    //   2. inside the terrain band     -> opaque near-black silhouette
+    //   3. below the band              -> the sky continues, dimmed
+    float skylineDeg = terrainSkylineDegrees(azDeg);
+    float bandBottomDeg = skylineDeg - kTerrainBandThicknessDeg;
+    // Coverage of the opaque band at this pixel. Soft only at the top edge (a
+    // tenth of a degree, so the skyline antialiases but still reads crisp);
+    // the bottom edge is soft over a whole degree because the sky resuming
+    // underneath should not show a hard rule.
+    float bandTop = 1.0f - smoothstep(skylineDeg - kTerrainEdgeSoftnessDeg,
+                                      skylineDeg + kTerrainEdgeSoftnessDeg, altDeg);
+    float bandBase = smoothstep(bandBottomDeg - 1.0f, bandBottomDeg, altDeg);
+    float bandCoverage = saturate(bandTop * bandBase);
+
+    // The atmosphere model (air mass, horizon glow) is only defined above the
+    // horizon. Below the skyline the sky is *reflected* about it, so the view
+    // through the Earth reads as the celestial sphere continuing round rather
+    // than as a flat wash: just under the band you get the near-horizon
+    // colours, and further down it climbs back toward zenith colours the way
+    // it genuinely does approaching the nadir. An approximation, deliberately.
+    float atmAlt = (altDeg >= skylineDeg) ? altDeg : (2.0f * skylineDeg - altDeg);
 
     float sunAlt = u.sunAltitudeDegrees;
     float3 zenith = twilightZenithColor(sunAlt);
@@ -337,7 +417,7 @@ fragment float4 backgroundFragmentShader(
     float sunward = saturate(0.55 * mieNorm + 0.75 * broadLobe);
 
     // Optical path: 0 at the zenith, approaching 1 at the horizon.
-    float airMass = relativeAirMass(altDeg);
+    float airMass = relativeAirMass(atmAlt);
     float pathAmount = 1.0 - exp(-0.20 * (airMass - 1.0));
 
     // How "daylit" the atmosphere is; gates the pale washed-out look so it
@@ -346,7 +426,7 @@ fragment float4 backgroundFragmentShader(
 
     float3 color;
 
-    if (altDeg >= 0.0) {
+    {
         // Horizon lightening: more air to look through means more scattered
         // light reaches the eye, and it does so preferentially near the Sun.
         float horizonAmount = pathAmount * (0.42 + 0.58 * sunward);
@@ -371,7 +451,7 @@ fragment float4 backgroundFragmentShader(
 
         // A last touch of warmth in the bottom few degrees, where the longest
         // paths preferentially scatter the blue out of the beam.
-        float veryLow = 1.0 - smoothstep(0.0, 7.0, altDeg);
+        float veryLow = 1.0 - smoothstep(0.0, 7.0, atmAlt);
         color = mix(color, color * float3(1.07, 1.00, 0.94), veryLow * 0.6 * dayFactor);
 
         // Milky Way, additive, only where the sky is dark enough for it to be
@@ -379,7 +459,13 @@ fragment float4 backgroundFragmentShader(
         // field would not show a diffuse band).
         float darkness = saturate((-sunAlt - 8.0) / 8.0);
         float fovFade = saturate((u.fieldOfViewDegrees - 12.0) / 28.0);
-        float horizonFade = saturate(altDeg / 8.0);
+        // The galactic band must flow *continuously* through all three zones:
+        // it fades into the terrain band from above, is hidden by it, and
+        // resumes below it. Measured from the two edges of the band rather
+        // than from altitude 0, so it never simply vanishes below the horizon.
+        float horizonFade = (altDeg >= skylineDeg)
+            ? saturate((altDeg - skylineDeg) / 8.0)
+            : saturate((bandBottomDeg - altDeg) / 8.0);
         float3 galactic = u.cameraToGalactic * local;
         float envelope = darkness * fovFade * horizonFade * u.milkyWayStrength;
 
@@ -404,14 +490,11 @@ fragment float4 backgroundFragmentShader(
             // Slightly warm-white, as the integrated light of the disk appears.
             color += float3(0.052, 0.050, 0.046) * (mw * envelope);
         }
-    } else {
-        // Below the horizon: a distinctly darker, warmer ground tone so the
-        // horizon line reads without needing a hard rule drawn across it.
-        float depth = saturate(-altDeg / 25.0);
-        float3 horizonEdge = mix(zenith, glow, 0.45) * 0.55;
-        float3 ground = float3(0.022, 0.019, 0.020);
-        color = mix(horizonEdge, ground, smoothstep(0.0, 1.0, depth));
     }
+
+    // Zone 3: the sky below the band is the same sky, only dimmed — eased in
+    // over the first couple of degrees so there is no line where it starts.
+    color *= terrainDimming(altDeg, skylineDeg);
 
     // --- Field-of-view darkening ---------------------------------------------
     // As you zoom in, the whole background is dimmed slightly. This is an
@@ -432,6 +515,13 @@ fragment float4 backgroundFragmentShader(
     float logFov = log(max(u.fieldOfViewDegrees, 0.5));
     float zoomIn = 1.0 - smoothstep(log(6.0), log(60.0), logFov);
     color *= mix(1.0, 0.82, zoomIn);
+
+    // Zone 2, composited last so the silhouette is a constant tone that the
+    // twilight model and the zoom darkening cannot tint or wash out. A very
+    // dark, slightly cool near-black rather than pure #000000, so it reads as
+    // ground and not as a hole punched in the render.
+    const float3 kTerrainGround = float3(0.008, 0.010, 0.015);
+    color = mix(color, kTerrainGround, bandCoverage);
 
     return float4(color, 1.0);
 }
