@@ -8,6 +8,7 @@
 //
 
 import CoreGraphics
+import ImageIO
 import XCTest
 import simd
 @testable import Astronomy
@@ -987,6 +988,21 @@ final class DeepSkyCatalogueTests: XCTestCase {
             let designation = object.catalogName.lowercased().replacingOccurrences(of: " ", with: "")
             return designation.contains(condensed) || object.id.lowercased().contains(condensed)
         }
+    }
+
+    /// The Milky Way panorama must be bundled and must be 2:1
+    /// equirectangular, which is what the shader's galactic-coordinate lookup
+    /// assumes. See DATA_SOURCES.md for source, credit and licence.
+    func testMilkyWayPanoramaIsBundledAndEquirectangular() throws {
+        let url = try XCTUnwrap(Bundle.main.url(forResource: "milkyway_panorama", withExtension: "jpg"))
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(url as CFURL, nil))
+        let properties = try XCTUnwrap(
+            CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+        )
+        let width = try XCTUnwrap(properties[kCGImagePropertyPixelWidth] as? Int)
+        let height = try XCTUnwrap(properties[kCGImagePropertyPixelHeight] as? Int)
+        XCTAssertEqual(Double(width) / Double(height), 2.0, accuracy: 0.001)
+        XCTAssertGreaterThanOrEqual(width, 2048)
     }
 
     func testSearchFindsObjectsByCommonNameAndByDesignation() throws {
