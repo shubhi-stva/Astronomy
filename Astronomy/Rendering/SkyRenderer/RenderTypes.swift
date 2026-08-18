@@ -38,6 +38,12 @@ enum PointSpriteShape: Float {
     /// `param2` = detail level 0...1, `param3` = type code (see
     /// `StarAppearance.deepSkyShaderCode`).
     case deepSky = 7
+    /// Artificial satellite: a small four-pointed cross rather than a dot, so
+    /// it reads instantly as "not a star". `param0` carries the illumination
+    /// state (0 sunlit, 1 penumbra, 2 umbra) and `param1` the screen-space
+    /// direction of travel in radians, which lets the marker carry a short
+    /// motion tick pointing the way it is going.
+    case satellite = 8
 }
 
 /// One instance of a point sprite: a star, its glow, the Sun, the Moon, a

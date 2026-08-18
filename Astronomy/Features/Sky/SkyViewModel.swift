@@ -40,15 +40,98 @@ final class SkyViewModel {
     private(set) var constellations: [Constellation] = []
     private(set) var deepSkyObjects: [DeepSkyObject] = []
 
+    // MARK: Satellites
+
+    private let satelliteTracker = SatelliteTracker()
+    /// Latest propagation tick. The renderer extrapolates from this every
+    /// frame; see `SatelliteTracker`.
+    private(set) var satelliteSnapshot: SatelliteSnapshot = .empty
+    private(set) var satelliteDescriptors: [SatelliteDescriptor] = []
+    /// Duration of the last propagation pass, exposed for the performance note
+    /// in the time bar's tooltip and for tests.
+    private(set) var lastSatellitePropagationSeconds: TimeInterval = 0
+
+    /// Master switch for the satellite layer.
+    var satellitesEnabled = true
+    /// Reveals the whole catalogue rather than only what is genuinely visible.
+    var showAllSatellites = false
+
     private nonisolated(unsafe) var ephemerisRefreshTask: Task<Void, Never>?
+    private nonisolated(unsafe) var satelliteTask: Task<Void, Never>?
 
     init() {
         Task { await loadCatalog() }
         startEphemerisRefresh()
+        startSatelliteTracking()
     }
 
     deinit {
         ephemerisRefreshTask?.cancel()
+        satelliteTask?.cancel()
+    }
+
+    /// Loads the satellite catalogue, then propagates it forever at the
+    /// tracker's tick rate. A daily CelesTrak refresh is kicked off once, after
+    /// the first tick, so a slow network never delays the first satellites
+    /// appearing.
+    private func startSatelliteTracking() {
+        satelliteTask = Task { [weak self] in
+            guard let self else { return }
+            await self.satelliteTracker.load()
+            await self.updateSatelliteDescriptors()
+
+            var didAttemptRefresh = false
+            while !Task.isCancelled {
+                await self.propagateSatellitesOnce()
+                if !didAttemptRefresh {
+                    didAttemptRefresh = true
+                    await self.refreshSatelliteElements()
+                }
+                try? await Task.sleep(for: .seconds(SatelliteTracker.tickInterval))
+            }
+        }
+    }
+
+    /// How many satellites are genuinely visible right now: sunlit and above
+    /// the horizon. This is the count the satellite control shows, and it is
+    /// also exactly the default render set's size, which is the point.
+    private(set) var visibleSatelliteCount = 0
+
+    private func updateSatelliteDescriptors() async {
+        satelliteDescriptors = await satelliteTracker.descriptors
+    }
+
+    private func propagateSatellitesOnce() async {
+        guard satellitesEnabled else { return }
+        let jd = time.julianDay
+        let sunEquatorial = solarSystemObjects.first { $0.kind == .sun }?.equatorial
+            ?? SunPosition.equatorialCoordinate(julianDay: jd)
+        let sunDistance = SunPosition.radiusVectorAU(julianDay: jd)
+            * AstronomicalConstants.astronomicalUnitKilometres
+
+        let snapshot = await satelliteTracker.propagate(
+            julianDay: jd,
+            observer: location.currentLocation,
+            sunEquatorial: sunEquatorial,
+            sunDistanceKilometres: sunDistance
+        )
+        satelliteSnapshot = snapshot
+        visibleSatelliteCount = snapshot.samples.reduce(into: 0) { count, sample in
+            if sample.illumination.isSunlit && sample.altitudeDegreesAtSnapshot > 0 { count += 1 }
+        }
+        if snapshot.propagationDuration > 0 {
+            lastSatellitePropagationSeconds = snapshot.propagationDuration
+        }
+    }
+
+    /// Fetches fresh element sets, at most once a day (the interval is enforced
+    /// by the catalogue service). A failure is silent by design: the bundled
+    /// snapshot keeps working, which is the whole point of bundling it.
+    private func refreshSatelliteElements() async {
+        let didRefresh = await SatelliteCatalogService.shared.refreshIfStale()
+        guard didRefresh else { return }
+        await satelliteTracker.reload()
+        await updateSatelliteDescriptors()
     }
 
     private func loadCatalog() async {
@@ -98,6 +181,7 @@ final class SkyViewModel {
         // renderer is about to draw, so panning and flights stay smooth at
         // whatever refresh rate the display link is running.
         camera.tick()
+        refreshSelectedSatellite()
 
         let sun = solarSystemObjects.first { $0.kind == .sun }
         let moon = solarSystemObjects.first { $0.kind == .moon }
@@ -111,7 +195,7 @@ final class SkyViewModel {
 
         // Keep ephemeris reasonably fresh even between the 30s refresh ticks
         // (time keeps advancing every second via TimeController).
-        return SkyFrameData(
+        var frame = SkyFrameData(
             stars: stars,
             solarSystemObjects: solarSystemObjects,
             constellationLines: constellationLines,
@@ -128,6 +212,41 @@ final class SkyViewModel {
             sunEquatorial: sun?.equatorial,
             moonEquatorial: moon?.equatorial,
             selectedObjectID: selectedObject?.id
+        )
+        frame.satelliteSnapshot = satelliteSnapshot
+        frame.satelliteDescriptors = satelliteDescriptors
+        frame.satellitesEnabled = satellitesEnabled
+        frame.showAllSatellites = showAllSatellites
+        return frame
+    }
+
+    /// Keeps the info panel live for a selected satellite.
+    ///
+    /// Every other kind of object is effectively static over a session, so its
+    /// panel can be a snapshot taken at selection time. A satellite crosses the
+    /// sky in minutes: its altitude, azimuth and range are all changing while
+    /// you look at them, and a frozen panel would be worse than no panel.
+    private func refreshSelectedSatellite() {
+        guard let selected = selectedObject, selected.kind == .satellite else { return }
+        guard let details = selected.satelliteDetails else { return }
+        guard let sample = satelliteSnapshot.samples.first(
+            where: { $0.catalogNumber == details.catalogNumber }
+        ) else { return }
+        guard sample.index < satelliteDescriptors.count else { return }
+
+        let jd = time.julianDay
+        let elapsed = min(2.0, max(-2.0, (jd - satelliteSnapshot.julianDay) * 86_400.0))
+        let look = TopocentricTransform.lookAngles(
+            satellitePositionTEME: sample.position + sample.velocity * elapsed,
+            observer: location.currentLocation,
+            julianDay: jd
+        )
+        selectedObject = SkyGeometryBuilder.celestialObject(
+            descriptor: satelliteDescriptors[sample.index],
+            look: look,
+            illumination: sample.illumination,
+            observer: location.currentLocation,
+            julianDay: jd
         )
     }
 
@@ -170,7 +289,54 @@ final class SkyViewModel {
             .map { $0.asCelestialObject }
 
         results.append(contentsOf: deepSkyMatches)
+        results.append(contentsOf: satelliteMatches(lowered: lowered, query: query))
         searchResults = results
+    }
+
+    /// Satellites match on name or on NORAD catalog number, so both "ISS" and
+    /// "25544" find the station.
+    ///
+    /// Matches are built from the *snapshot*, not the catalogue, so a result is
+    /// only offered when there is a real current position behind it — searching
+    /// up an object the propagator has rejected would hand back a target the
+    /// camera could not fly to.
+    private func satelliteMatches(lowered: String, query: String) -> [CelestialObject] {
+        guard satellitesEnabled, !satelliteDescriptors.isEmpty else { return [] }
+        let queryNumber = Int(query)
+        let jd = time.julianDay
+        let observer = location.currentLocation
+        let elapsed = min(2.0, max(-2.0, (jd - satelliteSnapshot.julianDay) * 86_400.0))
+
+        var matches: [CelestialObject] = []
+        for sample in satelliteSnapshot.samples {
+            guard sample.index < satelliteDescriptors.count else { continue }
+            let descriptor = satelliteDescriptors[sample.index]
+            let nameMatches = descriptor.name.lowercased().contains(lowered)
+            let numberMatches = queryNumber != nil && descriptor.catalogNumber == queryNumber
+            guard nameMatches || numberMatches else { continue }
+
+            let look = TopocentricTransform.lookAngles(
+                satellitePositionTEME: sample.position + sample.velocity * elapsed,
+                observer: observer, julianDay: jd
+            )
+            matches.append(
+                SkyGeometryBuilder.celestialObject(
+                    descriptor: descriptor, look: look, illumination: sample.illumination,
+                    observer: observer, julianDay: jd
+                )
+            )
+            if matches.count >= 40 { break }
+        }
+        // Notable objects and the ones actually up in the sky first: with 16,000
+        // candidates the ordering of a substring match is most of its value.
+        return matches.sorted { a, b in
+            let aAlt = a.satelliteDetails?.horizontal.altitudeDegrees ?? -90
+            let bAlt = b.satelliteDetails?.horizontal.altitudeDegrees ?? -90
+            if (aAlt > 0) != (bAlt > 0) { return aAlt > 0 }
+            return a.name.count < b.name.count
+        }
+        .prefix(12)
+        .map { $0 }
     }
 
     /// Recenters the camera on an object and selects it, instantly (used by

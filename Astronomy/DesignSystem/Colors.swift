@@ -19,6 +19,11 @@ enum SkyPalette {
     static let accentBlue = Color(red: 0.42, green: 0.62, blue: 0.98)
 
     static let panelStroke = Color.white.opacity(0.08)
+
+    /// Satellite labels. Matches the cool cyan cast of the satellite marker in
+    /// `StarAppearance`, kept quiet enough that a dozen of them on screen never
+    /// competes with a star name.
+    static let satelliteLabel = Color(red: 0.62, green: 0.86, blue: 0.92).opacity(0.88)
 }
 
 /// A minimal floating translucent "glass" panel used for the info panel,

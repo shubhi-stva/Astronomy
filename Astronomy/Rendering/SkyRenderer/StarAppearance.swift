@@ -249,6 +249,10 @@ enum StarAppearance {
         // Metal caps point sizes at 511 on current Apple GPUs; 500 leaves
         // headroom while still letting a zoomed-in M31 fill the view.
         case .deepSky: return 500
+        // Satellites are markers, not resolved objects: even the ISS is 100
+        // metres across at 400 km, which is a few arcseconds. There is nothing
+        // to zoom into, so the marker stays a marker.
+        case .satellite: return 16
         }
     }
 
@@ -264,6 +268,7 @@ enum StarAppearance {
         case .planet: return max(3.5, byMagnitude)
         case .star: return byMagnitude
         case .deepSky: return deepSkyMinimumSize
+        case .satellite: return satelliteMarkerSize
         }
     }
 
@@ -342,6 +347,57 @@ enum StarAppearance {
     /// click target (the hit-test tolerance is 22 pt) and large enough that a
     /// small distant galaxy still reads as a fuzzy patch rather than a star.
     static let deepSkyMinimumSize = 9.0
+
+    // MARK: - Satellites
+
+    /// Base marker diameter, in points. Small on purpose: there can be
+    /// hundreds on screen and they are furniture around the sky, not the
+    /// subject of it.
+    static let satelliteMarkerSize = 7.0
+
+    /// Marker diameter for a satellite. Grows gently with zoom — enough that a
+    /// zoomed-in pass is comfortable to watch and to click, nowhere near enough
+    /// to compete with a planet's disk.
+    static func satellitePointSize(
+        fieldOfViewDegrees fov: Double, isNotable: Bool
+    ) -> Float {
+        let zoom = fadeInSize(value: 70.0 - fov, over: 60.0)
+        let base = satelliteMarkerSize + 3.5 * zoom
+        return Float(isNotable ? base * 1.35 : base)
+    }
+
+    /// Satellite tint. Cool and desaturated: these are the one artificial thing
+    /// in the view and the palette says so quietly, with a faint cyan cast that
+    /// no star or deep-sky object in the ramp above ever reaches.
+    static let satelliteColor = SIMD4<Float>(0.62, 0.86, 0.92, 1.0)
+    /// Notable objects get a slightly warmer, brighter tint so the ISS is
+    /// findable among a hundred anonymous Starlinks.
+    static let satelliteNotableColor = SIMD4<Float>(0.98, 0.90, 0.72, 1.0)
+
+    /// Brightness multiplier for a satellite's illumination state.
+    ///
+    /// A satellite is only genuinely visible from the ground when sunlight is
+    /// falling on it. An eclipsed one is still *there* — this is a planetarium,
+    /// and "where is it right now" is a fair question — so it is drawn, but at
+    /// a fraction of the brightness, which is what makes a pass fading out at
+    /// shadow entry read correctly.
+    static func satelliteIlluminationFactor(
+        _ illumination: TopocentricTransform.Illumination
+    ) -> Double {
+        switch illumination {
+        case .sunlit: return 1.0
+        case .penumbra: return 0.45
+        case .umbra: return 0.18
+        }
+    }
+
+    /// Local smoothstep helper for the size curves above; mirrors
+    /// `SkyGeometryBuilder.fadeIn` so the two read alike.
+    private static func fadeInSize(value: Double, over width: Double) -> Double {
+        guard width > 0 else { return value > 0 ? 1 : 0 }
+        let t = min(1.0, max(0.0, value / width))
+        return t * t * (3 - 2 * t)
+    }
 
     /// Screen diameter in points along the *major* axis of a deep-sky object.
     ///

@@ -10,6 +10,11 @@ import Foundation
 
 enum CelestialObjectKind: String, Codable {
     case star, sun, moon, planet, deepSky
+    /// Artificial satellites. Unlike everything else in this enum these are
+    /// *near*: their apparent position depends on where the observer stands,
+    /// not just when they look, so they never travel the RA/Dec path the other
+    /// kinds do. See `TopocentricTransform`.
+    case satellite
 }
 
 struct CelestialObject: Identifiable, Hashable {
@@ -46,4 +51,24 @@ struct CelestialObject: Identifiable, Hashable {
     var minorAxisArcmin: Double?
     /// Major-axis orientation in degrees east of north.
     var positionAngleDegrees: Double?
+
+    /// Extra facts carried only by `.satellite` objects, so the info panel can
+    /// say something genuinely useful about one.
+    var satelliteDetails: SatelliteDetails?
+}
+
+/// Everything the info panel shows for a selected satellite that no other kind
+/// of object has.
+struct SatelliteDetails: Hashable {
+    let catalogNumber: Int
+    let regime: OrbitalRegime
+    /// Height above the WGS-84 ellipsoid, in kilometres.
+    let altitudeAboveGroundKm: Double
+    /// Observer-to-satellite distance, in kilometres.
+    let rangeKilometres: Double
+    let horizontal: HorizontalCoordinate
+    let illumination: TopocentricTransform.Illumination
+    /// Age of the element set at the displayed time, in days.
+    let elementSetAgeDays: Double
+    let internationalDesignator: String
 }

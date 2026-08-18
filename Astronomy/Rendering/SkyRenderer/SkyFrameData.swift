@@ -21,6 +21,20 @@ struct SkyFrameData {
     var deepSkyObjects: [DeepSkyObject] = []
     var starsByID: [Int: Star]
 
+    /// Most recent satellite propagation tick. The geometry builder
+    /// extrapolates from it every frame rather than re-propagating; see
+    /// `SatelliteTracker` for why.
+    var satelliteSnapshot: SatelliteSnapshot = .empty
+    /// Identity records, parallel to the tracker's satellite array and indexed
+    /// by `SatelliteSample.index`.
+    var satelliteDescriptors: [SatelliteDescriptor] = []
+    /// Master on/off for the whole satellite layer.
+    var satellitesEnabled: Bool = true
+    /// When false (the default), only satellites that are genuinely visible —
+    /// sunlit and above the horizon — plus the notable few are drawn. When
+    /// true, the entire catalogue is eligible, gated by zoom.
+    var showAllSatellites: Bool = false
+
     /// Spatial index over `stars`. When present the geometry builder culls by
     /// sky cell before projecting anything; when nil (catalogue still loading,
     /// or a test constructing a snapshot by hand) it falls back to a full scan

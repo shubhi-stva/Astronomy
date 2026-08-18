@@ -43,6 +43,9 @@ struct SkyLabelsOverlay: View {
         case .star: return .system(size: 11, weight: .regular)
         case .solarSystem: return .system(size: 12, weight: .medium)
         case .deepSky: return .system(size: 11, weight: .regular, design: .rounded)
+        // Monospaced, because a satellite label is a designation rather than a
+        // name and reads better set like one.
+        case .satellite: return .system(size: 10, weight: .regular, design: .monospaced)
         // Wide-tracked small caps read as a compass bearing rather than as
         // the name of something in the sky.
         case .cardinal: return .system(size: 11, weight: .semibold, design: .rounded)
@@ -55,6 +58,7 @@ struct SkyLabelsOverlay: View {
         case .star: return SkyPalette.chromeText.opacity(0.9)
         case .solarSystem: return SkyPalette.chromeText
         case .deepSky: return SkyPalette.chromeSecondaryText.opacity(0.95)
+        case .satellite: return SkyPalette.satelliteLabel
         case .cardinal: return SkyPalette.chromeText.opacity(0.75)
         }
     }

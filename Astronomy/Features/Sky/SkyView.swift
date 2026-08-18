@@ -57,6 +57,8 @@ struct SkyView: View {
 
                         Spacer()
 
+                        SatelliteControlView(viewModel: viewModel)
+
                         LocationControlView(viewModel: viewModel, isExpanded: $showLocationControl)
                     }
                     .padding(20)
@@ -79,7 +81,7 @@ struct SkyView: View {
                     // in DATA_SOURCES.md does not satisfy that, since users
                     // never see the repository. Kept deliberately quiet so it
                     // does not compete with the sky.
-                    Text("Milky Way: ESO/S. Brunier (CC BY 4.0) · Catalogues: HYG, OpenNGC (CC BY-SA 4.0)")
+                    Text("Milky Way: ESO/S. Brunier (CC BY 4.0) · Catalogues: HYG, OpenNGC (CC BY-SA 4.0) · Satellite elements: CelesTrak")
                         .font(.system(size: 9))
                         .foregroundStyle(SkyPalette.chromeSecondaryText.opacity(0.55))
                         .padding(.bottom, 10)

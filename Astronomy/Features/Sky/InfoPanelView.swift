@@ -36,7 +36,11 @@ struct InfoPanelView: View {
                 if let designation = object.catalogDesignation, designation != object.name {
                     infoRow("Catalogue", designation)
                 }
-                infoRow("Magnitude", String(format: "%.2f", object.magnitude))
+                if let satellite = object.satelliteDetails {
+                    satelliteRows(satellite)
+                } else {
+                    infoRow("Magnitude", String(format: "%.2f", object.magnitude))
+                }
                 if let major = object.majorAxisArcmin {
                     infoRow("Size", angularSizeString(major: major, minor: object.minorAxisArcmin))
                 }
@@ -54,7 +58,48 @@ struct InfoPanelView: View {
         case .moon: return "Moon"
         case .planet: return "Planet"
         case .deepSky: return object.deepSkyType?.displayName ?? "Deep-Sky Object"
+        case .satellite: return object.satelliteDetails?.regime.displayName ?? "Satellite"
         }
+    }
+
+    /// The satellite-specific rows.
+    ///
+    /// Apparent magnitude is deliberately absent: the element-set catalogue
+    /// carries no photometry, and a satellite's brightness depends on its
+    /// attitude and phase angle in ways two lines of orbital elements cannot
+    /// express. Showing a made-up number would be worse than showing none.
+    ///
+    /// The element-set age is here because it is the honest accuracy caveat.
+    /// A LEO element set drifts by kilometres of along-track error per day, so
+    /// the age is the single number that tells you how much to trust the
+    /// position above it.
+    @ViewBuilder
+    private func satelliteRows(_ satellite: SatelliteDetails) -> some View {
+        infoRow("NORAD ID", "\(satellite.catalogNumber)")
+        if !satellite.internationalDesignator.isEmpty {
+            infoRow("Int'l designator", satellite.internationalDesignator)
+        }
+        infoRow("Orbit", satellite.regime.shortName)
+        infoRow("Altitude", String(format: "%.0f km", satellite.altitudeAboveGroundKm))
+        infoRow("Range", String(format: "%.0f km", satellite.rangeKilometres))
+        infoRow("Altitude (alt)", String(format: "%+.2f°", satellite.horizontal.altitudeDegrees))
+        infoRow("Azimuth", String(format: "%.2f°", satellite.horizontal.azimuthDegrees))
+        infoRow("Sunlight", illuminationText(satellite.illumination))
+        infoRow("Element set", elementAgeText(satellite.elementSetAgeDays))
+    }
+
+    private func illuminationText(_ illumination: TopocentricTransform.Illumination) -> String {
+        switch illumination {
+        case .sunlit: return "Sunlit"
+        case .penumbra: return "Entering shadow"
+        case .umbra: return "In Earth's shadow"
+        }
+    }
+
+    private func elementAgeText(_ days: Double) -> String {
+        if days < 0 { return String(format: "%.1f days ahead", -days) }
+        if days < 1 { return String(format: "%.0f hours old", days * 24) }
+        return String(format: "%.1f days old", days)
     }
 
     /// Angular extent in arcminutes, "major x minor" when both are known.

@@ -88,6 +88,7 @@ constant float kShapeSelectionRing = 4.0;
 constant float kShapePlanetDisk   = 5.0;
 constant float kShapeSunDisk      = 6.0;
 constant float kShapeDeepSky      = 7.0;
+constant float kShapeSatellite    = 8.0;
 
 // Deep-sky type codes — keep in sync with `StarAppearance.deepSkyShaderCode`.
 constant int kDeepSkyGalaxy    = 0;
@@ -765,6 +766,32 @@ fragment float4 starFragmentShader(
         // Nothing outside the ellipse's immediate neighbourhood.
         alpha *= 1.0 - smoothstep(0.90, 1.45, r);
         alpha = saturate(alpha);
+    } else if (in.shape == kShapeSatellite) {
+        // Artificial satellites are drawn as a small four-armed cross rather
+        // than a dot, so a person can tell at a glance which points in the
+        // field are hardware and which are stars. The cross is rotated to the
+        // satellite's direction of travel (`param1`) and carries a slightly
+        // longer leading/trailing arm, which reads as a motion tick without
+        // needing a trail.
+        //
+        // `param0` is the illumination state, 0 sunlit / 1 penumbra / 2 umbra.
+        // An eclipsed satellite loses its cross and keeps only the faint core,
+        // which is the visual equivalent of "it is up there, but there is no
+        // sunlight on it to see".
+        float ca = cos(in.param1);
+        float sa = sin(in.param1);
+        float2 q = float2(p.x * ca + p.y * sa, -p.x * sa + p.y * ca);
+
+        float core = 1.0 - smoothstep(0.16, 0.44, dist);
+
+        // Two bars, the along-track one longer than the cross-track one.
+        float alongBar = (1.0 - smoothstep(0.03, 0.13, abs(q.y)))
+                       * (1.0 - smoothstep(0.55, 0.95, abs(q.x)));
+        float acrossBar = (1.0 - smoothstep(0.03, 0.13, abs(q.x)))
+                        * (1.0 - smoothstep(0.34, 0.66, abs(q.y)));
+
+        float sunlit = saturate(1.0 - in.param0);
+        alpha = saturate(core + sunlit * 0.72 * saturate(alongBar + acrossBar));
     } else if (in.shape == kShapeSelectionRing) {
         // Thin ring with soft inner/outer edges.
         float ring = smoothstep(0.60, 0.72, dist) * (1.0 - smoothstep(0.84, 0.96, dist));

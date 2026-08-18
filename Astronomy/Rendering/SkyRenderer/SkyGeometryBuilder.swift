@@ -57,6 +57,7 @@ struct SkyGeometryBuilder {
         buildStars()
         buildLines()
         buildDeepSky()
+        buildSatellites()
         buildSolarSystem()
         buildConstellationLabels()
         buildCardinalPoints()
@@ -584,6 +585,208 @@ struct SkyGeometryBuilder {
         return atan2(d.y, d.x)
     }
 
+    // MARK: - Satellites
+
+    /// Artificial satellites, extrapolated from the last propagation tick.
+    ///
+    /// Three things make this pass different from every other one in the file.
+    ///
+    /// **Position is not a catalogue entry.** A satellite's apparent place
+    /// depends on where the observer stands, so it goes through
+    /// `TopocentricTransform` rather than the RA/Dec path. That transform is
+    /// also where the extrapolation lands: `r + v * dt` from the snapshot, with
+    /// `dt` the fraction of a second since the last tick. This is what makes
+    /// the motion smooth at the display's full rate without re-propagating
+    /// 16,000 orbits per frame.
+    ///
+    /// **Density has to be managed.** There are ~16,000 active objects. Drawn
+    /// all at once they would bury the star field, so the default is the set
+    /// that is *actually visible from the ground right now* — sunlit and above
+    /// the horizon, which is typically a few dozen to a couple of hundred — plus
+    /// a short curated list of notable objects that are always drawn so the ISS
+    /// is findable whether or not it is up. The full catalogue is behind a
+    /// toggle, and even then its long tail fades in with zoom so a whole-sky
+    /// view is never a swarm.
+    ///
+    /// **Sunlight matters.** `SatelliteSample.illumination` carries the
+    /// shadow-cone result from the tick; an eclipsed satellite is drawn much
+    /// dimmer and loses its cross arms. That single detail is what makes the
+    /// layer read as real rather than as a scatter of markers.
+    private mutating func buildSatellites() {
+        guard frameData.satellitesEnabled else { return }
+        let snapshot = frameData.satelliteSnapshot
+        guard !snapshot.samples.isEmpty, snapshot.julianDay > 0 else { return }
+
+        let fov = frameData.cameraFieldOfViewDegrees
+        let observer = frameData.observerLocation
+        let julianDay = frameData.julianDay
+
+        // Seconds elapsed since the propagation tick. Clamped: if the app was
+        // suspended, or the user scrubbed the time bar, the linear
+        // extrapolation stops being valid long before a whole tick has passed,
+        // and drawing a straight-line guess seconds into the future would be
+        // worse than drawing the last known good position.
+        let elapsedSeconds = min(2.0, max(-2.0, (julianDay - snapshot.julianDay) * 86_400.0))
+
+        // The long tail only appears once the user has both asked for it and
+        // zoomed in enough for it to mean something.
+        let tailStrength = frameData.showAllSatellites
+            ? Self.fadeIn(value: 100.0 - fov, over: 55.0)
+            : 0.0
+        // Point sources wash out in daylight exactly as the planets do, with
+        // the same floor so a daytime "where is the ISS" still answers.
+        let skyContrast = SkyBrightness.starContrast(
+            sunAltitudeDegrees: frameData.sunAltitudeDegrees
+        )
+
+        let markerSizeOrdinary = StarAppearance.satellitePointSize(
+            fieldOfViewDegrees: fov, isNotable: false
+        )
+        let markerSizeNotable = StarAppearance.satellitePointSize(
+            fieldOfViewDegrees: fov, isNotable: true
+        )
+
+        for sample in snapshot.samples {
+            // Tier gate first: it is a couple of comparisons on already-loaded
+            // fields, and it rejects the overwhelming majority of the 16,000
+            // before any trigonometry happens.
+            let isGenuinelyVisible = sample.illumination.isSunlit
+                && sample.altitudeDegreesAtSnapshot > -1.0
+            var tierStrength: Double
+            if sample.isNotable {
+                tierStrength = 1.0
+            } else if isGenuinelyVisible {
+                tierStrength = 1.0
+            } else if tailStrength > 0.02 {
+                tierStrength = tailStrength
+            } else {
+                continue
+            }
+
+            let position = sample.position + sample.velocity * elapsedSeconds
+            let look = TopocentricTransform.lookAngles(
+                satellitePositionTEME: position, observer: observer, julianDay: julianDay
+            )
+            guard let ndc = project(horizontal: look.horizontal) else { continue }
+            guard isOnScreen(ndc, margin: 0.08) else { continue }
+
+            let dimming = TerrainProfile.dimming(
+                altitudeDegrees: look.horizontal.altitudeDegrees,
+                azimuthDegrees: look.horizontal.azimuthDegrees
+            )
+            let illuminationFactor = StarAppearance.satelliteIlluminationFactor(sample.illumination)
+            let visibility = tierStrength * dimming * skyContrast * illuminationFactor
+            guard visibility > 0.02 else { continue }
+
+            // Direction of travel on screen, taken by projecting where the
+            // satellite will be a second from now. Going through the same
+            // projection is what keeps the marker's motion tick correct as the
+            // camera pans — the same trick the Moon's bright limb uses.
+            let aheadAngle = travelScreenAngle(
+                position: position, velocity: sample.velocity,
+                observer: observer, julianDay: julianDay, centerNDC: ndc
+            )
+
+            var color = sample.isNotable
+                ? StarAppearance.satelliteNotableColor
+                : StarAppearance.satelliteColor
+            color.w = Float(visibility)
+
+            coreVertices.append(
+                PointVertex(
+                    positionNDC: SIMD2(Float(ndc.x), Float(ndc.y)),
+                    color: color,
+                    pointSize: sample.isNotable ? markerSizeNotable : markerSizeOrdinary,
+                    shape: PointSpriteShape.satellite.rawValue,
+                    param0: Float(sample.illumination.rawValue),
+                    param1: Float(aheadAngle)
+                )
+            )
+
+            // Building the `CelestialObject` needs the descriptor's name, so it
+            // is deliberately deferred until after every rejection above: this
+            // runs tens of times per frame, not 16,000.
+            guard sample.index < frameData.satelliteDescriptors.count else { continue }
+            let descriptor = frameData.satelliteDescriptors[sample.index]
+            let object = Self.celestialObject(
+                descriptor: descriptor, look: look, illumination: sample.illumination,
+                observer: observer, julianDay: julianDay
+            )
+            projectedObjects.append(ProjectedObject(object: object, ndcPosition: ndc))
+
+            // Labels are only ever for the notable few and the selection.
+            // Naming a swarm would defeat the point of drawing it quietly.
+            let isSelected = frameData.selectedObjectID == object.id
+            guard isSelected || sample.isNotable else { continue }
+            guard isOnScreen(ndc, margin: 0.02) else { continue }
+            labelCandidates.append(
+                SkyLabelCandidate(
+                    id: object.id,
+                    text: descriptor.name,
+                    ndc: CGPoint(x: ndc.x, y: ndc.y),
+                    priority: isSelected ? .selected : .satellite,
+                    style: .satellite,
+                    strength: isSelected ? 1.0 : min(1.0, visibility),
+                    verticalOffsetPoints: 13
+                )
+            )
+        }
+    }
+
+    /// Builds the selectable/searchable object for one drawn satellite,
+    /// including the live facts the info panel shows.
+    static func celestialObject(
+        descriptor: SatelliteDescriptor,
+        look: TopocentricTransform.LookAngles,
+        illumination: TopocentricTransform.Illumination,
+        observer: GeographicLocation,
+        julianDay: Double
+    ) -> CelestialObject {
+        var object = CelestialObject(
+            id: descriptor.id,
+            name: descriptor.name,
+            kind: .satellite,
+            // Topocentric *apparent* RA/Dec, so search's fly-to and the info
+            // panel's coordinate rows work exactly as they do for everything
+            // else. This is not a geocentric catalogue position and could not
+            // be — see `CoordinateTransformService.equatorial`.
+            equatorial: CoordinateTransformService.equatorial(
+                from: look.horizontal, observer: observer, julianDay: julianDay
+            ),
+            // The catalogue carries no photometry, so there is no honest
+            // apparent magnitude to report. Zero is a neutral placeholder and
+            // the info panel suppresses the row rather than inventing a number.
+            magnitude: 0
+        )
+        object.distanceKilometres = look.rangeKilometres
+        object.satelliteDetails = SatelliteDetails(
+            catalogNumber: descriptor.catalogNumber,
+            regime: descriptor.regime,
+            altitudeAboveGroundKm: look.altitudeAboveGroundKm,
+            rangeKilometres: look.rangeKilometres,
+            horizontal: look.horizontal,
+            illumination: illumination,
+            elementSetAgeDays: descriptor.elementSetAgeDays(atJulianDay: julianDay),
+            internationalDesignator: descriptor.internationalDesignator
+        )
+        return object
+    }
+
+    /// Screen-space direction the satellite is travelling, in radians.
+    private func travelScreenAngle(
+        position: SIMD3<Double>, velocity: SIMD3<Double>,
+        observer: GeographicLocation, julianDay: Double, centerNDC: SIMD2<Double>
+    ) -> Double {
+        let ahead = TopocentricTransform.lookAngles(
+            satellitePositionTEME: position + velocity, observer: observer, julianDay: julianDay
+        )
+        guard let aheadNDC = project(horizontal: ahead.horizontal, applyTerrainOcclusion: false)
+        else { return 0 }
+        let d = aheadNDC - centerNDC
+        guard simd_length(d) > 1e-9 else { return 0 }
+        return atan2(d.y, d.x)
+    }
+
     // MARK: - Sun, Moon and planets
 
     private mutating func buildSolarSystem() {
@@ -725,10 +928,10 @@ struct SkyGeometryBuilder {
                     )
                 )
 
-            case .star, .deepSky:
-                // Deep-sky objects never appear in `solarSystemObjects`; they
-                // have their own pass. This branch exists only for exhaustive-
-                // ness and draws a plain point.
+            case .star, .deepSky, .satellite:
+                // Deep-sky objects and satellites never appear in
+                // `solarSystemObjects`; each has its own pass. This branch
+                // exists only for exhaustiveness and draws a plain point.
                 var color = StarAppearance.color(colorIndex: nil)
                 color.w = alpha
                 coreVertices.append(
@@ -809,6 +1012,10 @@ struct SkyGeometryBuilder {
                 fieldOfViewDegrees: frameData.cameraFieldOfViewDegrees,
                 viewportWidth: Double(frameData.viewportSize.width)
             ) * 1.15
+        case .satellite:
+            // A fixed comfortable ring: the marker never grows much, so a ring
+            // that tracked it would be too small to see what is selected.
+            baseSize = 26
         }
 
         coreVertices.append(

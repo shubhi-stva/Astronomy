@@ -35,9 +35,14 @@ enum LabelPriority: Int, Comparable {
     /// constellation it sits in, and less than the star it might collide with.
     case deepSky = 1
     case brightStar = 2
-    case planet = 3
-    case luminary = 4       // Sun / Moon
-    case selected = 5
+    /// Satellites. Above named stars because a satellite's label is the only
+    /// way to tell one moving dot from another, and below planets because a
+    /// transient piece of hardware should never push Jupiter's name off the
+    /// screen.
+    case satellite = 3
+    case planet = 4
+    case luminary = 5       // Sun / Moon
+    case selected = 6
 
     static func < (lhs: LabelPriority, rhs: LabelPriority) -> Bool {
         lhs.rawValue < rhs.rawValue
@@ -49,6 +54,7 @@ enum LabelStyle {
     case star
     case solarSystem
     case deepSky
+    case satellite
     /// Cardinal/intercardinal compass points ("N", "NE", ...).
     case cardinal
 }

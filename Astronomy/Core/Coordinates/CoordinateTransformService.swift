@@ -74,6 +74,43 @@ enum CoordinateTransformService {
         )
     }
 
+    /// Inverse of `horizontal`: turns an alt/az direction back into RA/Dec for
+    /// the same observer and time.
+    ///
+    /// Added for satellites, which are located topocentrically (see
+    /// `TopocentricTransform`) and therefore arrive as alt/az rather than
+    /// RA/Dec. Everything downstream — search's `focus(on:)`, the info panel's
+    /// coordinate rows — speaks `EquatorialCoordinate`, and this is the honest
+    /// way to give a satellite one: the result is its *topocentric apparent*
+    /// position, which is genuinely where you would point a telescope, and is
+    /// deliberately not the same as any geocentric catalogue position.
+    ///
+    /// The star path is untouched; this is a new entry point, not a change to
+    /// the existing one.
+    static func equatorial(
+        from horizontal: HorizontalCoordinate,
+        observer: GeographicLocation,
+        julianDay jd: Double
+    ) -> EquatorialCoordinate {
+        let alt = Angle.degreesToRadians(horizontal.altitudeDegrees)
+        // Back to the south-referenced azimuth the spherical formulas use.
+        let az = Angle.degreesToRadians(horizontal.azimuthDegrees - 180.0)
+        let lat = Angle.degreesToRadians(observer.latitudeDegrees)
+
+        let sinDec = sin(alt) * sin(lat) + cos(alt) * cos(lat) * cos(az)
+        let declination = asin(max(-1.0, min(1.0, sinDec)))
+
+        let y = sin(az)
+        let x = cos(az) * sin(lat) - tan(alt) * cos(lat)
+        let hourAngle = Angle.radiansToDegrees(atan2(y, x))
+
+        let lst = localSiderealTimeDegrees(julianDay: jd, longitudeDegrees: observer.longitudeDegrees)
+        return EquatorialCoordinate(
+            rightAscensionDegrees: Angle.normalizeDegrees(lst - hourAngle),
+            declinationDegrees: Angle.radiansToDegrees(declination)
+        )
+    }
+
     /// Projects a horizontal coordinate onto a unit hemisphere direction
     /// vector, with +Y = zenith, useful as an input to camera projection.
     static func unitDirection(fromHorizontal horizontal: HorizontalCoordinate) -> SIMD3<Double> {
