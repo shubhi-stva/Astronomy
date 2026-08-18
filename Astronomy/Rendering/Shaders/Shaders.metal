@@ -195,9 +195,13 @@ static inline float3 rampSegment(float x, float x0, float x1, float3 c0, float3 
 /// disagree with its neighbour at the boundary. Night is a deep blue-black,
 /// never pure black.
 static inline float3 twilightZenithColor(float a) {
-    const float3 cHigh   = float3(0.105, 0.255, 0.620);  // +60 deg: rich deep blue
-    const float3 cMid    = float3(0.140, 0.305, 0.640);  // +20 deg
-    const float3 cLow    = float3(0.170, 0.310, 0.575);  //  +5 deg
+    // Daytime anchors (+5 and above) are tuned toward the reference: a rich,
+    // clean medium blue, less red in it than before so it reads as sky rather
+    // than as haze. The -0.833 deg anchor and everything below is untouched, so
+    // twilight and night are exactly as approved and the ramp stays continuous.
+    const float3 cHigh   = float3(0.085, 0.245, 0.640);  // +60 deg: rich clean blue
+    const float3 cMid    = float3(0.120, 0.295, 0.665);  // +20 deg
+    const float3 cLow    = float3(0.155, 0.320, 0.605);  //  +5 deg
     const float3 cSunset = float3(0.115, 0.190, 0.400);  //   0 deg
     const float3 cDusk   = float3(0.085, 0.135, 0.300);  // -0.833 deg
     const float3 cCivil  = float3(0.045, 0.075, 0.185);  //  -6 deg
@@ -220,8 +224,11 @@ static inline float3 twilightZenithColor(float a) {
 /// day, gold at sunset, dropping to a dim slate at night. Same continuous
 /// anchor-ramp construction as above.
 static inline float3 horizonGlowColor(float a) {
-    const float3 hHigh   = float3(0.600, 0.710, 0.880);  // +20 deg: pale haze
-    const float3 hLow    = float3(0.740, 0.760, 0.840);  //  +6 deg
+    // Daytime anchors tuned to the reference's pale, slightly COOL horizon:
+    // the old +6 anchor was nearly neutral (0.740, 0.760, 0.840) and read
+    // muddy against the blue above it. Sunset and below are untouched.
+    const float3 hHigh   = float3(0.575, 0.715, 0.900);  // +20 deg: pale cool haze
+    const float3 hLow    = float3(0.700, 0.790, 0.910);  //  +6 deg
     const float3 hGolden = float3(0.900, 0.550, 0.280);  //   0 deg: golden hour
     const float3 hDeep   = float3(0.700, 0.360, 0.250);  //  -4 deg
     const float3 hCivil  = float3(0.300, 0.200, 0.240);  // -10 deg
@@ -257,54 +264,121 @@ static inline float henyeyGreenstein(float cosTheta, float g) {
 // ---------------------------------------------------------------------------
 //  TERRAIN PROFILE — mirror of TerrainProfile.swift
 //
-//  These three functions MUST stay byte-for-byte equivalent to the Swift copy
-//  in `Astronomy/Rendering/SkyRenderer/TerrainProfile.swift`. Swift decides
-//  which *objects* are hidden; this decides where the silhouette is *painted*.
-//  If they disagree, stars clip against a skyline that is not where it is
+//  These constants and functions MUST stay equivalent to the Swift copy in
+//  `Astronomy/Rendering/SkyRenderer/TerrainProfile.swift`. Swift decides how
+//  much each *object* is dimmed; this decides where the dunes are *painted*.
+//  If they disagree, stars dim against a skyline that is not where it is
 //  drawn. Any edit here must be mirrored there, and the Swift unit tests pin
-//  the expected values at fixed azimuths.
+//  the expected values at fixed azimuths, for every layer.
+//
+//  Five translucent ridgelines, ordered FAR to NEAR. Layer 0 sits at the
+//  skyline and is lightest and least opaque; layer 4 is nearest, lowest,
+//  darkest and most opaque. All of them use the same INTEGER frequencies
+//  (1, 2, 3, 5) in azimuth, which is what makes every layer exactly periodic
+//  over 0-360 degrees — no seam at due north.
 // ---------------------------------------------------------------------------
 
-constant float kTerrainAmplitude1 = 0.90;
-constant float kTerrainAmplitude2 = 0.60;
-constant float kTerrainAmplitude3 = 0.40;
-constant float kTerrainAmplitude4 = 0.25;
-constant float kTerrainPhase1 = 37.0;
-constant float kTerrainPhase2 = 113.0;
-constant float kTerrainPhase3 = 211.0;
-constant float kTerrainPhase4 = 67.0;
+constant int kTerrainLayerCount = 5;
 
-/// Thickness of the opaque silhouette band, in degrees below the skyline.
-constant float kTerrainBandThicknessDeg = 12.0;
-/// Brightness multiplier applied to the sky below the band.
-constant float kTerrainBelowDimming = 0.55;
-/// Degrees over which that dimming eases in below the band's bottom edge.
-constant float kTerrainDimmingEaseDeg = 2.5;
-/// Softening of the band's TOP edge, in degrees. A fraction of a degree on
+/// Per layer: (amplitude1, amplitude2, amplitude3, amplitude4).
+constant float4 kTerrainAmplitudes[5] = {
+    float4(0.90, 0.60, 0.40, 0.25),
+    float4(1.10, 0.70, 0.35, 0.20),
+    float4(1.30, 0.80, 0.45, 0.22),
+    float4(1.50, 0.95, 0.50, 0.28),
+    float4(1.70, 1.05, 0.55, 0.30),
+};
+
+/// Per layer: (phase1, phase2, phase3, phase4), in degrees.
+constant float4 kTerrainPhases[5] = {
+    float4(37.0, 113.0, 211.0, 67.0),
+    float4(151.0, 19.0, 263.0, 97.0),
+    float4(289.0, 71.0, 143.0, 17.0),
+    float4(73.0, 241.0, 29.0, 199.0),
+    float4(203.0, 131.0, 83.0, 251.0),
+};
+
+/// Per layer: mean crest altitude relative to the true horizon, in degrees.
+/// Nearer layers sit lower in the view; that is what produces the depth read.
+constant float kTerrainBaseOffsetDeg[5] = { 0.0, -1.8, -4.0, -7.0, -11.0 };
+
+/// Per layer opacity. Deliberately small: composited, the five together reach
+/// only about 0.75, so celestial content is always still visible through them.
+constant float kTerrainLayerAlpha[5] = { 0.16, 0.20, 0.24, 0.28, 0.32 };
+
+/// Per layer darkening applied to the desaturated sky colour. Nearer is
+/// darker, which is the other half of the depth cue.
+constant float kTerrainLayerDarkness[5] = { 0.55, 0.42, 0.31, 0.21, 0.12 };
+
+/// Softening of each crest edge, in degrees. A fraction of a degree on
 /// purpose: enough to antialias, never enough to look blurry.
-constant float kTerrainEdgeSoftnessDeg = 0.10;
+constant float kTerrainEdgeSoftnessDeg = 0.25;
 
-/// Altitude of the skyline, in degrees, at the given azimuth. Four sinusoids
-/// at integer frequencies (1, 2, 3, 5), so exactly periodic over 0-360 and
-/// seamless at due north; each has zero mean, so the mean skyline is alt 0.
-/// MIRRORS `TerrainProfile.skylineAltitudeDegrees`.
-static inline float terrainSkylineDegrees(float azDeg) {
+/// How strongly accumulated coverage dims celestial objects. Mirrors the Swift
+/// constant; the shader dims the *background* by the same rule so sky and
+/// objects stay consistent.
+constant float kTerrainCoverageDimming = 0.72;
+
+/// Undulation of one layer about its own base offset, in degrees.
+/// MIRRORS `TerrainProfile.layerUndulationDegrees`.
+static inline float terrainLayerUndulationDegrees(int i, float azDeg) {
     const float d = M_PI_F / 180.0f;
     float a = azDeg * d;
-    return kTerrainAmplitude1 * sin(a * 1.0f + kTerrainPhase1 * d)
-         + kTerrainAmplitude2 * sin(a * 2.0f + kTerrainPhase2 * d)
-         + kTerrainAmplitude3 * sin(a * 3.0f + kTerrainPhase3 * d)
-         + kTerrainAmplitude4 * sin(a * 5.0f + kTerrainPhase4 * d);
+    float4 amp = kTerrainAmplitudes[i];
+    float4 ph = kTerrainPhases[i] * d;
+    return amp.x * sin(a * 1.0f + ph.x)
+         + amp.y * sin(a * 2.0f + ph.y)
+         + amp.z * sin(a * 3.0f + ph.z)
+         + amp.w * sin(a * 5.0f + ph.w);
 }
 
-/// Brightness multiplier for the sky at this altitude: 1 above the skyline,
-/// easing to `kTerrainBelowDimming` a couple of degrees below the band.
-/// MIRRORS `TerrainProfile.dimming`.
-static inline float terrainDimming(float altDeg, float skylineDeg) {
-    if (altDeg > skylineDeg) { return 1.0f; }
-    float bottom = skylineDeg - kTerrainBandThicknessDeg;
-    float t = smoothstep(0.0f, kTerrainDimmingEaseDeg, bottom - altDeg);
-    return mix(1.0f, kTerrainBelowDimming, t);
+/// Crest altitude of one layer at this azimuth.
+/// MIRRORS `TerrainProfile.layerCrestDegrees`.
+static inline float terrainLayerCrestDegrees(int i, float azDeg) {
+    return kTerrainBaseOffsetDeg[i] + terrainLayerUndulationDegrees(i, azDeg);
+}
+
+/// The skyline: the crest of the furthest layer.
+/// MIRRORS `TerrainProfile.skylineAltitudeDegrees`.
+static inline float terrainSkylineDegrees(float azDeg) {
+    return terrainLayerCrestDegrees(0, azDeg);
+}
+
+/// Opacity of one layer at this direction: its alpha, faded across the soft
+/// crest edge. MIRRORS `TerrainProfile.layerOpacity`.
+static inline float terrainLayerOpacity(int i, float altDeg, float azDeg) {
+    float crest = terrainLayerCrestDegrees(i, azDeg);
+    float mask = 1.0f - smoothstep(crest - kTerrainEdgeSoftnessDeg,
+                                   crest + kTerrainEdgeSoftnessDeg, altDeg);
+    return kTerrainLayerAlpha[i] * mask;
+}
+
+/// Accumulated terrain opacity, far to near. Can never reach 1.
+/// MIRRORS `TerrainProfile.coverage`.
+static inline float terrainCoverage(float altDeg, float azDeg) {
+    float transmittance = 1.0f;
+    for (int i = 0; i < kTerrainLayerCount; ++i) {
+        transmittance *= 1.0f - terrainLayerOpacity(i, altDeg, azDeg);
+    }
+    return 1.0f - transmittance;
+}
+
+/// Brightness multiplier for the sky behind the dunes: 1 above every crest,
+/// falling as coverage accumulates. MIRRORS `TerrainProfile.dimming`.
+static inline float terrainDimming(float coverage) {
+    return 1.0f - coverage * kTerrainCoverageDimming;
+}
+
+/// Colour of one dune layer, derived from the sky itself so it tracks the time
+/// of day automatically: take the local horizon/zenith blend, pull it most of
+/// the way toward its own luminance (dunes are a desaturated relative of the
+/// sky, never a fixed brown), then darken by the layer's factor. By day this
+/// lands on the muted blue-grey of the reference; at night it goes near-black
+/// but the layers still separate because the darkness factors differ.
+static inline float3 terrainLayerColor(int i, float3 skyColor) {
+    float lum = dot(skyColor, float3(0.2126, 0.7152, 0.0722));
+    float3 desaturated = mix(skyColor, float3(lum), 0.62);
+    return desaturated * kTerrainLayerDarkness[i];
 }
 
 /// Analytic Milky Way. Purely procedural: a Gaussian band around the galactic
@@ -371,27 +445,23 @@ fragment float4 backgroundFragmentShader(
     // north increasing eastward, so north is -Z: az = atan2(East, North).
     float azDeg = atan2(horizontal.x, -horizontal.z) * (180.0f / M_PI_F);
 
-    // --- See-through Earth: three zones in altitude ------------------------
-    //   1. above the skyline           -> sky, unchanged
-    //   2. inside the terrain band     -> opaque near-black silhouette
-    //   3. below the band              -> the sky continues, dimmed
+    // --- See-through Earth: translucent layered dunes -----------------------
+    // Nothing is occluded any more. The sky is computed everywhere, and a stack
+    // of five translucent ridgelines is composited over it near and below the
+    // skyline. Accumulated coverage tops out around 0.75, so stars, the Milky
+    // Way and labels all remain readable *through* the terrain.
     float skylineDeg = terrainSkylineDegrees(azDeg);
-    float bandBottomDeg = skylineDeg - kTerrainBandThicknessDeg;
-    // Coverage of the opaque band at this pixel. Soft only at the top edge (a
-    // tenth of a degree, so the skyline antialiases but still reads crisp);
-    // the bottom edge is soft over a whole degree because the sky resuming
-    // underneath should not show a hard rule.
-    float bandTop = 1.0f - smoothstep(skylineDeg - kTerrainEdgeSoftnessDeg,
-                                      skylineDeg + kTerrainEdgeSoftnessDeg, altDeg);
-    float bandBase = smoothstep(bandBottomDeg - 1.0f, bandBottomDeg, altDeg);
-    float bandCoverage = saturate(bandTop * bandBase);
 
     // The atmosphere model (air mass, horizon glow) is only defined above the
-    // horizon. Below the skyline the sky is *reflected* about it, so the view
-    // through the Earth reads as the celestial sphere continuing round rather
-    // than as a flat wash: just under the band you get the near-horizon
-    // colours, and further down it climbs back toward zenith colours the way
-    // it genuinely does approaching the nadir. An approximation, deliberately.
+    // horizon, so below the skyline the sky is still *reflected* about it. That
+    // trick was reassessed for the translucent terrain and kept: it is not
+    // about hiding anything behind an opaque band (there is no band any more),
+    // it is about air mass and the horizon glow having a defined, continuous
+    // value below alt 0. Reflecting keeps the warm near-horizon colours in the
+    // few degrees just under the skyline — exactly where the dunes sit and
+    // where they need something to tint against — and lets the colour climb
+    // back toward zenith tones approaching the nadir, the way the celestial
+    // sphere genuinely continues round. An approximation, deliberately.
     float atmAlt = (altDeg >= skylineDeg) ? altDeg : (2.0f * skylineDeg - altDeg);
 
     float sunAlt = u.sunAltitudeDegrees;
@@ -426,6 +496,10 @@ fragment float4 backgroundFragmentShader(
     float dayFactor = saturate((sunAlt + 2.0) / 8.0);
 
     float3 color;
+    // The sky colour the dunes take their hue from — captured before the Milky
+    // Way and any additive glow, so the terrain tracks the *sky*, not whatever
+    // happens to be behind it.
+    float3 skyReference;
 
     {
         // Horizon lightening: more air to look through means more scattered
@@ -441,7 +515,9 @@ fragment float4 backgroundFragmentShader(
         // washed out and low-contrast, far from it deep and saturated.
         float pale = sunward * dayFactor;
         float lum = dot(color, float3(0.2126, 0.7152, 0.0722));
-        float3 washed = saturate(mix(color, float3(lum), 0.75) * 1.45 + float3(0.060, 0.055, 0.050));
+        // The additive lift is cool rather than warm now, so the wash around
+        // the Sun stays a clean pale blue instead of drifting cream.
+        float3 washed = saturate(mix(color, float3(lum), 0.72) * 1.45 + float3(0.048, 0.054, 0.064));
         color = mix(color, washed, saturate(0.60 * pale));
 
         // Golden hour: a warm additive term that peaks with the Sun near the
@@ -452,21 +528,27 @@ fragment float4 backgroundFragmentShader(
 
         // A last touch of warmth in the bottom few degrees, where the longest
         // paths preferentially scatter the blue out of the beam.
+        // A last touch of warmth in the bottom few degrees. Pulled back hard
+        // from what it was (1.07, 1.00, 0.94): the reference daytime sky grades
+        // to a *cool* pale blue at the horizon, not a warm muddy one, and the
+        // golden-hour term above still supplies all the warmth that twilight
+        // needs. Gated by `dayFactor`, so twilight and night are untouched.
         float veryLow = 1.0 - smoothstep(0.0, 7.0, atmAlt);
-        color = mix(color, color * float3(1.07, 1.00, 0.94), veryLow * 0.6 * dayFactor);
+        color = mix(color, color * float3(1.015, 1.000, 1.010), veryLow * 0.6 * dayFactor);
+
+        skyReference = color;
 
         // Milky Way, additive, only where the sky is dark enough for it to be
         // physically plausible, and fading out as you zoom in (a telescopic
         // field would not show a diffuse band).
         float darkness = saturate((-sunAlt - 8.0) / 8.0);
         float fovFade = saturate((u.fieldOfViewDegrees - 12.0) / 28.0);
-        // The galactic band must flow *continuously* through all three zones:
-        // it fades into the terrain band from above, is hidden by it, and
-        // resumes below it. Measured from the two edges of the band rather
-        // than from altitude 0, so it never simply vanishes below the horizon.
-        float horizonFade = (altDeg >= skylineDeg)
-            ? saturate((altDeg - skylineDeg) / 8.0)
-            : saturate((bandBottomDeg - altDeg) / 8.0);
+        // The galactic band flows continuously across the skyline: it thins in
+        // the last few degrees either side (extinction along the longest paths)
+        // and recovers below, so it never simply vanishes at the horizon.
+        // Measured from the skyline rather than from altitude 0. The dunes are
+        // translucent, so the band is then visible *through* them.
+        float horizonFade = saturate(abs(altDeg - skylineDeg) / 8.0);
         float3 galactic = u.cameraToGalactic * local;
         float envelope = darkness * fovFade * horizonFade * u.milkyWayStrength;
 
@@ -493,9 +575,11 @@ fragment float4 backgroundFragmentShader(
         }
     }
 
-    // Zone 3: the sky below the band is the same sky, only dimmed — eased in
-    // over the first couple of degrees so there is no line where it starts.
-    color *= terrainDimming(altDeg, skylineDeg);
+    // No separate below-horizon dimming any more: the alpha compositing of the
+    // dune layers below is the *only* thing that darkens the low sky, which is
+    // what keeps the background and the objects drawn on it telling one
+    // coherent story. (`terrainDimming` still exists as the mirror of the Swift
+    // rule the geometry builder applies to objects.)
 
     // --- Field-of-view darkening ---------------------------------------------
     // As you zoom in, the whole background is dimmed slightly. This is an
@@ -515,14 +599,24 @@ fragment float4 backgroundFragmentShader(
     // just a shade deeper.
     float logFov = log(max(u.fieldOfViewDegrees, 0.5));
     float zoomIn = 1.0 - smoothstep(log(6.0), log(60.0), logFov);
-    color *= mix(1.0, 0.82, zoomIn);
+    float zoomDarken = mix(1.0, 0.82, zoomIn);
+    color *= zoomDarken;
+    skyReference *= zoomDarken;
 
-    // Zone 2, composited last so the silhouette is a constant tone that the
-    // twilight model and the zoom darkening cannot tint or wash out. A very
-    // dark, slightly cool near-black rather than pure #000000, so it reads as
-    // ground and not as a hole punched in the render.
-    const float3 kTerrainGround = float3(0.008, 0.010, 0.015);
-    color = mix(color, kTerrainGround, bandCoverage);
+    // --- Dunes, composited FAR to NEAR --------------------------------------
+    // Each layer is a translucent haze whose colour is a desaturated, darkened
+    // relative of the sky colour at this direction, so the terrain is muted
+    // blue-grey by day and near-black at night without a single hard-coded
+    // hue. Nearer layers are lower, darker and slightly more opaque, and each
+    // one paints over the ones behind it, which is what produces the receding
+    // ridgeline read. Total opacity here is at most about 0.75, so whatever is
+    // behind the dunes — stars, the Milky Way, constellation labels — is only
+    // dimmed, never erased.
+    for (int i = 0; i < kTerrainLayerCount; ++i) {
+        float a = terrainLayerOpacity(i, altDeg, azDeg);
+        if (a <= 0.0f) { continue; }
+        color = mix(color, terrainLayerColor(i, skyReference), a);
+    }
 
     return float4(color, 1.0);
 }

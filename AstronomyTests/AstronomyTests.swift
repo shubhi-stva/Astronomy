@@ -1027,133 +1027,214 @@ final class DeepSkyCatalogueTests: XCTestCase {
     }
 }
 
-/// The "see-through Earth" skyline.
+/// The "see-through Earth" skyline — five translucent dune layers.
 ///
-/// The profile is implemented twice — `TerrainProfile.swift` (which decides
-/// which objects are hidden) and `Shaders.metal` (which paints the band). These
-/// tests pin the Swift side hard, so an edit to the Metal copy that is not
-/// mirrored back here shows up as a failure rather than as objects silently
-/// clipping against a skyline that is not where it is drawn.
+/// The profile is implemented twice — `TerrainProfile.swift` (which decides how
+/// much each object is dimmed) and `Shaders.metal` (which paints the dunes).
+/// These tests pin the Swift side hard, for every layer, so an edit to the
+/// Metal copy that is not mirrored back here shows up as a failure rather than
+/// as objects silently dimming against a skyline that is not where it is drawn.
 final class TerrainProfileTests: XCTestCase {
 
-    /// Exactly periodic over a full turn: all four frequencies are integers, so
-    /// there can be no seam at due north.
-    func testProfileIsPeriodicOverAFullTurn() {
-        for az in stride(from: 0.0, through: 359.0, by: 1.0) {
+    /// Five ridgelines, ordered far to near, each one lower, more opaque and
+    /// darker than the one behind it. That ordering *is* the depth cue.
+    func testLayerStackIsOrderedFarToNear() {
+        XCTAssertEqual(TerrainProfile.layers.count, 5)
+
+        for i in 1..<TerrainProfile.layers.count {
+            let far = TerrainProfile.layers[i - 1]
+            let near = TerrainProfile.layers[i]
+            XCTAssertLessThan(near.baseOffsetDegrees, far.baseOffsetDegrees,
+                              "each nearer layer must sit lower in the view")
+            XCTAssertGreaterThan(near.alpha, far.alpha,
+                                 "each nearer layer must be slightly more opaque")
+            XCTAssertLessThan(near.darkness, far.darkness,
+                              "each nearer layer must be darker")
+        }
+    }
+
+    /// Exactly periodic over a full turn, for EVERY layer: all four frequencies
+    /// are integers, so there can be no seam at due north.
+    func testEveryLayerIsPeriodicOverAFullTurn() {
+        for index in TerrainProfile.layers.indices {
+            for az in stride(from: 0.0, through: 359.0, by: 1.0) {
+                XCTAssertEqual(
+                    TerrainProfile.layerCrestDegrees(index: index, azimuthDegrees: az),
+                    TerrainProfile.layerCrestDegrees(index: index, azimuthDegrees: az + 360.0),
+                    accuracy: 1e-9
+                )
+            }
+            XCTAssertEqual(
+                TerrainProfile.layerCrestDegrees(index: index, azimuthDegrees: 0),
+                TerrainProfile.layerCrestDegrees(index: index, azimuthDegrees: 360),
+                accuracy: 1e-12,
+                "a discontinuity at azimuth 0 would draw a visible seam at north in layer \(index)"
+            )
+        }
+    }
+
+    /// Continuous, and gentle: no step anywhere, and never outside each layer's
+    /// own amplitude budget about its base offset.
+    func testEveryLayerIsContinuousAndStaysWithinItsAmplitude() {
+        XCTAssertEqual(TerrainProfile.maxAmplitude, 2.15, accuracy: 1e-12)
+
+        for index in TerrainProfile.layers.indices {
+            let layer = TerrainProfile.layers[index]
+            let limit = layer.maxAmplitude
+            var previous = TerrainProfile.layerCrestDegrees(index: index, azimuthDegrees: 0)
+            for step in 1...3600 {
+                let az = Double(step) * 0.1
+                let value = TerrainProfile.layerCrestDegrees(index: index, azimuthDegrees: az)
+                XCTAssertLessThanOrEqual(abs(value - layer.baseOffsetDegrees), limit + 1e-9)
+                XCTAssertLessThan(abs(value - previous), 0.10,
+                                  "the ridgeline must not step; it is a sum of smooth sinusoids")
+                previous = value
+            }
+        }
+    }
+
+    /// Each layer's mean crest sits exactly at its base offset — every term is
+    /// a zero-mean sinusoid, so no correction is needed, and this is what keeps
+    /// the horizon and the layer spacing where a user expects them.
+    func testEachLayerMeanSitsAtItsBaseOffset() {
+        let samples = 3600
+        for index in TerrainProfile.layers.indices {
+            var sum = 0.0
+            for i in 0..<samples {
+                sum += TerrainProfile.layerCrestDegrees(
+                    index: index, azimuthDegrees: Double(i) * 360.0 / Double(samples)
+                )
+            }
+            XCTAssertEqual(sum / Double(samples),
+                           TerrainProfile.layers[index].baseOffsetDegrees,
+                           accuracy: 1e-9)
+        }
+    }
+
+    /// The skyline is the crest of the furthest layer, and its constants are
+    /// unchanged from the original single profile, so the cardinal markers
+    /// still sit exactly where they always did.
+    func testSkylineIsTheFurthestLayer() {
+        for az in stride(from: 0.0, to: 360.0, by: 11.0) {
             XCTAssertEqual(
                 TerrainProfile.skylineAltitudeDegrees(azimuthDegrees: az),
-                TerrainProfile.skylineAltitudeDegrees(azimuthDegrees: az + 360.0),
-                accuracy: 1e-9
+                TerrainProfile.layerCrestDegrees(index: 0, azimuthDegrees: az),
+                accuracy: 1e-12
             )
         }
-        XCTAssertEqual(
-            TerrainProfile.skylineAltitudeDegrees(azimuthDegrees: 0),
-            TerrainProfile.skylineAltitudeDegrees(azimuthDegrees: 360),
-            accuracy: 1e-12,
-            "a discontinuity at azimuth 0 would draw a visible seam at north"
-        )
     }
 
-    /// Continuous, and gentle: no step anywhere, and never outside the
-    /// amplitude budget of rolling hills.
-    func testProfileIsContinuousAndStaysWithinItsAmplitude() {
-        let limit = TerrainProfile.maxAmplitude
-        XCTAssertEqual(limit, 2.15, accuracy: 1e-12)
-
-        var previous = TerrainProfile.skylineAltitudeDegrees(azimuthDegrees: 0)
-        for step in 1...3600 {
-            let value = TerrainProfile.skylineAltitudeDegrees(azimuthDegrees: Double(step) * 0.1)
-            XCTAssertLessThanOrEqual(abs(value), limit + 1e-9)
-            XCTAssertLessThan(abs(value - previous), 0.05,
-                              "the skyline must not step; it is a sum of smooth sinusoids")
-            previous = value
-        }
-    }
-
-    /// Mean skyline sits at altitude 0 — every term is a zero-mean sinusoid, so
-    /// no constant offset is needed, and this is what keeps the horizon where a
-    /// user expects it.
-    func testMeanSkylineIsAtAltitudeZero() {
-        var sum = 0.0
-        let samples = 3600
-        for i in 0..<samples {
-            sum += TerrainProfile.skylineAltitudeDegrees(azimuthDegrees: Double(i) * 360.0 / Double(samples))
-        }
-        XCTAssertEqual(sum / Double(samples), 0.0, accuracy: 1e-9)
-    }
-
-    /// Fixed azimuths, pinned to ten decimal places. If the Metal copy is
-    /// edited without mirroring it here (or vice versa), this is the tripwire.
-    func testProfileMatchesExpectedValuesAtFixedAzimuths() {
-        let expected: [(Double, Double)] = [
-            (0.0,   1.1180474163),
-            (45.0,  0.3282378629),
-            (90.0,  0.6070187494),
-            (135.0, 0.0652278258),
-            (180.0, -0.0134415922),
-            (225.0, -0.7971152171),
-            (270.0, -1.7116245735),
-            (315.0, 0.4036495284),
+    /// Fixed azimuths, every layer, pinned to ten decimal places. If the Metal
+    /// copy is edited without mirroring it here (or vice versa), this is the
+    /// tripwire.
+    func testEveryLayerMatchesExpectedValuesAtFixedAzimuths() {
+        let expected: [(Double, [Double])] = [
+            (0.0,   [1.1180474163, -1.1876936324, -4.1376207523, -6.2451858610, -10.6095530485]),
+            (45.0,  [0.3282378629, -1.3489888672, -4.9492970686, -5.7466667391, -13.3340501307]),
+            (90.0,  [0.6070187494, -2.9716989845, -3.7634032339, -6.4326087759, -13.5220018953]),
+            (135.0, [0.0652278258, -3.6374524815, -3.2579339026, -6.6402634359, -10.6460746579]),
+            (180.0, [-0.0134415922, -1.9565109514, -2.3495495267, -9.4165915826, -9.8055568331]),
+            (225.0, [-0.7971152171, -0.9272851270, -2.5297938842, -9.1744715394, -10.0436738301]),
+            (270.0, [-1.7116245735, -1.0840964318, -5.7494264871, -5.9056137806, -10.0628882232]),
+            (315.0, [0.4036495284, -1.2862735243, -5.2629751445, -6.4385982857, -9.9762013812]),
         ]
-        for (azimuth, value) in expected {
-            XCTAssertEqual(
-                TerrainProfile.skylineAltitudeDegrees(azimuthDegrees: azimuth),
-                value,
-                accuracy: 1e-9,
-                "terrain profile changed at azimuth \(azimuth) — mirror the edit into Shaders.metal"
-            )
+        for (azimuth, crests) in expected {
+            XCTAssertEqual(crests.count, TerrainProfile.layers.count)
+            for (index, value) in crests.enumerated() {
+                XCTAssertEqual(
+                    TerrainProfile.layerCrestDegrees(index: index, azimuthDegrees: azimuth),
+                    value,
+                    accuracy: 1e-9,
+                    "layer \(index) changed at azimuth \(azimuth) — mirror the edit into Shaders.metal"
+                )
+            }
         }
     }
 
-    /// The occlusion rule in one test: visible above the skyline, hidden inside
-    /// the band, visible again below it, because you are looking through the
-    /// Earth.
-    func testOnlyTheBandOccludes() {
+    /// Coverage is monotonic downward: the lower you look, the more dune haze
+    /// accumulates in front of the sky. Never the other way round.
+    func testCoverageIncreasesDownward() {
+        for azimuth in stride(from: 0.0, to: 360.0, by: 13.0) {
+            var previous = TerrainProfile.coverage(altitudeDegrees: 20.0, azimuthDegrees: azimuth)
+            XCTAssertEqual(previous, 0.0, accuracy: 1e-12,
+                           "well above the skyline there is no terrain at all")
+            for step in 1...700 {
+                let alt = 20.0 - Double(step) * 0.05
+                let value = TerrainProfile.coverage(altitudeDegrees: alt, azimuthDegrees: azimuth)
+                XCTAssertGreaterThanOrEqual(value, previous - 1e-12,
+                                            "coverage must never decrease as you look further down")
+                previous = value
+            }
+        }
+    }
+
+    /// "Nothing is fully hidden": accumulated coverage can never reach 1, so
+    /// stars, the Milky Way and labels always read *through* the terrain.
+    func testAccumulatedCoverageNeverReachesOne() {
+        XCTAssertEqual(TerrainProfile.maxCoverage, 0.749951488, accuracy: 1e-9)
+        XCTAssertLessThan(TerrainProfile.maxCoverage, 0.85,
+                          "the dunes must stay a haze, never a wall")
+
         for azimuth in stride(from: 0.0, to: 360.0, by: 7.0) {
-            let skyline = TerrainProfile.skylineAltitudeDegrees(azimuthDegrees: azimuth)
-            let thickness = TerrainProfile.bandThicknessDegrees
-
-            XCTAssertFalse(
-                TerrainProfile.isOccluded(altitudeDegrees: skyline + 5.0, azimuthDegrees: azimuth),
-                "an object well above the skyline must be visible")
-            XCTAssertTrue(
-                TerrainProfile.isOccluded(altitudeDegrees: skyline - thickness * 0.5, azimuthDegrees: azimuth),
-                "an object inside the terrain band must be hidden")
-            XCTAssertFalse(
-                TerrainProfile.isOccluded(altitudeDegrees: skyline - thickness - 5.0, azimuthDegrees: azimuth),
-                "an object below the band must be visible again")
+            for step in 0...400 {
+                let alt = 10.0 - Double(step) * 0.25
+                let value = TerrainProfile.coverage(altitudeDegrees: alt, azimuthDegrees: azimuth)
+                XCTAssertGreaterThanOrEqual(value, 0.0)
+                XCTAssertLessThanOrEqual(value, TerrainProfile.maxCoverage + 1e-12)
+            }
         }
     }
 
-    /// Dimming is 1 above the skyline, eases smoothly in below the band, and
-    /// bottoms out at the chosen factor — never zero, because the point of the
-    /// feature is that the hidden sky stays rich.
-    func testDimmingEasesInBelowTheBandAndNeverReachesZero() {
+    /// Dimming is the single visibility story: 1 above every crest, falling
+    /// smoothly and monotonically as coverage accumulates, and bottoming out
+    /// well clear of zero.
+    func testDimmingFallsSmoothlyAndNeverReachesZero() {
         let azimuth = 123.0
-        let skyline = TerrainProfile.skylineAltitudeDegrees(azimuthDegrees: azimuth)
-        let bottom = skyline - TerrainProfile.bandThicknessDegrees
 
-        XCTAssertEqual(TerrainProfile.dimming(altitudeDegrees: skyline + 10, azimuthDegrees: azimuth),
-                       1.0, accuracy: 1e-12)
-        XCTAssertEqual(TerrainProfile.dimming(altitudeDegrees: bottom, azimuthDegrees: azimuth),
-                       1.0, accuracy: 1e-9, "the dimming must start at the band's bottom edge")
         XCTAssertEqual(
-            TerrainProfile.dimming(altitudeDegrees: bottom - TerrainProfile.dimmingEaseDegrees, azimuthDegrees: azimuth),
-            TerrainProfile.belowHorizonDimming, accuracy: 1e-9)
-        XCTAssertEqual(TerrainProfile.dimming(altitudeDegrees: -85, azimuthDegrees: azimuth),
-                       TerrainProfile.belowHorizonDimming, accuracy: 1e-9)
+            TerrainProfile.dimming(altitudeDegrees: 30.0, azimuthDegrees: azimuth),
+            1.0, accuracy: 1e-12)
+        XCTAssertEqual(
+            TerrainProfile.dimming(altitudeDegrees: -85.0, azimuthDegrees: azimuth),
+            TerrainProfile.minimumVisibility, accuracy: 1e-9)
 
-        // Monotonic and continuous through the ease-in.
         var previous = 1.0
-        for i in 0...200 {
-            let alt = bottom - Double(i) * 0.05
+        for step in 0...600 {
+            let alt = 10.0 - Double(step) * 0.05
             let value = TerrainProfile.dimming(altitudeDegrees: alt, azimuthDegrees: azimuth)
             XCTAssertLessThanOrEqual(value, previous + 1e-12)
-            XCTAssertGreaterThanOrEqual(value, TerrainProfile.belowHorizonDimming - 1e-12)
+            XCTAssertGreaterThanOrEqual(value, TerrainProfile.minimumVisibility - 1e-12)
             previous = value
         }
-        XCTAssertGreaterThan(TerrainProfile.belowHorizonDimming, 0.4,
-                             "sub-horizon detail must stay clearly legible")
+
+        XCTAssertGreaterThan(TerrainProfile.minimumVisibility, 0.4,
+                             "even the nearest dune must only dim a star, never erase it")
+        XCTAssertLessThan(TerrainProfile.minimumVisibility, 0.7,
+                          "the nearest dune must dim a star substantially")
+    }
+
+    /// A layer contributes nothing above its own crest and its full alpha well
+    /// below it, with a soft edge only a fraction of a degree wide.
+    func testLayerOpacitySwitchesAcrossASoftCrestEdge() {
+        let azimuth = 47.0
+        let soft = TerrainProfile.edgeSoftnessDegrees
+        XCTAssertLessThan(soft, 0.5, "the ridgeline must stay readable, not blurry")
+
+        for index in TerrainProfile.layers.indices {
+            let crest = TerrainProfile.layerCrestDegrees(index: index, azimuthDegrees: azimuth)
+            XCTAssertEqual(
+                TerrainProfile.layerOpacity(
+                    index: index, altitudeDegrees: crest + soft + 0.01, azimuthDegrees: azimuth),
+                0.0, accuracy: 1e-12)
+            XCTAssertEqual(
+                TerrainProfile.layerOpacity(
+                    index: index, altitudeDegrees: crest, azimuthDegrees: azimuth),
+                TerrainProfile.layers[index].alpha * 0.5, accuracy: 1e-9)
+            XCTAssertEqual(
+                TerrainProfile.layerOpacity(
+                    index: index, altitudeDegrees: crest - soft - 0.01, azimuthDegrees: azimuth),
+                TerrainProfile.layers[index].alpha, accuracy: 1e-12)
+        }
     }
 }
 

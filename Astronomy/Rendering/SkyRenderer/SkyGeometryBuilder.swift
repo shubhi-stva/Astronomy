@@ -43,11 +43,11 @@ struct SkyGeometryBuilder {
     private var glowVertices: [PointVertex] = []
     private var coreVertices: [PointVertex] = []
 
-    // "See-through Earth": nothing is culled for being below the horizon any
-    // more. An object is hidden *only* when it falls inside the opaque terrain
-    // band at its own azimuth (see `TerrainProfile`); everything underneath
-    // keeps rendering in its true position, dimmed to match the dimmed
-    // background the shader paints there.
+    // "See-through Earth": nothing is culled, and as of the layered terrain
+    // nothing is occluded either. The dunes are translucent, so every object
+    // keeps rendering in its true position; it is merely dimmed by however much
+    // terrain coverage lies in its direction (see `TerrainProfile.dimming`),
+    // matching the same haze the shader composites over the background.
 
     init(frameData: SkyFrameData) {
         self.frameData = frameData
@@ -103,15 +103,13 @@ struct SkyGeometryBuilder {
 
             // Placed a fraction of a degree *above* the local skyline rather
             // than at altitude 0, so the marker always sits on the sky side of
-            // the rolling-hills silhouette instead of being swallowed by the
-            // opaque band where the terrain happens to rise above 0.
+            // the furthest ridgeline instead of being tinted by dune haze where
+            // the terrain happens to rise above 0.
             let horizontal = HorizontalCoordinate(
                 altitudeDegrees: TerrainProfile.skylineAltitudeDegrees(azimuthDegrees: point.azimuth) + 0.4,
                 azimuthDegrees: point.azimuth
             )
-            // `applyTerrainOcclusion: false` because the marker is deliberately
-            // pinned to the skyline the occlusion test is defined against.
-            guard let ndc = project(horizontal: horizontal, applyTerrainOcclusion: false),
+            guard let ndc = project(horizontal: horizontal),
                   isOnScreen(ndc, margin: 0.02) else { continue }
 
             labelCandidates.append(
@@ -123,7 +121,7 @@ struct SkyGeometryBuilder {
                     style: .cardinal,
                     strength: strength,
                     // Nudged clear of the skyline so the glyph sits on the sky
-                    // side of the silhouette rather than inside the black band.
+                    // side of the ridgeline rather than inside the dune haze.
                     verticalOffsetPoints: -12
                 )
             )
@@ -132,18 +130,17 @@ struct SkyGeometryBuilder {
 
     // MARK: - Projection
 
-    /// Projects an equatorial coordinate to viewport NDC, or nil if it is
-    /// hidden behind the terrain band / outside the projection's valid region.
+    /// Projects an equatorial coordinate to viewport NDC, or nil if it falls
+    /// outside the projection's valid region.
     private func project(_ equatorial: EquatorialCoordinate) -> SIMD2<Double>? {
         projectShaded(equatorial)?.ndc
     }
 
     /// Projection plus the terrain brightness multiplier for the direction.
     ///
-    /// One call does both because they need the same horizontal coordinate:
-    /// the occlusion test and the dimming are both functions of (altitude,
-    /// azimuth), and recomputing the transform for each would double the cost
-    /// of the hottest loop in the frame.
+    /// One call does both because they need the same horizontal coordinate,
+    /// and recomputing the transform for the dimming separately would double
+    /// the cost of the hottest loop in the frame.
     private func projectShaded(
         _ equatorial: EquatorialCoordinate
     ) -> (ndc: SIMD2<Double>, dimming: Double)? {
@@ -159,16 +156,10 @@ struct SkyGeometryBuilder {
         ))
     }
 
-    /// - Parameter applyTerrainOcclusion: when true (the default) the point is
-    ///   rejected if it lies inside the opaque skyline band. Pass false for
-    ///   markers that are *meant* to sit on the skyline, and for reference
-    ///   directions (the Sun's screen position for the bright-limb angle) that
-    ///   must resolve whether or not they are visible.
-    private func project(horizontal: HorizontalCoordinate, applyTerrainOcclusion: Bool = true) -> SIMD2<Double>? {
-        if applyTerrainOcclusion, TerrainProfile.isOccluded(
-            altitudeDegrees: horizontal.altitudeDegrees,
-            azimuthDegrees: horizontal.azimuthDegrees
-        ) { return nil }
+    /// Pure projection. Terrain no longer rejects anything — the dunes are
+    /// translucent, so visibility is a multiplier (`TerrainProfile.dimming`),
+    /// never a cull.
+    private func project(horizontal: HorizontalCoordinate) -> SIMD2<Double>? {
         guard let ndc = CoordinateTransformService.stereographicProject(
             horizontal: horizontal,
             center: frameData.cameraCenter,
@@ -579,7 +570,7 @@ struct SkyGeometryBuilder {
         let horizontal = CoordinateTransformService.horizontal(
             from: offset, observer: frameData.observerLocation, julianDay: frameData.julianDay
         )
-        guard let offsetNDC = project(horizontal: horizontal, applyTerrainOcclusion: false) else { return nil }
+        guard let offsetNDC = project(horizontal: horizontal) else { return nil }
         let d = offsetNDC - centerNDC
         guard simd_length(d) > 1e-9 else { return nil }
         return atan2(d.y, d.x)
@@ -783,7 +774,7 @@ struct SkyGeometryBuilder {
         let ahead = TopocentricTransform.lookAngles(
             satellitePositionTEME: position + velocity, observer: observer, julianDay: julianDay
         )
-        guard let aheadNDC = project(horizontal: ahead.horizontal, applyTerrainOcclusion: false)
+        guard let aheadNDC = project(horizontal: ahead.horizontal)
         else { return 0 }
         let d = aheadNDC - centerNDC
         guard simd_length(d) > 1e-9 else { return 0 }
@@ -796,13 +787,14 @@ struct SkyGeometryBuilder {
         let fov = frameData.cameraFieldOfViewDegrees
         let viewportWidth = Double(frameData.viewportSize.width)
 
-        // Screen position of the Sun, ignoring terrain occlusion, so the
-        // Moon's bright limb still points the right way after sunset.
+        // Screen position of the Sun, which resolves whether or not the Sun is
+        // visible, so the Moon's bright limb still points the right way after
+        // sunset.
         let sunScreen: SIMD2<Double>? = frameData.sunEquatorial.flatMap { eq in
             let horizontal = CoordinateTransformService.horizontal(
                 from: eq, observer: frameData.observerLocation, julianDay: frameData.julianDay
             )
-            return project(horizontal: horizontal, applyTerrainOcclusion: false)
+            return project(horizontal: horizontal)
         }
 
         let sunAltitude = frameData.sunAltitudeDegrees
