@@ -38,6 +38,7 @@ final class SkyViewModel {
     var labels: [SkyLabel] = []
 
     private(set) var constellations: [Constellation] = []
+    private(set) var deepSkyObjects: [DeepSkyObject] = []
 
     private nonisolated(unsafe) var ephemerisRefreshTask: Task<Void, Never>?
 
@@ -59,13 +60,16 @@ final class SkyViewModel {
             async let indexResult = CatalogService.shared.loadStarIndex()
             async let linesResult = CatalogService.shared.loadConstellationLines()
             async let namesResult = CatalogService.shared.loadConstellations()
+            async let deepSkyResult = CatalogService.shared.loadDeepSkyObjects()
             let (loadedIndex, loadedLines, loadedNames) = try await (indexResult, linesResult, namesResult)
+            let loadedDeepSky = try await deepSkyResult
             let loadedStars = try await CatalogService.shared.loadStars()
             self.starIndex = loadedIndex
             self.stars = loadedStars
             self.starsByID = Dictionary(uniqueKeysWithValues: loadedStars.map { ($0.id, $0) })
             self.constellationLines = loadedLines
             self.constellations = loadedNames
+            self.deepSkyObjects = loadedDeepSky
         } catch {
             self.loadError = "Failed to load star catalog: \(error.localizedDescription)"
         }
@@ -112,6 +116,7 @@ final class SkyViewModel {
             solarSystemObjects: solarSystemObjects,
             constellationLines: constellationLines,
             constellations: constellations,
+            deepSkyObjects: deepSkyObjects,
             starsByID: starsByID,
             starIndex: starIndex,
             observerLocation: location.currentLocation,
@@ -146,6 +151,25 @@ final class SkyViewModel {
             .map { $0.asCelestialObject }
 
         results.append(contentsOf: starMatches)
+
+        // Deep-sky objects match on either spelling: the common name
+        // ("Andromeda Galaxy", "Pleiades") or the catalogue designation
+        // ("M31", "NGC 7000"). Designations are compared with whitespace
+        // removed so "NGC7000" and "NGC 7000" both hit.
+        let condensedQuery = lowered.replacingOccurrences(of: " ", with: "")
+        let deepSkyMatches = deepSkyObjects
+            .filter { object in
+                if let name = object.name?.lowercased(), name.contains(lowered) { return true }
+                let designation = object.catalogName.lowercased()
+                    .replacingOccurrences(of: " ", with: "")
+                return designation.contains(condensedQuery)
+                    || object.id.lowercased().contains(condensedQuery)
+            }
+            .sorted { $0.magnitude < $1.magnitude }
+            .prefix(20)
+            .map { $0.asCelestialObject }
+
+        results.append(contentsOf: deepSkyMatches)
         searchResults = results
     }
 

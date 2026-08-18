@@ -54,6 +54,7 @@ struct SkyGeometryBuilder {
     mutating func run() {
         buildStars()
         buildLines()
+        buildDeepSky()
         buildSolarSystem()
         buildConstellationLabels()
 
@@ -290,6 +291,178 @@ struct SkyGeometryBuilder {
         }
     }
 
+    // MARK: - Deep-sky objects
+
+    /// Galaxies, nebulae and clusters from the bundled OpenNGC-derived
+    /// catalogue. Only ~900 entries survive the load-time filter, so this is a
+    /// plain linear scan — no spatial index, and it costs less than a single
+    /// cell of the star grid.
+    ///
+    /// The sprites go into `glowVertices`, i.e. the layer drawn *before* the
+    /// star cores, so a cluster's real member stars sit on top of its haze
+    /// rather than under it.
+    private mutating func buildDeepSky() {
+        guard !frameData.deepSkyObjects.isEmpty else { return }
+
+        let fov = frameData.cameraFieldOfViewDegrees
+        let sunAltitude = frameData.sunAltitudeDegrees
+        let viewportWidth = Double(frameData.viewportSize.width)
+
+        // Deep-sky labels start earning their place a little later than star
+        // labels: at a whole-sky field only the handful of famous bright
+        // objects should be named, or the view becomes a wall of text.
+        let labelFOVStrength = Self.fadeIn(value: 80.0 - fov, over: 45.0)
+
+        for dso in frameData.deepSkyObjects {
+            guard dso.type.isRenderable else { continue }
+
+            // Extended objects are governed by the *same* brightness model the
+            // stars use — invisible in daylight, emerging as the sky darkens,
+            // more of them appearing as you zoom — but with a bounded
+            // surface-brightness penalty applied first. See
+            // `StarAppearance.deepSkyDetectionMagnitude` for the approximation.
+            let detectionMagnitude = StarAppearance.deepSkyDetectionMagnitude(
+                magnitude: dso.magnitude,
+                majorAxisArcmin: dso.majorAxisArcmin,
+                minorAxisArcmin: dso.minorAxisArcmin
+            )
+            let visibility = StarAppearance.visibility(
+                magnitude: detectionMagnitude,
+                fieldOfViewDegrees: fov,
+                sunAltitudeDegrees: sunAltitude
+            )
+            guard visibility > 0.02 else { continue }
+
+            guard let ndc = project(dso.equatorial), isOnScreen(ndc, margin: 0.35) else { continue }
+
+            let size = StarAppearance.deepSkyPointSize(
+                majorAxisArcmin: dso.majorAxisArcmin,
+                fieldOfViewDegrees: fov,
+                viewportWidth: viewportWidth
+            )
+            let detail = StarAppearance.detailLevel(pointSize: size)
+
+            // Orientation and elongation. Both need real axis data *and* a
+            // position angle: without an angle an elongated blob would point
+            // in an arbitrary direction, which is worse than a circle.
+            var axisRatio = 1.0
+            var screenAngle = 0.0
+            if let positionAngle = dso.positionAngleDegrees {
+                axisRatio = StarAppearance.deepSkyAxisRatio(
+                    majorAxisArcmin: dso.majorAxisArcmin,
+                    minorAxisArcmin: dso.minorAxisArcmin
+                )
+                if axisRatio < 0.999,
+                   let angle = majorAxisScreenAngle(
+                       equatorial: dso.equatorial,
+                       positionAngleDegrees: positionAngle,
+                       centerNDC: ndc
+                   ) {
+                    screenAngle = angle
+                } else {
+                    axisRatio = 1.0
+                }
+            }
+
+            var color = StarAppearance.deepSkyColor(type: dso.type)
+            color.w = Float(visibility * StarAppearance.deepSkyOpacity(type: dso.type))
+
+            glowVertices.append(
+                PointVertex(
+                    positionNDC: SIMD2(Float(ndc.x), Float(ndc.y)),
+                    color: color,
+                    pointSize: size,
+                    shape: PointSpriteShape.deepSky.rawValue,
+                    param0: Float(axisRatio),
+                    param1: Float(screenAngle),
+                    param2: detail,
+                    param3: StarAppearance.deepSkyShaderCode(type: dso.type)
+                )
+            )
+
+            let object = dso.asCelestialObject
+            projectedObjects.append(ProjectedObject(object: object, ndcPosition: ndc))
+
+            addDeepSkyLabelIfWorthy(
+                dso: dso,
+                object: object,
+                ndc: ndc,
+                spriteRadius: Double(size) * 0.5,
+                fovStrength: labelFOVStrength,
+                visibility: visibility
+            )
+        }
+    }
+
+    private mutating func addDeepSkyLabelIfWorthy(
+        dso: DeepSkyObject,
+        object: CelestialObject,
+        ndc: SIMD2<Double>,
+        spriteRadius: Double,
+        fovStrength: Double,
+        visibility: Double
+    ) {
+        guard isOnScreen(ndc, margin: 0.02) else { return }
+
+        let isSelected = frameData.selectedObjectID == object.id
+        // Only the genuinely famous objects (M31 at 3.4, M45 at 1.2, M42 at
+        // 4.0) carry any weight at a wide field; everything fainter needs both
+        // zoom and its own brightness to earn a label.
+        let brightnessWeight = Self.fadeIn(value: 7.5 - dso.magnitude, over: 4.5)
+        let strength = isSelected
+            ? 1.0
+            : min(1.0, fovStrength * brightnessWeight * brightnessWeight * visibility)
+
+        labelCandidates.append(
+            SkyLabelCandidate(
+                id: object.id,
+                text: object.name,
+                ndc: CGPoint(x: ndc.x, y: ndc.y),
+                priority: isSelected ? .selected : .deepSky,
+                style: .deepSky,
+                strength: strength,
+                // Clear of the drawn ellipse, the same way solar-system labels
+                // clear their disks.
+                verticalOffsetPoints: spriteRadius + 12.0
+            )
+        )
+    }
+
+    /// Screen-space direction of an object's major axis, given its position
+    /// angle in degrees **east of north**.
+    ///
+    /// Derived the same way `brightLimbAngle` derives the Moon's terminator
+    /// orientation: project a second point offset from the object along the
+    /// position angle and take the screen-space direction between the two.
+    /// Going through the projection is what keeps the angle correct as the
+    /// camera pans and the sky rotates — a closed-form formula would have to
+    /// re-derive the local frame's rotation, and this does not.
+    private func majorAxisScreenAngle(
+        equatorial: EquatorialCoordinate,
+        positionAngleDegrees: Double,
+        centerNDC: SIMD2<Double>
+    ) -> Double? {
+        let pa = positionAngleDegrees * .pi / 180.0
+        // Small step along the great circle in the direction of the position
+        // angle: north is +declination, east is +right ascension (scaled by
+        // cos(dec), the usual convergence of the RA lines).
+        let delta = 0.05
+        let dec = equatorial.declinationDegrees
+        let cosDec = max(0.02, cos(dec * .pi / 180.0))
+        let offset = EquatorialCoordinate(
+            rightAscensionDegrees: equatorial.rightAscensionDegrees + delta * sin(pa) / cosDec,
+            declinationDegrees: max(-89.99, min(89.99, dec + delta * cos(pa)))
+        )
+
+        let horizontal = CoordinateTransformService.horizontal(
+            from: offset, observer: frameData.observerLocation, julianDay: frameData.julianDay
+        )
+        guard let offsetNDC = project(horizontal: horizontal, cullBelowHorizon: false) else { return nil }
+        let d = offsetNDC - centerNDC
+        guard simd_length(d) > 1e-9 else { return nil }
+        return atan2(d.y, d.x)
+    }
+
     // MARK: - Sun, Moon and planets
 
     private mutating func buildSolarSystem() {
@@ -421,7 +594,10 @@ struct SkyGeometryBuilder {
                     )
                 )
 
-            case .star:
+            case .star, .deepSky:
+                // Deep-sky objects never appear in `solarSystemObjects`; they
+                // have their own pass. This branch exists only for exhaustive-
+                // ness and draws a plain point.
                 var color = StarAppearance.color(colorIndex: nil)
                 color.w = alpha
                 coreVertices.append(
@@ -494,6 +670,14 @@ struct SkyGeometryBuilder {
             ) * 1.9
         case .star:
             baseSize = max(26, StarAppearance.pointSize(forMagnitude: projected.object.magnitude) * 3.2)
+        case .deepSky:
+            // Ring the drawn ellipse, not a fixed marker, so selecting a
+            // zoomed-in M31 rings the galaxy.
+            baseSize = StarAppearance.deepSkyPointSize(
+                majorAxisArcmin: projected.object.majorAxisArcmin,
+                fieldOfViewDegrees: frameData.cameraFieldOfViewDegrees,
+                viewportWidth: Double(frameData.viewportSize.width)
+            ) * 1.15
         }
 
         coreVertices.append(

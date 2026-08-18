@@ -32,6 +32,12 @@ enum PointSpriteShape: Float {
     case planetDisk = 5
     /// Solar disk: a clear limb plus a bounded bloom. `param2` = detail level.
     case sunDisk = 6
+    /// Extended deep-sky object drawn as a soft ellipse inscribed in the
+    /// sprite. `param0` = axis ratio (minor/major, 1 for a circle),
+    /// `param1` = screen-space angle of the major axis in radians,
+    /// `param2` = detail level 0...1, `param3` = type code (see
+    /// `StarAppearance.deepSkyShaderCode`).
+    case deepSky = 7
 }
 
 /// One instance of a point sprite: a star, its glow, the Sun, the Moon, a

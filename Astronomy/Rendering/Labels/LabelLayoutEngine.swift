@@ -25,10 +25,14 @@ import Foundation
 /// Ranking used to resolve label collisions. Higher wins.
 enum LabelPriority: Int, Comparable {
     case constellation = 0
-    case brightStar = 1
-    case planet = 2
-    case luminary = 3       // Sun / Moon
-    case selected = 4
+    /// Galaxies, nebulae and clusters. Deliberately just above constellation
+    /// names and below named stars: a deep-sky label is worth more than the
+    /// constellation it sits in, and less than the star it might collide with.
+    case deepSky = 1
+    case brightStar = 2
+    case planet = 3
+    case luminary = 4       // Sun / Moon
+    case selected = 5
 
     static func < (lhs: LabelPriority, rhs: LabelPriority) -> Bool {
         lhs.rawValue < rhs.rawValue
@@ -39,6 +43,7 @@ enum LabelStyle {
     case constellation
     case star
     case solarSystem
+    case deepSky
 }
 
 /// A label the renderer would *like* to draw this frame, in viewport NDC.

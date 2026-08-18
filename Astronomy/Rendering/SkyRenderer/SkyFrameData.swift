@@ -16,6 +16,9 @@ struct SkyFrameData {
     var solarSystemObjects: [CelestialObject]
     var constellationLines: [ConstellationLineSegment]
     var constellations: [Constellation] = []
+    /// Deep-sky objects (OpenNGC-derived). Only ~900 entries, so the geometry
+    /// builder scans them linearly every frame — no spatial index needed.
+    var deepSkyObjects: [DeepSkyObject] = []
     var starsByID: [Int: Star]
 
     /// Spatial index over `stars`. When present the geometry builder culls by

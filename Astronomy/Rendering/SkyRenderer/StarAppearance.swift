@@ -246,6 +246,9 @@ enum StarAppearance {
         case .moon: return 340
         case .planet: return 260
         case .star: return 13
+        // Metal caps point sizes at 511 on current Apple GPUs; 500 leaves
+        // headroom while still letting a zoomed-in M31 fill the view.
+        case .deepSky: return 500
         }
     }
 
@@ -260,6 +263,7 @@ enum StarAppearance {
         case .moon: return max(12.0, byMagnitude)
         case .planet: return max(3.5, byMagnitude)
         case .star: return byMagnitude
+        case .deepSky: return deepSkyMinimumSize
         }
     }
 
@@ -328,6 +332,126 @@ enum StarAppearance {
         case "uranus":  return 5
         case "neptune": return 6
         default:        return 7
+        }
+    }
+
+    // MARK: - Deep-sky objects
+
+    /// Minimum drawn diameter, in points, for a deep-sky object whose true
+    /// angular extent projects to less than this. Chosen to be a comfortable
+    /// click target (the hit-test tolerance is 22 pt) and large enough that a
+    /// small distant galaxy still reads as a fuzzy patch rather than a star.
+    static let deepSkyMinimumSize = 9.0
+
+    /// Screen diameter in points along the *major* axis of a deep-sky object.
+    ///
+    ///     pointsPerDegree = viewportWidth / fieldOfViewDegrees
+    ///     trueSize        = majorAxisArcmin / 60 * pointsPerDegree
+    ///     size            = min(ceiling, smoothMax(trueSize, floor))
+    ///
+    /// Exactly the shape `solarSystemPointSize` uses, and for the same reason:
+    /// the truthful term is linear in the zoom factor and dominates once you
+    /// are zoomed in, the floor dominates at wide field, and `smoothMax`
+    /// blends the crossover without a pop. M31's 177.8 arcmin is ~2.96 deg, so
+    /// on a 1600 pt viewport at a 60 deg field it spans ~79 pt — about 5% of
+    /// the screen width, which is what makes it read as a real object.
+    ///
+    /// The sprite is square and the ellipse is inscribed in it, so the major
+    /// axis fits at any rotation.
+    static func deepSkyPointSize(
+        majorAxisArcmin: Double?,
+        fieldOfViewDegrees fov: Double,
+        viewportWidth: Double
+    ) -> Float {
+        let pointsPerDegree = max(1.0, viewportWidth / max(fov, 0.001))
+        let trueSize = ((majorAxisArcmin ?? 0) / 60.0) * pointsPerDegree
+        let floorSize = deepSkyMinimumSize
+        let blended = smoothMax(trueSize, floorSize, softness: floorSize * 0.75)
+        return Float(min(maximumPointSize(kind: .deepSky), blended))
+    }
+
+    /// Axis ratio (minor / major) used to squash the drawn ellipse. Falls back
+    /// to 1 (a circle) when either axis is missing, and is floored so a very
+    /// thin edge-on galaxy is still a few pixels wide.
+    static func deepSkyAxisRatio(majorAxisArcmin: Double?, minorAxisArcmin: Double?) -> Double {
+        guard let major = majorAxisArcmin, major > 0,
+              let minor = minorAxisArcmin, minor > 0 else { return 1.0 }
+        return min(1.0, max(0.12, minor / major))
+    }
+
+    /// Magnitude used for *visibility* decisions, biased by surface brightness.
+    ///
+    /// APPROXIMATION. Naked-eye detectability of an extended object is governed
+    /// by surface brightness, not integrated magnitude: a magnitude 8 galaxy
+    /// smeared over 20 arcmin is far harder than a magnitude 8 star. The exact
+    /// mean surface brightness is `m + 2.5 log10(area)` in mag/arcsec^2, which
+    /// is not on the same scale as stellar magnitudes and cannot be fed to the
+    /// star limiting-magnitude curves directly. So instead this applies a
+    /// *bounded fraction* of that penalty:
+    ///
+    ///     penalty = clamp(0.5 * 2.5 * log10(area / 50), 0, 1.2)
+    ///
+    /// Objects smaller than ~50 arcmin^2 (about 8 arcmin across) get no
+    /// penalty; the penalty saturates at 1.2 magnitudes so that genuinely
+    /// famous large objects (M31 at 3.4, M45 at 1.2) stay visible at a wide
+    /// field on a dark night, while a mag 10 galaxy still needs zoom. The cap
+    /// is an aesthetic choice, not physics.
+    static func deepSkyDetectionMagnitude(
+        magnitude: Double,
+        majorAxisArcmin: Double?,
+        minorAxisArcmin: Double?
+    ) -> Double {
+        guard let major = majorAxisArcmin, major > 0 else { return magnitude }
+        let minor = minorAxisArcmin ?? major
+        let area = .pi / 4.0 * major * max(minor, 0.1)
+        guard area > 50 else { return magnitude }
+        let penalty = min(1.2, 0.5 * 2.5 * log10(area / 50.0))
+        return magnitude + penalty
+    }
+
+    /// Per-type tint. Deliberately close to white: real deep-sky objects are
+    /// colourless to the eye, and saturated blobs would fight the muted
+    /// palette the rest of the sky uses. Only planetaries (cool) and emission
+    /// nebulae (warm, standing in for H-II red) carry a perceptible cast.
+    static func deepSkyColor(type: DeepSkyType) -> SIMD4<Float> {
+        switch type {
+        case .galaxy:           return SIMD4(1.00, 0.97, 0.92, 1.0)
+        case .globularCluster:  return SIMD4(1.00, 0.98, 0.91, 1.0)
+        case .openCluster:      return SIMD4(0.92, 0.95, 1.00, 1.0)
+        case .nebula:           return SIMD4(1.00, 0.88, 0.85, 1.0)
+        case .planetaryNebula:  return SIMD4(0.80, 0.95, 0.95, 1.0)
+        case .supernovaRemnant: return SIMD4(0.96, 0.90, 0.92, 1.0)
+        case .darkNebula:       return SIMD4(0.50, 0.50, 0.52, 1.0)
+        }
+    }
+
+    /// Overall opacity multiplier per type, before the visibility model. Open
+    /// clusters are heavily understated because their member stars are already
+    /// drawn from the star catalogue — the haze is only a hint that a grouping
+    /// exists, never a second copy of the cluster.
+    static func deepSkyOpacity(type: DeepSkyType) -> Double {
+        switch type {
+        case .galaxy:           return 0.62
+        case .globularCluster:  return 0.62
+        case .openCluster:      return 0.20
+        case .nebula:           return 0.52
+        case .planetaryNebula:  return 0.60
+        case .supernovaRemnant: return 0.42
+        case .darkNebula:       return 0.0
+        }
+    }
+
+    /// Numeric identity passed to the shader so it can pick a deep-sky
+    /// object's procedural treatment. Keep in sync with `Shaders.metal`.
+    static func deepSkyShaderCode(type: DeepSkyType) -> Float {
+        switch type {
+        case .galaxy:           return 0
+        case .globularCluster:  return 1
+        case .openCluster:      return 2
+        case .nebula:           return 3
+        case .planetaryNebula:  return 4
+        case .supernovaRemnant: return 5
+        case .darkNebula:       return 6
         }
     }
 

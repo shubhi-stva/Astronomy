@@ -33,7 +33,13 @@ struct InfoPanelView: View {
 
                 Divider().overlay(SkyPalette.panelStroke)
 
+                if let designation = object.catalogDesignation, designation != object.name {
+                    infoRow("Catalogue", designation)
+                }
                 infoRow("Magnitude", String(format: "%.2f", object.magnitude))
+                if let major = object.majorAxisArcmin {
+                    infoRow("Size", angularSizeString(major: major, minor: object.minorAxisArcmin))
+                }
                 infoRow("Right Ascension", raString)
                 infoRow("Declination", decString)
             }
@@ -47,7 +53,16 @@ struct InfoPanelView: View {
         case .sun: return "Sun"
         case .moon: return "Moon"
         case .planet: return "Planet"
+        case .deepSky: return object.deepSkyType?.displayName ?? "Deep-Sky Object"
         }
+    }
+
+    /// Angular extent in arcminutes, "major x minor" when both are known.
+    private func angularSizeString(major: Double, minor: Double?) -> String {
+        guard let minor, minor > 0, minor < major else {
+            return String(format: "%.1f'", major)
+        }
+        return String(format: "%.1f' x %.1f'", major, minor)
     }
 
     private var raString: String {

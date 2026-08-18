@@ -9,7 +9,7 @@
 import Foundation
 
 enum CelestialObjectKind: String, Codable {
-    case star, sun, moon, planet
+    case star, sun, moon, planet, deepSky
 }
 
 struct CelestialObject: Identifiable, Hashable {
@@ -31,4 +31,19 @@ struct CelestialObject: Identifiable, Hashable {
     /// Illuminated fraction of the disk, 0 (new) ... 1 (full). Populated for
     /// the Moon and the planets; nil for the Sun and stars.
     var illuminatedFraction: Double?
+
+    /// Morphological class, populated only for `.deepSky` objects.
+    var deepSkyType: DeepSkyType?
+
+    /// Catalogue designation ("M31", "NGC 7000") where the display name is a
+    /// common name. Used by search so both spellings match.
+    var catalogDesignation: String?
+
+    /// True angular extent in arcminutes, for extended (deep-sky) objects.
+    /// The renderer sizes the sprite from these instead of a magnitude-driven
+    /// marker, which is what makes M31 read as a 3-degree ellipse.
+    var majorAxisArcmin: Double?
+    var minorAxisArcmin: Double?
+    /// Major-axis orientation in degrees east of north.
+    var positionAngleDegrees: Double?
 }

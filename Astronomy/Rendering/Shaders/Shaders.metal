@@ -87,6 +87,15 @@ constant float kShapeMoon         = 3.0;
 constant float kShapeSelectionRing = 4.0;
 constant float kShapePlanetDisk   = 5.0;
 constant float kShapeSunDisk      = 6.0;
+constant float kShapeDeepSky      = 7.0;
+
+// Deep-sky type codes — keep in sync with `StarAppearance.deepSkyShaderCode`.
+constant int kDeepSkyGalaxy    = 0;
+constant int kDeepSkyGlobular  = 1;
+constant int kDeepSkyOpen      = 2;
+constant int kDeepSkyNebula    = 3;
+constant int kDeepSkyPlanetary = 4;
+constant int kDeepSkyRemnant   = 5;
 
 // Planet codes — keep in sync with `StarAppearance.planetShaderCode`.
 constant int kPlanetMercury = 0;
@@ -562,6 +571,70 @@ fragment float4 starFragmentShader(
         // wide field but does not glare once it is a resolved disk.
         float bloom = pow(saturate(1.0 - dist), 3.0) * mix(0.30, 0.06, detail);
         alpha = saturate(alpha + bloom);
+    } else if (in.shape == kShapeDeepSky) {
+        // Extended deep-sky object. `param0` = axis ratio (minor/major),
+        // `param1` = screen-space angle of the major axis, `param2` = detail
+        // level, `param3` = type code.
+        //
+        // Everything here is procedural and deliberately understated: these
+        // are faint, colourless-to-the-eye objects, and the reference look is
+        // "a soft patch that resolves into structure as you zoom", not a
+        // painted photograph.
+        float ratio = clamp(in.param0, 0.05, 1.0);
+        float detail = saturate(in.param2);
+        int code = int(in.param3 + 0.5);
+
+        float ca = cos(in.param1);
+        float sa = sin(in.param1);
+        // Rotate so the major axis lies along +x, then squash y by the axis
+        // ratio: `r` is 1 on the ellipse and 0 at the centre.
+        float2 q = float2(p.x * ca + p.y * sa, -p.x * sa + p.y * ca);
+        const float edge = 0.94;
+        float r = length(float2(q.x / edge, q.y / (edge * ratio)));
+
+        // Cheap value noise, only ever used to break up an otherwise
+        // perfectly smooth blob, and only once the sprite is large enough for
+        // it to be legible rather than dithering.
+        float2 np = q * 7.0;
+        float grain = fract(sin(dot(floor(np), float2(12.9898, 78.233))) * 43758.5453);
+        float grain2 = fract(sin(dot(floor(np * 2.3 + 4.1), float2(39.3468, 11.135))) * 24634.6345);
+
+        if (code == kDeepSkyGalaxy) {
+            // Soft elongated haze: a broad halo with a distinctly brighter
+            // core, both Gaussian so there is no visible sprite edge.
+            alpha = 0.45 * exp(-2.3 * r * r) + 0.55 * exp(-8.0 * r * r);
+            alpha *= 1.0 + detail * 0.10 * (grain - 0.5);
+        } else if (code == kDeepSkyGlobular) {
+            // Round (the caller passes ratio 1), sharply concentrated centre,
+            // with a soft granular outskirt standing in for resolved members.
+            alpha = 0.35 * exp(-2.6 * r * r) + 0.65 * exp(-14.0 * r * r);
+            float granular = detail * 0.35 * smoothstep(0.15, 0.75, r) * (grain * grain2);
+            alpha += granular * exp(-2.0 * r * r);
+        } else if (code == kDeepSkyOpen) {
+            // Very understated: the member stars are already drawn from the
+            // star catalogue, so this is only a hint that a grouping exists —
+            // a faint circular haze with the barest suggestion of a boundary.
+            alpha = 0.55 * exp(-2.2 * r * r);
+            alpha += 0.25 * exp(-pow((r - 0.72) / 0.26, 2.0)) * detail;
+        } else if (code == kDeepSkyPlanetary) {
+            // Small, so it mostly reads as a slightly fuzzy dot; the ring
+            // only appears once there are pixels to draw it with.
+            alpha = 0.75 * exp(-5.0 * r * r);
+            alpha += 0.45 * exp(-pow((r - 0.55) / 0.20, 2.0)) * detail;
+        } else if (code == kDeepSkyRemnant) {
+            // Faint, patchy shell.
+            alpha = 0.40 * exp(-2.0 * r * r);
+            alpha += 0.35 * exp(-pow((r - 0.70) / 0.28, 2.0)) * (0.6 + 0.4 * grain) * detail;
+        } else {
+            // Emission/reflection nebula: a broad diffuse glow, lumpy once
+            // there is room for lumps.
+            alpha = 0.80 * exp(-2.0 * r * r);
+            alpha *= 1.0 + detail * 0.28 * (grain * 0.6 + grain2 * 0.4 - 0.5);
+        }
+
+        // Nothing outside the ellipse's immediate neighbourhood.
+        alpha *= 1.0 - smoothstep(0.90, 1.45, r);
+        alpha = saturate(alpha);
     } else if (in.shape == kShapeSelectionRing) {
         // Thin ring with soft inner/outer edges.
         float ring = smoothstep(0.60, 0.72, dist) * (1.0 - smoothstep(0.84, 0.96, dist));

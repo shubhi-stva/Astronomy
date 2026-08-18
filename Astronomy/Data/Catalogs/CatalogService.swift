@@ -23,6 +23,7 @@ actor CatalogService {
     private var cachedStarIndex: StarIndex?
     private var cachedConstellationLines: [ConstellationLineSegment]?
     private var cachedConstellations: [Constellation]?
+    private var cachedDeepSky: [DeepSkyObject]?
 
     /// Loads (and caches) the constellation name/centre table used for labels.
     func loadConstellations() async throws -> [Constellation] {
@@ -52,6 +53,18 @@ actor CatalogService {
         let index = StarIndex(stars: try await loadStars())
         cachedStarIndex = index
         return index
+    }
+
+    /// Loads (and caches) the bundled deep-sky catalogue (OpenNGC-derived;
+    /// see DATA_SOURCES.md). Dark nebulae are dropped here rather than at
+    /// render time: they are absorption features with no light of their own,
+    /// so there is nothing sensible for the renderer or search to do with one.
+    func loadDeepSkyObjects() async throws -> [DeepSkyObject] {
+        if let cachedDeepSky { return cachedDeepSky }
+        let all: [DeepSkyObject] = try Self.decodeBundledJSON(named: "deepsky")
+        let items = all.filter { $0.type.isRenderable }
+        cachedDeepSky = items
+        return items
     }
 
     /// Loads (and caches) the bundled constellation line segments.

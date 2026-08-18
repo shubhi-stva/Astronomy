@@ -35,6 +35,7 @@ struct SkyLabelsOverlay: View {
         case .constellation: return .system(size: 12, weight: .light, design: .rounded)
         case .star: return .system(size: 11, weight: .regular)
         case .solarSystem: return .system(size: 12, weight: .medium)
+        case .deepSky: return .system(size: 11, weight: .regular, design: .rounded)
         }
     }
 
@@ -43,6 +44,7 @@ struct SkyLabelsOverlay: View {
         case .constellation: return SkyPalette.chromeSecondaryText.opacity(0.85)
         case .star: return SkyPalette.chromeText.opacity(0.9)
         case .solarSystem: return SkyPalette.chromeText
+        case .deepSky: return SkyPalette.chromeSecondaryText.opacity(0.95)
         }
     }
 
