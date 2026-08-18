@@ -2,18 +2,37 @@
 
 ## Star catalog — `Astronomy/Data/Catalogs/stars.json`
 
-- **Source**: [HYG Database](https://github.com/astronexus/HYG-Database) v4.0
-  (`hyg/CURRENT/hygdata_v40.csv.gz`), maintained by David Nash / AstroNexus.
+- **Source**: [HYG Database](https://github.com/astronexus/HYG-Database) v4.1
+  (`hyg/CURRENT/hygdata_v41.csv.gz`), maintained by David Nash / AstroNexus.
   HYG merges the Hipparcos, Yale Bright Star Catalog (5th ed.), and Gliese
   catalogs into one table with consistent J2000 astrometry.
 - **License**: CC BY-SA 4.0 (see `hyg/CURRENT/LICENSE` in the upstream
   repository). Attribution: HYG Database, astronexus/HYG-Database,
   CC BY-SA 4.0.
 - **Filtering applied**: rows with the Sun's own entry (`id == 0`) removed;
-  kept only stars with apparent magnitude ≤ 6.0 (naked-eye visibility
-  threshold), yielding **5,070 stars** — well above the "several thousand"
-  MVP bar while keeping the bundle small and the per-frame point count
-  render-friendly.
+  kept only stars with apparent magnitude ≤ 9.0, yielding **83,479 stars**
+  (431 of them with proper names), sorted ascending by magnitude, 8.8 MB of
+  JSON.
+- **Why magnitude 9.0**: HYG is essentially complete to about magnitude 9 and
+  falls off sharply beyond it — at 10 and 11 the coverage is visibly patchy,
+  and rendering a patchy catalogue produces a sky with holes in it, which
+  looks worse than a shallower one. 9.0 is therefore the deepest limit at
+  which a zoomed-in field still looks like a real star field. Two pieces of
+  the renderer are pinned to this number on purpose:
+  `StarAppearance.limitingMagnitude` at its narrow-field end, and
+  `SkyBrightness.darkSkyDisplayCeiling` at astronomical night — so "fully
+  zoomed in under a dark sky" and "the bottom of the data" are the same
+  place. Raising the catalogue's depth means raising both.
+- **Rendering cost**: 83k stars is far too many to run projection
+  trigonometry over every frame, so `Data/Catalogs/StarIndex.swift` builds a
+  5-degree equatorial grid with per-cell bounding cones once at load time
+  (off the main thread, alongside the decode) and the renderer culls whole
+  cells against the viewport cone before touching any star.
+- **Backwards compatibility**: every `id` present in the previous
+  magnitude-6.0 export is still present, so `constellations.json` joins
+  unchanged — all 690 segments still resolve.
+- **Space saving**: `spectralType` is emitted as `null` for unnamed stars
+  fainter than magnitude 6.5, where it is never surfaced in the UI.
 - **Fields retained** (see `Star.swift`):
   - `id` — HYG catalog row id (also used as the join key for constellation
     line segments, see below).
@@ -28,8 +47,14 @@
 - **Provenance/build process**: downloaded directly from the upstream
   GitHub repository, filtered and re-serialized to JSON with a one-off
   Python script (not checked into the repo — the *output* `stars.json` is
-  what's bundled). To refresh: re-download `hygdata_v40.csv[.gz]`, re-apply
+  what's bundled). To refresh: re-download `hygdata_v41.csv[.gz]`, re-apply
   the same magnitude filter, re-export to the same JSON shape.
+- **Decode timing**: about 0.30 s for `Data(contentsOf:)` plus
+  `JSONDecoder` on an Apple silicon Mac (release build), plus roughly the
+  same again to build the spatial index. Both happen on the `CatalogService`
+  actor's executor while the UI shows its loading state; nothing blocks the
+  main actor. If this ever becomes a felt delay, the fix is a binary
+  (property-list or packed-struct) format rather than JSON.
 
 ## Constellation lines — `Astronomy/Data/Catalogs/constellations.json`
 
@@ -45,9 +70,9 @@
 - **Transformation applied**: each HIP-numbered line segment was
   cross-referenced against the HYG database's `hip` column to translate
   HIP numbers into this app's star catalog `id`s; segments whose endpoint
-  star didn't survive the magnitude ≤ 6.0 filter above were dropped
-  (5 of 695 raw segments, leaving **690 segments** across all 88
-  constellations).
+  star was not in the HYG database were dropped (5 of 695 raw segments,
+  leaving **690 segments** across all 88 constellations). All 690 still
+  resolve against the deeper magnitude ≤ 9.0 catalogue.
 - **Fields**: `starID1`, `starID2` — both are `Star.id` values joinable
   against `stars.json`.
 
@@ -169,19 +194,41 @@ comment block there for the full derivation.
   naked-eye limit of 6.5; a midday 3.0 mag/arcsec² sky yields −3.9, so Venus
   (−4.2) survives daylight and essentially nothing else does.
 - **Display override (important)**: the renderer does **not** apply the
-  physical limit literally. Doing so empties the daytime sky (only the Sun,
-  Moon and Venus survive), which is useless for a planetarium whose job is
-  answering "what is up there right now". The drawn limit is therefore
-  floored at magnitude 5.6 (`SkyBrightness.daylightDisplayFloor`) so the star
-  field remains visible through daylight — the standard see-through
-  planetarium convention — and a bright sky instead costs *contrast*
-  (`starContrast`, easing from 1.0 in full dark to 0.72 under a high Sun).
-  At night the physical limit rises above the floor on its own, so dark skies
-  still gain the faintest stars naturally. **This affects only which stars
-  are drawn and how strongly, never where they are**: positions always come
-  from real catalogue J2000 RA/Dec run through the real observer/time
-  transform, so a star drawn at noon sits at the exact altitude and azimuth
-  it genuinely occupies behind the daylight.
+  physical limit literally. `SkyBrightness.displayLimitingMagnitude` is a
+  **product choice, not photometry**: it re-maps the same sky-brightness
+  variable μ onto a smoothstep running from `daylightDisplayFloor` = 5.6 to
+  `darkSkyDisplayCeiling` = 9.0 as μ goes from 3.0 to 21.4. It departs from
+  physics in both directions, deliberately:
+  - *Too generous by day.* Applied literally, the physical limit empties the
+    daytime sky (only the Sun, Moon and Venus survive), which is useless for
+    a planetarium whose job is answering "what is up there right now". The
+    5.6 floor is the standard see-through planetarium convention. A bright
+    sky instead costs *contrast* (`starContrast`, easing from 1.0 in full
+    dark to 0.72 under a high Sun).
+  - *Too generous by night.* 9.0 rather than the physical 6.5, because a
+    monitor compresses six orders of magnitude of brightness into about two
+    and the faint field is the first thing lost. Drawing to the catalogue's
+    depth restores the *impression* of a dark sky at the cost of being
+    literally wrong about how many stars an unaided eye could resolve.
+  The honest function, `SkyBrightness.limitingMagnitude` (`0.55 μ − 5.55`),
+  is untouched, separately unit-tested, and is what should be cited.
+  Representative drawn limits: 5.60 at Sun +45°, 5.84 at 0°, 7.38 at −6°,
+  8.70 at −12°, 9.00 at −18° and below.
+- **Field-of-view limit**: independently, `StarAppearance.limitingMagnitude`
+  caps the drawn depth by zoom level — 5.4 at a 150° field rising to 9.0 at
+  3°, interpolated on log(FOV). The effective cutoff is the *more
+  restrictive* of the two, so a wide field stays legible even at midnight.
+  The background shader also dims the sky by up to 18% at narrow fields; that
+  is a legibility/aesthetic choice and is documented as such in
+  `Shaders.metal` — a telescope does not actually darken the sky.
+- **Solar-system exemption**: the Sun, Moon and planets bypass the magnitude
+  cutoff entirely at every hour, so Uranus (~5.7) and Neptune (~7.8) never
+  disappear. They are still modulated in contrast by sky brightness, but
+  never to zero.
+- **This affects only which stars are drawn and how strongly, never where
+  they are**: positions always come from real catalogue J2000 RA/Dec run
+  through the real observer/time transform, so a star drawn at noon sits at
+  the exact altitude and azimuth it genuinely occupies behind the daylight.
 - **Limitations**: the anchors are chosen to look right, not measured; there
   is no airmass/extinction term for objects low in the sky, no Moon
   contribution to sky brightness, no light-pollution (Bortle) parameter, and

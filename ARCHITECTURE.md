@@ -35,8 +35,8 @@ rendering layer changes later.
 
 ## Why Metal for star rendering (not thousands of SwiftUI views)
 
-The star catalog bundled with the app contains ~5,000 stars (down to
-magnitude 6), plus several hundred constellation-line segments and a
+The star catalog bundled with the app contains ~83,000 stars (complete to
+magnitude 9), plus several hundred constellation-line segments and a
 handful of solar-system markers, all of which must reposition every frame
 as the camera pans/zooms and as time advances. Representing each star as a
 SwiftUI view would mean thousands of view identities, layout passes, and
@@ -79,9 +79,23 @@ chrome (search, info panel, time bar, location control) layered on top via
 
 `SkyGeometryBuilder` is the CPU half: it consumes one `SkyFrameData` snapshot
 and emits the vertex buffers, the hit-test table, and the label candidates.
-Faint stars are rejected by a magnitude-vs-FOV comparison *before* any
-trigonometry, so the trig cost scales with what's actually drawn, not with
-catalog size.
+Two rejections run *before* any trigonometry, so the trig cost scales with
+what is actually drawn rather than with catalog size:
+
+- **Spatial** — `Data/Catalogs/StarIndex.swift` dices the sky into 5-degree
+  equatorial cells, each with a precomputed bounding cone, built once off the
+  main thread when the catalogue loads. The viewport is also a cone (its
+  angular radius follows exactly from the stereographic projection), so a cell
+  survives only if the angle between the two axes is within the sum of the two
+  radii — one dot product per cell, 2,592 of them. Working in 3D unit vectors
+  rather than RA/Dec intervals is what makes the RA = 0/360 wrap and the
+  converging cells near the poles non-issues.
+- **Magnitude** — each cell stores its stars magnitude-ascending, so a
+  surviving cell's scan stops at the first star past the current limit.
+
+The two cover each other: a wide field has a shallow limit, a narrow field has
+a deep limit but almost no surviving cells. At a 3-degree field the builder
+considers a few hundred stars out of 83,479.
 
 ## Label engine
 
