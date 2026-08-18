@@ -97,8 +97,14 @@ final class SkyViewModel {
     /// also exactly the default render set's size, which is the point.
     private(set) var visibleSatelliteCount = 0
 
+    /// Lower-cased satellite names, parallel to `satelliteDescriptors`.
+    private var satelliteSearchNames: [String] = []
+
     private func updateSatelliteDescriptors() async {
         satelliteDescriptors = await satelliteTracker.descriptors
+        // Lower-cased once here rather than sixteen thousand times per
+        // keystroke in `satelliteMatches`.
+        satelliteSearchNames = satelliteDescriptors.map { $0.name.lowercased() }
     }
 
     private func propagateSatellitesOnce() async {
@@ -229,10 +235,9 @@ final class SkyViewModel {
     private func refreshSelectedSatellite() {
         guard let selected = selectedObject, selected.kind == .satellite else { return }
         guard let details = selected.satelliteDetails else { return }
-        guard let sample = satelliteSnapshot.samples.first(
-            where: { $0.catalogNumber == details.catalogNumber }
-        ) else { return }
-        guard sample.index < satelliteDescriptors.count else { return }
+        guard let sample = satelliteSnapshot.sample(descriptorIndex: details.descriptorIndex),
+              sample.catalogNumber == details.catalogNumber,
+              sample.index < satelliteDescriptors.count else { return }
 
         let jd = time.julianDay
         let elapsed = min(2.0, max(-2.0, (jd - satelliteSnapshot.julianDay) * 86_400.0))
@@ -243,6 +248,7 @@ final class SkyViewModel {
         )
         selectedObject = SkyGeometryBuilder.celestialObject(
             descriptor: satelliteDescriptors[sample.index],
+            descriptorIndex: sample.index,
             look: look,
             illumination: sample.illumination,
             observer: location.currentLocation,
@@ -302,6 +308,9 @@ final class SkyViewModel {
     /// camera could not fly to.
     private func satelliteMatches(lowered: String, query: String) -> [CelestialObject] {
         guard satellitesEnabled, !satelliteDescriptors.isEmpty else { return [] }
+        // A single character would match most of a sixteen-thousand-object
+        // catalogue, which is neither useful nor cheap.
+        guard lowered.count >= 2 || Int(query) != nil else { return [] }
         let queryNumber = Int(query)
         let jd = time.julianDay
         let observer = location.currentLocation
@@ -311,8 +320,9 @@ final class SkyViewModel {
         for sample in satelliteSnapshot.samples {
             guard sample.index < satelliteDescriptors.count else { continue }
             let descriptor = satelliteDescriptors[sample.index]
-            let nameMatches = descriptor.name.lowercased().contains(lowered)
             let numberMatches = queryNumber != nil && descriptor.catalogNumber == queryNumber
+            let nameMatches = sample.index < satelliteSearchNames.count
+                && satelliteSearchNames[sample.index].contains(lowered)
             guard nameMatches || numberMatches else { continue }
 
             let look = TopocentricTransform.lookAngles(
@@ -321,7 +331,8 @@ final class SkyViewModel {
             )
             matches.append(
                 SkyGeometryBuilder.celestialObject(
-                    descriptor: descriptor, look: look, illumination: sample.illumination,
+                    descriptor: descriptor, descriptorIndex: sample.index, look: look,
+                    illumination: sample.illumination,
                     observer: observer, julianDay: jd
                 )
             )

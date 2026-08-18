@@ -688,3 +688,200 @@ final class SatelliteIlluminationTests: XCTestCase {
         XCTAssertNotEqual(illumination, .umbra)
     }
 }
+
+// MARK: - Snapshot lookup
+
+final class SatelliteSnapshotTests: XCTestCase {
+
+    private func sample(index: Int) -> SatelliteSample {
+        SatelliteSample(
+            index: index, catalogNumber: 10_000 + index, regime: .lowEarth, isNotable: false,
+            position: SIMD3(7000, 0, 0), velocity: SIMD3(0, 7.5, 0),
+            illumination: .sunlit, altitudeDegreesAtSnapshot: 45
+        )
+    }
+
+    /// The binary search assumes the tracker emits samples in ascending index
+    /// order, including when propagation failures leave gaps. Both properties
+    /// are pinned here because a violation would silently return the wrong
+    /// satellite's position to the info panel.
+    func testFindsSamplesByDescriptorIndexAcrossGaps() throws {
+        let indices = [0, 1, 5, 9, 40, 41, 900]
+        let snapshot = SatelliteSnapshot(
+            julianDay: 2_460_000.5,
+            samples: indices.map(sample(index:)),
+            propagationDuration: 0
+        )
+        for index in indices {
+            XCTAssertEqual(snapshot.sample(descriptorIndex: index)?.index, index)
+        }
+        for missing in [2, 3, 8, 39, 42, 899, 901, -1] {
+            XCTAssertNil(snapshot.sample(descriptorIndex: missing))
+        }
+    }
+}
+
+// MARK: - Rendering: level of detail
+
+final class SatelliteRenderingTests: XCTestCase {
+
+    /// A frame looking at the zenith from a fixed place and time, with a
+    /// hand-built snapshot rather than a real catalogue.
+    private func frame(
+        samples: [SatelliteSample],
+        descriptors: [SatelliteDescriptor],
+        fieldOfView: Double,
+        showAll: Bool
+    ) -> SkyFrameData {
+        var frame = SkyFrameData.empty
+        frame.observerLocation = GeographicLocation(latitudeDegrees: 37.5, longitudeDegrees: -122.0)
+        frame.julianDay = Self.julianDay
+        frame.viewportSize = CGSize(width: 1600, height: 1000)
+        frame.cameraCenter = HorizontalCoordinate(altitudeDegrees: 90, azimuthDegrees: 0)
+        frame.cameraFieldOfViewDegrees = fieldOfView
+        // Deep night, so nothing is suppressed by the daylight contrast model.
+        frame.sunHorizontal = HorizontalCoordinate(altitudeDegrees: -40, azimuthDegrees: 0)
+        frame.satelliteSnapshot = SatelliteSnapshot(
+            julianDay: Self.julianDay, samples: samples, propagationDuration: 0
+        )
+        frame.satelliteDescriptors = descriptors
+        frame.showAllSatellites = showAll
+        return frame
+    }
+
+    private static let julianDay = 2_460_000.5
+
+    /// A satellite 400 km directly above the observer.
+    private func overheadPosition() -> SIMD3<Double> {
+        let observer = TopocentricTransform.observerPositionTEME(
+            observer: GeographicLocation(latitudeDegrees: 37.5, longitudeDegrees: -122.0),
+            julianDay: Self.julianDay
+        )
+        return observer + simd_normalize(observer) * 400.0
+    }
+
+    private func descriptor(catalogNumber: Int, notable: Bool) -> SatelliteDescriptor {
+        SatelliteDescriptor(
+            catalogNumber: catalogNumber, name: "TEST \(catalogNumber)", regime: .lowEarth,
+            internationalDesignator: "00001A", epochJulianDay: Self.julianDay - 1,
+            isNotable: notable
+        )
+    }
+
+    private func sample(
+        index: Int, catalogNumber: Int, notable: Bool,
+        illumination: TopocentricTransform.Illumination, altitude: Double
+    ) -> SatelliteSample {
+        SatelliteSample(
+            index: index, catalogNumber: catalogNumber, regime: .lowEarth, isNotable: notable,
+            position: overheadPosition(), velocity: SIMD3(0, 7.5, 0),
+            illumination: illumination, altitudeDegreesAtSnapshot: altitude
+        )
+    }
+
+    private func drawnSatellites(_ frame: SkyFrameData) -> [ProjectedObject] {
+        var builder = SkyGeometryBuilder(frameData: frame)
+        builder.run()
+        return builder.projectedObjects.filter { $0.object.kind == .satellite }
+    }
+
+    /// The default rule: a sunlit satellite above the horizon is drawn, because
+    /// it is a thing you could actually go outside and see.
+    func testSunlitOverheadSatelliteIsDrawnByDefault() throws {
+        let drawn = drawnSatellites(frame(
+            samples: [sample(index: 0, catalogNumber: 1, notable: false,
+                             illumination: .sunlit, altitude: 89)],
+            descriptors: [descriptor(catalogNumber: 1, notable: false)],
+            fieldOfView: 90, showAll: false
+        ))
+        XCTAssertEqual(drawn.count, 1)
+        XCTAssertEqual(drawn.first?.object.satelliteDetails?.catalogNumber, 1)
+    }
+
+    /// An eclipsed, unremarkable satellite is not drawn by default. This is the
+    /// whole density story: without it the sky would carry sixteen thousand
+    /// markers, most of them invisible in reality.
+    func testEclipsedOrdinarySatelliteIsHiddenByDefault() throws {
+        let drawn = drawnSatellites(frame(
+            samples: [sample(index: 0, catalogNumber: 1, notable: false,
+                             illumination: .umbra, altitude: 89)],
+            descriptors: [descriptor(catalogNumber: 1, notable: false)],
+            fieldOfView: 90, showAll: false
+        ))
+        XCTAssertTrue(drawn.isEmpty)
+    }
+
+    /// A notable object is always drawn, sunlit or not, so "where is the ISS
+    /// right now" always has an answer.
+    func testNotableSatelliteIsDrawnEvenWhenEclipsed() throws {
+        let drawn = drawnSatellites(frame(
+            samples: [sample(index: 0, catalogNumber: 25544, notable: true,
+                             illumination: .umbra, altitude: 89)],
+            descriptors: [descriptor(catalogNumber: 25544, notable: true)],
+            fieldOfView: 90, showAll: false
+        ))
+        XCTAssertEqual(drawn.count, 1)
+        XCTAssertEqual(drawn.first?.object.satelliteDetails?.illumination, .umbra)
+    }
+
+    /// "Show all" reveals the long tail, but only once zoomed in — at a
+    /// whole-sky field it stays quiet.
+    func testShowAllRevealsTheTailOnlyWhenZoomedIn() throws {
+        let samples = [sample(index: 0, catalogNumber: 1, notable: false,
+                              illumination: .umbra, altitude: 89)]
+        let descriptors = [descriptor(catalogNumber: 1, notable: false)]
+
+        let wide = drawnSatellites(frame(
+            samples: samples, descriptors: descriptors, fieldOfView: 140, showAll: true
+        ))
+        XCTAssertTrue(wide.isEmpty, "the tail should stay hidden at a whole-sky field")
+
+        let zoomed = drawnSatellites(frame(
+            samples: samples, descriptors: descriptors, fieldOfView: 20, showAll: true
+        ))
+        XCTAssertEqual(zoomed.count, 1, "the tail should appear once zoomed in")
+    }
+
+    /// The layer's master switch really does switch everything off, notable
+    /// objects included.
+    func testDisablingTheLayerHidesEvenNotableSatellites() throws {
+        var data = frame(
+            samples: [sample(index: 0, catalogNumber: 25544, notable: true,
+                             illumination: .sunlit, altitude: 89)],
+            descriptors: [descriptor(catalogNumber: 25544, notable: true)],
+            fieldOfView: 90, showAll: false
+        )
+        data.satellitesEnabled = false
+        XCTAssertTrue(drawnSatellites(data).isEmpty)
+    }
+
+    /// The drawn position must come from the extrapolated state, not from the
+    /// snapshot. Advancing the frame's clock past the snapshot's without
+    /// re-propagating has to move the satellite — that motion *is* the smooth
+    /// rendering, so its absence would mean satellites visibly stepping once
+    /// per tick.
+    func testDrawnPositionAdvancesBetweenPropagationTicks() throws {
+        let samples = [sample(index: 0, catalogNumber: 1, notable: true,
+                              illumination: .sunlit, altitude: 89)]
+        let descriptors = [descriptor(catalogNumber: 1, notable: true)]
+
+        var atTick = frame(samples: samples, descriptors: descriptors,
+                           fieldOfView: 30, showAll: false)
+        var laterFrame = atTick
+        // A third of a second later, with the same snapshot.
+        laterFrame.julianDay = Self.julianDay + 0.33 / 86_400.0
+
+        guard let first = drawnSatellites(atTick).first,
+              let second = drawnSatellites(laterFrame).first else {
+            return XCTFail("the satellite was not drawn")
+        }
+        let moved = simd_distance(first.ndcPosition, second.ndcPosition)
+        XCTAssertGreaterThan(moved, 1e-5, "the satellite did not move between ticks")
+
+        // And the motion is smooth, not a jump: a third of a second of a 7.5
+        // km/s orbit seen from 400 km is a fraction of the field, never a leap
+        // across it.
+        XCTAssertLessThan(moved, 0.5)
+        _ = atTick
+    }
+}

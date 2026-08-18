@@ -217,6 +217,18 @@ struct SatelliteDescriptor: Hashable, Sendable, Identifiable {
 
     var id: String { "sat-\(catalogNumber)" }
 
+    init(
+        catalogNumber: Int, name: String, regime: OrbitalRegime,
+        internationalDesignator: String, epochJulianDay: Double, isNotable: Bool
+    ) {
+        self.catalogNumber = catalogNumber
+        self.name = name
+        self.regime = regime
+        self.internationalDesignator = internationalDesignator
+        self.epochJulianDay = epochJulianDay
+        self.isNotable = isNotable
+    }
+
     init(_ satellite: Satellite) {
         catalogNumber = satellite.catalogNumber
         name = satellite.name
@@ -237,10 +249,30 @@ struct SatelliteDescriptor: Hashable, Sendable, Identifiable {
 struct SatelliteSnapshot: Sendable {
     /// Julian Day the samples are valid for.
     let julianDay: Double
+    /// Ordered by ascending `SatelliteSample.index` — the tracker builds them
+    /// that way, and `sample(descriptorIndex:)` relies on it.
     let samples: [SatelliteSample]
     /// Wall-clock duration of the propagation pass, for the performance
     /// reporting in `SkyViewModel`.
     let propagationDuration: TimeInterval
 
     static let empty = SatelliteSnapshot(julianDay: 0, samples: [], propagationDuration: 0)
+
+    /// Finds a sample by its descriptor index.
+    ///
+    /// A binary search rather than a scan because the caller is the selected
+    /// satellite's per-frame refresh: at 120 Hz a linear pass over sixteen
+    /// thousand samples would be two million comparisons a second to keep one
+    /// info panel current.
+    func sample(descriptorIndex: Int) -> SatelliteSample? {
+        var low = 0
+        var high = samples.count - 1
+        while low <= high {
+            let mid = (low + high) / 2
+            let candidate = samples[mid].index
+            if candidate == descriptorIndex { return samples[mid] }
+            if candidate < descriptorIndex { low = mid + 1 } else { high = mid - 1 }
+        }
+        return nil
+    }
 }

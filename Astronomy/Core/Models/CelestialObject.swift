@@ -61,6 +61,10 @@ struct CelestialObject: Identifiable, Hashable {
 /// of object has.
 struct SatelliteDetails: Hashable {
     let catalogNumber: Int
+    /// Index into the tracker's descriptor array. Carried so that refreshing a
+    /// selected satellite every frame is a binary search over the snapshot
+    /// rather than a linear scan of sixteen thousand samples.
+    let descriptorIndex: Int
     let regime: OrbitalRegime
     /// Height above the WGS-84 ellipsoid, in kilometres.
     let altitudeAboveGroundKm: Double

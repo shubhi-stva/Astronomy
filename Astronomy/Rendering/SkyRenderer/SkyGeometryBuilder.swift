@@ -709,7 +709,8 @@ struct SkyGeometryBuilder {
             guard sample.index < frameData.satelliteDescriptors.count else { continue }
             let descriptor = frameData.satelliteDescriptors[sample.index]
             let object = Self.celestialObject(
-                descriptor: descriptor, look: look, illumination: sample.illumination,
+                descriptor: descriptor, descriptorIndex: sample.index, look: look,
+                illumination: sample.illumination,
                 observer: observer, julianDay: julianDay
             )
             projectedObjects.append(ProjectedObject(object: object, ndcPosition: ndc))
@@ -737,6 +738,7 @@ struct SkyGeometryBuilder {
     /// including the live facts the info panel shows.
     static func celestialObject(
         descriptor: SatelliteDescriptor,
+        descriptorIndex: Int,
         look: TopocentricTransform.LookAngles,
         illumination: TopocentricTransform.Illumination,
         observer: GeographicLocation,
@@ -761,6 +763,7 @@ struct SkyGeometryBuilder {
         object.distanceKilometres = look.rangeKilometres
         object.satelliteDetails = SatelliteDetails(
             catalogNumber: descriptor.catalogNumber,
+            descriptorIndex: descriptorIndex,
             regime: descriptor.regime,
             altitudeAboveGroundKm: look.altitudeAboveGroundKm,
             rangeKilometres: look.rangeKilometres,
