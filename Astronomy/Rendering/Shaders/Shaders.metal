@@ -364,6 +364,26 @@ fragment float4 backgroundFragmentShader(
         color = mix(horizonEdge, ground, smoothstep(0.0, 1.0, depth));
     }
 
+    // --- Field-of-view darkening ---------------------------------------------
+    // As you zoom in, the whole background is dimmed slightly. This is an
+    // aesthetic and legibility choice, not physics: a telescope pointed at a
+    // patch of daylight sky does not see a darker sky, and the surface
+    // brightness of the background is genuinely invariant under magnification.
+    // What it buys is contrast. At a narrow field the star field is at its
+    // deepest (the limiting magnitude reaches 9), and those faintest stars
+    // need somewhere dark to sit; it also matches the felt experience of
+    // shutting out the surrounding scattered-light context as you put your eye
+    // to an eyepiece.
+    //
+    // Kept mild and continuous so it cannot fight the twilight model: full
+    // strength above 60 degrees, easing to 0.82 by 6 degrees, smoothstepped in
+    // log(FOV) so it tracks the same pinch feel as the magnitude limit. It is
+    // a multiplier, so a bright daylight sky stays a bright daylight sky —
+    // just a shade deeper.
+    float logFov = log(max(u.fieldOfViewDegrees, 0.5));
+    float zoomIn = 1.0 - smoothstep(log(6.0), log(60.0), logFov);
+    color *= mix(1.0, 0.82, zoomIn);
+
     return float4(color, 1.0);
 }
 

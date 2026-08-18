@@ -129,12 +129,53 @@ enum SkyBrightness {
     /// altitude and azimuth it genuinely occupies behind the daylight.
     static let daylightDisplayFloor = 5.6
 
-    /// The limit actually used for rendering: the physical limit at night
-    /// (which rises above the floor on its own, so dark skies still gain the
-    /// faintest stars naturally), and the floor whenever daylight would
-    /// otherwise empty the sky.
+    /// Faintest magnitude the renderer will draw in a fully dark sky.
+    ///
+    /// 9.0 is the completeness limit of the bundled catalogue, so "peak
+    /// darkness" and "the bottom of the data" are deliberately the same
+    /// number: at astronomical night the display stops holding anything back.
+    static let darkSkyDisplayCeiling = 9.0
+
+    /// The limit actually used for rendering.
+    ///
+    /// **This curve is a product choice, not photometry.** The honest physical
+    /// answer is `limitingMagnitude` above, which runs from about -3.9 under a
+    /// high Sun to 6.5 in a pristine sky; it is left untouched and tested
+    /// separately. What the renderer draws instead is a remapping of the same
+    /// sky-brightness variable mu onto the range the *display* wants:
+    ///
+    ///     t     = smoothstep((mu - 3.0) / (21.4 - 3.0))
+    ///     limit = daylightDisplayFloor + (darkSkyDisplayCeiling - floor) * t
+    ///
+    /// Two deliberate departures from physics, in opposite directions:
+    ///
+    ///   * The daytime end is far too generous. Physically almost nothing but
+    ///     the Sun, Moon and Venus survives a noon sky, and rendering that
+    ///     literally gives a beautiful, useless empty screen. Every planetarium
+    ///     shows the sky *through* the daylight; the floor is where that
+    ///     convention lives, and it is unchanged from before so the daytime
+    ///     look does not move.
+    ///   * The night end is also too generous — 9.0 rather than 6.5 — because
+    ///     the screen is not a dark-adapted eye under a real sky. A monitor
+    ///     compresses six orders of magnitude of brightness into two, and the
+    ///     faint field is the first casualty. Drawing to 9.0 restores the
+    ///     *impression* of a dark sky's depth, which is the thing a user
+    ///     actually recognises, at the cost of being literally wrong about how
+    ///     many stars an eye could resolve.
+    ///
+    /// The transition is the point: mu climbs steeply through twilight, so the
+    /// drawn limit climbs with it and the sky visibly fills in over the two
+    /// hours after sunset. Nothing here moves a star — only how many are drawn
+    /// and how strongly. Positions stay fully physical.
+    ///
+    /// Roughly: 5.6 at Sun +45 deg, 5.7 at 0 deg, 7.4 at -6 deg, 8.5 at
+    /// -12 deg, 9.0 at -18 deg and below.
     static func displayLimitingMagnitude(sunAltitudeDegrees alt: Double) -> Double {
-        max(daylightDisplayFloor, limitingMagnitude(sunAltitudeDegrees: alt))
+        let mu = zenithMagnitudesPerSquareArcsecond(sunAltitudeDegrees: alt)
+        let dayMu = 3.0, nightMu = 21.4
+        let t = min(1.0, max(0.0, (mu - dayMu) / (nightMu - dayMu)))
+        let eased = t * t * (3 - 2 * t)
+        return daylightDisplayFloor + (darkSkyDisplayCeiling - daylightDisplayFloor) * eased
     }
 
     /// Opacity multiplier applied to stars as the sky background brightens.

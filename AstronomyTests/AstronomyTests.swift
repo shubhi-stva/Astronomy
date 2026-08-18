@@ -7,7 +7,9 @@
 //  published reference value.
 //
 
+import CoreGraphics
 import XCTest
+import simd
 @testable import Astronomy
 
 final class JulianDateTests: XCTestCase {
@@ -231,7 +233,9 @@ final class SkyBrightnessTests: XCTestCase {
             fieldOfViewDegrees: 3, sunAltitudeDegrees: 45
         )
         XCTAssertEqual(day, SkyBrightness.displayLimitingMagnitude(sunAltitudeDegrees: 45), accuracy: 1e-9)
-        XCTAssertEqual(day, SkyBrightness.daylightDisplayFloor, accuracy: 1e-9)
+        // Sitting on the daylight floor (the display curve reaches it
+        // asymptotically, so within a hundredth of a magnitude).
+        XCTAssertEqual(day, SkyBrightness.daylightDisplayFloor, accuracy: 0.01)
         XCTAssertGreaterThan(
             day, 4.0,
             "a planetarium must show the sky through daylight, not an empty screen"
@@ -284,13 +288,14 @@ final class SkyBrightnessTests: XCTestCase {
             magnitude: -2.2, fieldOfViewDegrees: 60, sunAltitudeDegrees: sunAltitude
         )
         // Chosen to straddle the fade band: at this field of view the cutoff
-        // is ~5.16 and the fade spans the magnitude below it, so 4.6 is
-        // partway through the fade and 5.3 is past the cutoff entirely.
+        // is ~6.24 (the FOV limit binds, the twilight display limit is ~6.68)
+        // and the fade spans the magnitude below it, so 5.8 is partway through
+        // the fade and 6.5 is past the cutoff entirely.
         let middling = StarAppearance.visibility(
-            magnitude: 4.6, fieldOfViewDegrees: 60, sunAltitudeDegrees: sunAltitude
+            magnitude: 5.8, fieldOfViewDegrees: 60, sunAltitudeDegrees: sunAltitude
         )
         let faint = StarAppearance.visibility(
-            magnitude: 5.3, fieldOfViewDegrees: 60, sunAltitudeDegrees: sunAltitude
+            magnitude: 6.5, fieldOfViewDegrees: 60, sunAltitudeDegrees: sunAltitude
         )
         // Bright objects render at the full contrast the sky allows; fainter
         // ones fade out progressively toward the cutoff.
@@ -318,6 +323,112 @@ final class SkyBrightnessTests: XCTestCase {
         XCTAssertGreaterThan(
             StarAppearance.visibility(magnitude: 2.0, fieldOfViewDegrees: 60, sunAltitudeDegrees: -20),
             daylightStar
+        )
+    }
+
+    // MARK: - Zooming in reveals more stars
+
+    func testZoomingInDeepensTheFieldMonotonicallyToTheCatalogueLimit() throws {
+        // Wide field stays legible; the narrow end reaches the bottom of the
+        // bundled catalogue so pinching all the way in is not a promise the
+        // data cannot keep.
+        XCTAssertEqual(StarAppearance.limitingMagnitude(fieldOfViewDegrees: 150), 5.4, accuracy: 1e-9)
+        XCTAssertEqual(StarAppearance.limitingMagnitude(fieldOfViewDegrees: 3), 9.0, accuracy: 1e-9)
+        // Clamped outside the interpolation range rather than extrapolating.
+        XCTAssertEqual(StarAppearance.limitingMagnitude(fieldOfViewDegrees: 200), 5.4, accuracy: 1e-9)
+        XCTAssertEqual(StarAppearance.limitingMagnitude(fieldOfViewDegrees: 0.5), 9.0, accuracy: 1e-9)
+
+        // Strictly deeper as you zoom, with no step big enough to see as a pop.
+        var previous = StarAppearance.limitingMagnitude(fieldOfViewDegrees: 150)
+        // Stepped multiplicatively (a 1% pinch), which is what the gesture
+        // actually does — a fixed 1-degree step is a huge zoom at the narrow
+        // end and a negligible one at the wide end.
+        var fov = 150.0 * 0.99
+        while fov >= 3.0 {
+            let value = StarAppearance.limitingMagnitude(fieldOfViewDegrees: fov)
+            XCTAssertGreaterThanOrEqual(value, previous - 1e-9, "regressed at FOV \(fov)")
+            XCTAssertLessThan(value - previous, 0.02, "jumped at FOV \(fov)")
+            previous = value
+            fov *= 0.99
+        }
+
+        // A mid-field check that the curve is doing its interpolation on
+        // log(FOV): halving the field from 60 to 30 should buy a similar
+        // amount of depth as halving it again from 30 to 15.
+        let d1 = StarAppearance.limitingMagnitude(fieldOfViewDegrees: 30)
+            - StarAppearance.limitingMagnitude(fieldOfViewDegrees: 60)
+        let d2 = StarAppearance.limitingMagnitude(fieldOfViewDegrees: 15)
+            - StarAppearance.limitingMagnitude(fieldOfViewDegrees: 30)
+        XCTAssertEqual(d1, d2, accuracy: 1e-9)
+    }
+
+    // MARK: - Darker sky reveals more stars
+
+    func testDisplayLimitDeepensDramaticallyFromTwilightToNight() throws {
+        // The user-visible acceptance criterion: an evening in Fremont. The
+        // Sun is still up at 6:20 PM in August (~+15 deg) and a few degrees
+        // below the horizon by 8:20 PM.
+        let earlyEvening = SkyBrightness.displayLimitingMagnitude(sunAltitudeDegrees: 15)
+        let afterSunset = SkyBrightness.displayLimitingMagnitude(sunAltitudeDegrees: -4.5)
+        XCTAssertGreaterThan(
+            afterSunset - earlyEvening, 1.0,
+            "twilight -> night must buy at least a full magnitude of depth"
+        )
+
+        // Peak darkness reaches the bottom of the catalogue.
+        XCTAssertEqual(
+            SkyBrightness.displayLimitingMagnitude(sunAltitudeDegrees: -18),
+            SkyBrightness.darkSkyDisplayCeiling,
+            accuracy: 0.05
+        )
+        XCTAssertEqual(
+            SkyBrightness.displayLimitingMagnitude(sunAltitudeDegrees: -40),
+            SkyBrightness.darkSkyDisplayCeiling,
+            accuracy: 1e-9
+        )
+
+        // Daylight is unchanged: exactly the floor, so the daytime sky is
+        // exactly as dense as it was before this curve existed.
+        XCTAssertEqual(
+            SkyBrightness.displayLimitingMagnitude(sunAltitudeDegrees: 45),
+            SkyBrightness.daylightDisplayFloor,
+            accuracy: 0.01
+        )
+
+        // Monotonic and smooth all the way down, so scrubbing time never pops.
+        var previous = SkyBrightness.displayLimitingMagnitude(sunAltitudeDegrees: 60)
+        var alt = 60.0
+        while alt >= -30.0 {
+            let value = SkyBrightness.displayLimitingMagnitude(sunAltitudeDegrees: alt)
+            XCTAssertGreaterThanOrEqual(value, previous - 1e-9, "regressed at Sun altitude \(alt)")
+            XCTAssertLessThan(value - previous, 0.15, "stepped at Sun altitude \(alt)")
+            previous = value
+            alt -= 0.25
+        }
+
+        // The physical model is untouched — it must NOT have followed the
+        // display curve up to 9.
+        XCTAssertLessThan(SkyBrightness.limitingMagnitude(sunAltitudeDegrees: -40), 7.0)
+    }
+
+    func testNightIsBothDeeperAndHigherContrastThanTwilight() throws {
+        let twilightLimit = SkyBrightness.displayLimitingMagnitude(sunAltitudeDegrees: -4.5)
+        let nightLimit = SkyBrightness.displayLimitingMagnitude(sunAltitudeDegrees: -18)
+        XCTAssertGreaterThan(nightLimit, twilightLimit)
+
+        let twilightContrast = SkyBrightness.starContrast(sunAltitudeDegrees: -4.5)
+        let nightContrast = SkyBrightness.starContrast(sunAltitudeDegrees: -18)
+        XCTAssertGreaterThan(nightContrast, twilightContrast)
+
+        // And a star that is invisible in twilight is visible at night, at a
+        // field of view narrow enough that the FOV limit is not what binds.
+        XCTAssertEqual(
+            StarAppearance.visibility(magnitude: 7.5, fieldOfViewDegrees: 8, sunAltitudeDegrees: -4.5),
+            0.0, accuracy: 1e-9
+        )
+        XCTAssertGreaterThan(
+            StarAppearance.visibility(magnitude: 7.5, fieldOfViewDegrees: 8, sunAltitudeDegrees: -18),
+            0.4
         )
     }
 }
@@ -469,5 +580,231 @@ final class MoonPhaseTests: XCTestCase {
         let moon = EquatorialCoordinate(rightAscensionDegrees: 90, declinationDegrees: 0)
         let k = MoonPhase.illuminatedFraction(sun: sun, moon: moon)
         XCTAssertEqual(k, 0.5, accuracy: 0.01)
+    }
+}
+
+// MARK: - Spatial index
+
+/// The spatial cull is the one piece of this feature that cannot be checked by
+/// eye: a bug that silently deletes real stars would look like a slightly
+/// sparser sky, not like a crash. So every test here is differential — the
+/// index is compared against the naive full scan it replaces, at orientations
+/// chosen to hit the two classic failure modes (the RA = 0/360 wrap, and the
+/// poles where RA cells converge).
+final class StarIndexTests: XCTestCase {
+
+    /// A synthetic catalogue laid out on a regular grid so it covers every
+    /// cell, plus deliberate points exactly on the poles and exactly on the
+    /// RA seam. Magnitudes ascend, matching the real catalogue's ordering.
+    private static let catalogue: [Star] = {
+        var stars: [Star] = []
+        var id = 0
+        for decIndex in 0...36 {
+            let dec = -90.0 + Double(decIndex) * 5.0
+            for raIndex in 0..<72 {
+                let ra = Double(raIndex) * 5.0 + 2.5
+                id += 1
+                stars.append(
+                    Star(
+                        id: id,
+                        name: nil,
+                        ra: ra,
+                        dec: dec,
+                        magnitude: Double((id % 100)) / 10.0,   // 0.0 ... 9.9
+                        colorIndex: 0.5,
+                        spectralType: nil
+                    )
+                )
+            }
+        }
+        // Exact edge cases the grid must not lose.
+        let edges: [(Double, Double)] = [
+            (0.0, 90.0), (180.0, 90.0), (0.0, -90.0), (359.999, -90.0),
+            (0.0, 0.0), (359.999, 0.0), (360.0, 12.0), (0.0, 89.999)
+        ]
+        for (ra, dec) in edges {
+            id += 1
+            stars.append(Star(id: id, name: nil, ra: ra, dec: dec, magnitude: 1.0,
+                              colorIndex: nil, spectralType: nil))
+        }
+        // The index relies on the input being magnitude-ascending to get its
+        // per-cell ordering for free, exactly as the real catalogue is.
+        return stars.sorted { $0.magnitude < $1.magnitude }
+    }()
+
+    private static let index = StarIndex(stars: catalogue)
+
+    /// Every star of the synthetic catalogue survives the bucketing.
+    func testIndexPreservesEveryStar() throws {
+        XCTAssertEqual(Self.index.stars.count, Self.catalogue.count)
+        XCTAssertEqual(
+            Set(Self.index.stars.map(\.id)),
+            Set(Self.catalogue.map(\.id))
+        )
+        // Contiguous, non-overlapping cell ranges covering the whole array.
+        var expectedStart = 0
+        for cell in Self.index.cells {
+            XCTAssertEqual(cell.start, expectedStart)
+            XCTAssertGreaterThan(cell.count, 0)
+            expectedStart += cell.count
+        }
+        XCTAssertEqual(expectedStart, Self.index.stars.count)
+    }
+
+    /// Each cell is magnitude-ascending, which is what makes the early `break`
+    /// in the renderer's scan correct rather than merely fast.
+    func testCellsAreMagnitudeAscending() throws {
+        for cell in Self.index.cells {
+            for i in (cell.start + 1)..<(cell.start + cell.count) {
+                XCTAssertLessThanOrEqual(
+                    Self.index.stars[i - 1].magnitude,
+                    Self.index.stars[i].magnitude
+                )
+            }
+        }
+    }
+
+    /// The load-bearing test: the cull must be a strict superset of the truth.
+    ///
+    /// For a spread of camera directions and field sizes, the naive answer
+    /// ("every star within theta of the centre, brighter than the limit") must
+    /// be entirely contained in what the index yields. Anything extra is
+    /// harmless — the projection rejects it a moment later.
+    func testCullNeverDropsAStarTheFullScanWouldKeep() throws {
+        let directions: [(String, Double, Double)] = [
+            ("north celestial pole", 0, 90),
+            ("just off the north pole", 137, 88.5),
+            ("south celestial pole", 0, -90),
+            ("just off the south pole", 300, -87.2),
+            ("RA seam, equator", 0, 0),
+            ("just below the seam", 359.7, 0),
+            ("just above the seam", 0.3, 0),
+            ("seam at high dec", 359.9, 76),
+            ("seam at low dec", 0.1, -76),
+            ("arbitrary A", 83.6, 22.0),
+            ("arbitrary B", 201.3, -41.7),
+            ("arbitrary C", 297.5, 61.4)
+        ]
+        let fovs = [150.0, 90.0, 60.0, 30.0, 10.0, 3.0, 1.0]
+        let viewports = [CGSize(width: 1600, height: 900), CGSize(width: 800, height: 1400)]
+        let limits = [5.4, 6.9, 9.0, 12.0]
+
+        for (label, ra, dec) in directions {
+            let center = StarIndex.direction(raDegrees: ra, decDegrees: dec)
+            for fov in fovs {
+                for viewport in viewports {
+                    let theta = StarIndex.fieldAngularRadiusRadians(
+                        fieldOfViewDegrees: fov, viewportSize: viewport
+                    )
+                    for limit in limits {
+                        var kept: Set<Int> = []
+                        Self.index.forEachCandidate(
+                            centerDirection: center,
+                            angularRadiusRadians: theta,
+                            magnitudeLimit: limit
+                        ) { kept.insert($0.id) }
+
+                        // The naive scan the index is standing in for. Note it
+                        // uses a *smaller* cone than the index is allowed to:
+                        // theta with no padding at all, so any slack in the
+                        // index's bounds can only help it.
+                        let cosTheta = cos(theta)
+                        for star in Self.catalogue where star.magnitude < limit {
+                            let d = StarIndex.direction(raDegrees: star.ra, decDegrees: star.dec)
+                            guard simd_dot(d, center) >= cosTheta else { continue }
+                            XCTAssertTrue(
+                                kept.contains(star.id),
+                                "dropped star \(star.id) at RA \(star.ra) Dec \(star.dec) "
+                                + "looking at \(label), FOV \(fov), limit \(limit)"
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// And it has to actually pay for itself: a narrow field must consider a
+    /// small fraction of the sky even at the deepest magnitude limit.
+    func testCullMeaningfullyReducesTheCandidateCountAtNarrowField() throws {
+        let center = StarIndex.direction(raDegrees: 83.6, decDegrees: 22.0)
+        let viewport = CGSize(width: 1600, height: 900)
+        let total = Self.catalogue.count
+
+        func candidates(fov: Double, limit: Double) -> Int {
+            Self.index.candidateCount(
+                centerDirection: center,
+                angularRadiusRadians: StarIndex.fieldAngularRadiusRadians(
+                    fieldOfViewDegrees: fov, viewportSize: viewport
+                ),
+                magnitudeLimit: limit
+            )
+        }
+
+        // Deepest limit, narrow field: the spatial cut is doing all the work.
+        XCTAssertLessThan(Double(candidates(fov: 3, limit: 9.5)), Double(total) * 0.02)
+        XCTAssertLessThan(Double(candidates(fov: 10, limit: 9.5)), Double(total) * 0.06)
+        XCTAssertLessThan(Double(candidates(fov: 30, limit: 9.5)), Double(total) * 0.25)
+        // Zooming in must never make it consider more.
+        XCTAssertLessThanOrEqual(candidates(fov: 3, limit: 9.5), candidates(fov: 10, limit: 9.5))
+        XCTAssertLessThanOrEqual(candidates(fov: 10, limit: 9.5), candidates(fov: 60, limit: 9.5))
+        // Whole sky on screen: nothing is culled spatially, and the magnitude
+        // cut is what keeps it cheap.
+        XCTAssertLessThan(Double(candidates(fov: 150, limit: 5.4)), Double(total) * 0.6)
+    }
+
+    /// A 180-degree-plus cone must degrade to "keep everything" rather than
+    /// wrapping around and rejecting the far hemisphere.
+    func testFullSkyConeKeepsEverything() throws {
+        let center = StarIndex.direction(raDegrees: 12.0, decDegrees: -30.0)
+        let count = Self.index.candidateCount(
+            centerDirection: center,
+            angularRadiusRadians: .pi,
+            magnitudeLimit: 100
+        )
+        XCTAssertEqual(count, Self.catalogue.count)
+    }
+
+    /// The real bundled catalogue: the index must not lose a star of it, and
+    /// a narrow field must be a small slice.
+    ///
+    /// Decoded synchronously and directly from the bundle rather than through
+    /// `CatalogService`. That is deliberate: an `async` test yields the main
+    /// thread, which lets the test *host application* finish launching its
+    /// Metal view mid-test, and the host has a pre-existing startup crash
+    /// (`pointer being freed was not allocated`) that is reproducible on an
+    /// unmodified checkout and has nothing to do with this code. Staying
+    /// synchronous keeps the suite green and the bug where it belongs.
+    func testBundledCatalogueIndexesConsistently() throws {
+        let url = try XCTUnwrap(Bundle.main.url(forResource: "stars", withExtension: "json"))
+        let stars = try JSONDecoder().decode([Star].self, from: Data(contentsOf: url))
+        XCTAssertGreaterThan(stars.count, 50_000, "expected the deep HYG catalogue")
+
+        let index = StarIndex(stars: stars)
+        XCTAssertEqual(index.stars.count, stars.count)
+
+        let center = StarIndex.direction(raDegrees: 83.6, decDegrees: 22.0)
+        let theta = StarIndex.fieldAngularRadiusRadians(
+            fieldOfViewDegrees: 3, viewportSize: CGSize(width: 1600, height: 900)
+        )
+        var kept: Set<Int> = []
+        index.forEachCandidate(
+            centerDirection: center, angularRadiusRadians: theta, magnitudeLimit: 9.5
+        ) { kept.insert($0.id) }
+
+        // Subsampled naive scan: enough of the real catalogue to catch a
+        // systematic culling error without 83,000 trig calls of test time.
+        let cosTheta = cos(theta)
+        var checked = 0
+        for i in stride(from: 0, to: stars.count, by: 5) {
+            let star = stars[i]
+            guard star.magnitude < 9.5 else { continue }
+            let d = StarIndex.direction(raDegrees: star.ra, decDegrees: star.dec)
+            guard simd_dot(d, center) >= cosTheta else { continue }
+            checked += 1
+            XCTAssertTrue(kept.contains(star.id), "dropped catalogue star \(star.id)")
+        }
+        XCTAssertGreaterThan(checked, 10, "the sample must actually cover the field")
+        XCTAssertLessThan(kept.count, stars.count / 50)
     }
 }

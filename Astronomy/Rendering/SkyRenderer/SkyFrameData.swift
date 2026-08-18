@@ -18,6 +18,12 @@ struct SkyFrameData {
     var constellations: [Constellation] = []
     var starsByID: [Int: Star]
 
+    /// Spatial index over `stars`. When present the geometry builder culls by
+    /// sky cell before projecting anything; when nil (catalogue still loading,
+    /// or a test constructing a snapshot by hand) it falls back to a full scan
+    /// of `stars`, which produces identical output at lower speed.
+    var starIndex: StarIndex?
+
     var observerLocation: GeographicLocation
     var julianDay: Double
 

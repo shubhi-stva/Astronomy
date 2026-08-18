@@ -67,9 +67,20 @@ enum StarAppearance {
     /// reads as constellations rather than noise. Zoomed in: the faint field
     /// fills back in. Interpolated on log(FOV) so the fill-in feels linear as
     /// you pinch.
+    ///
+    /// The narrow end is 9.0 — the completeness limit of the bundled HYG
+    /// catalogue — so pinching all the way in genuinely reaches the bottom of
+    /// the data rather than stopping short of it. (It used to be 7.0, which
+    /// was a promise the old magnitude-6 catalogue could not keep.) The wide
+    /// end stays deliberately shallow: with 83,000 stars available, drawing
+    /// them all across a 150-degree field would bury the constellations in
+    /// noise, which is the opposite of legible.
+    ///
+    /// Roughly: 5.4 at 150 deg, 5.9 at 90 deg, 6.2 at 60 deg, 6.9 at 30 deg,
+    /// 7.9 at 10 deg, 9.0 at 3 deg.
     static func limitingMagnitude(fieldOfViewDegrees fov: Double) -> Double {
         let wideFOV = 150.0, narrowFOV = 3.0
-        let wideLimit = 4.6, narrowLimit = 7.0
+        let wideLimit = 5.4, narrowLimit = 9.0
         let clamped = min(wideFOV, max(narrowFOV, fov))
         let t = (log(clamped) - log(narrowFOV)) / (log(wideFOV) - log(narrowFOV))
         return narrowLimit + (wideLimit - narrowLimit) * t

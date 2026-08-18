@@ -23,6 +23,8 @@ final class SkyViewModel {
 
     private(set) var stars: [Star] = []
     private(set) var starsByID: [Int: Star] = [:]
+    /// Built off the main actor alongside the catalogue; see `StarIndex`.
+    private(set) var starIndex: StarIndex?
     private(set) var constellationLines: [ConstellationLineSegment] = []
     private(set) var isLoadingCatalog = true
     private(set) var loadError: String?
@@ -50,10 +52,16 @@ final class SkyViewModel {
 
     private func loadCatalog() async {
         do {
-            async let starsResult = CatalogService.shared.loadStars()
+            // All of this runs on the CatalogService actor's executor, never
+            // on the main actor: the 8.8 MB decode and the spatial-index build
+            // happen while `isLoadingCatalog` is still true and the UI shows
+            // its loading state. Only the assignments below touch @MainActor.
+            async let indexResult = CatalogService.shared.loadStarIndex()
             async let linesResult = CatalogService.shared.loadConstellationLines()
             async let namesResult = CatalogService.shared.loadConstellations()
-            let (loadedStars, loadedLines, loadedNames) = try await (starsResult, linesResult, namesResult)
+            let (loadedIndex, loadedLines, loadedNames) = try await (indexResult, linesResult, namesResult)
+            let loadedStars = try await CatalogService.shared.loadStars()
+            self.starIndex = loadedIndex
             self.stars = loadedStars
             self.starsByID = Dictionary(uniqueKeysWithValues: loadedStars.map { ($0.id, $0) })
             self.constellationLines = loadedLines
@@ -105,6 +113,7 @@ final class SkyViewModel {
             constellationLines: constellationLines,
             constellations: constellations,
             starsByID: starsByID,
+            starIndex: starIndex,
             observerLocation: location.currentLocation,
             julianDay: time.julianDay,
             cameraCenter: camera.centerHorizontal,

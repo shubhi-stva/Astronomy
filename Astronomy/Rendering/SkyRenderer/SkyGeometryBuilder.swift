@@ -9,11 +9,20 @@
 //  Kept separate from `SkyRenderer` so the projection/visual-hierarchy logic
 //  is readable (and reasonable about) without Metal boilerplate in the way.
 //
-//  Cost per frame is one pass over the ~5k-star catalogue. Faint stars are
-//  rejected by an integer magnitude comparison *before* any trigonometry
-//  (see `StarAppearance.limitingMagnitude`), so at wide fields — where the
-//  most stars are on screen — the trig is only run for the few hundred stars
-//  that actually get drawn. That is what keeps 60-120 Hz panning affordable.
+//  Cost per frame over the ~83k-star catalogue is kept down by two cheap
+//  rejections that both run before any trigonometry:
+//
+//    * spatial — `StarIndex` dices the sky into 5-degree cells with
+//      precomputed bounding cones, and only cells whose cone can intersect
+//      the viewport cone are opened at all;
+//    * magnitude — cells store their stars magnitude-ascending, so the scan
+//      of a surviving cell stops at the first star fainter than the limit.
+//
+//  The two cover each other's weak case. At a wide field the limit is low
+//  (~5.4) so the magnitude cut does the work; at a narrow field the limit
+//  reaches 9.0 but the spatial cut leaves a handful of cells. The awkward
+//  middle — moderate field, moderate limit — is exactly where the grid earns
+//  its keep.
 //
 
 import CoreGraphics
@@ -102,9 +111,15 @@ struct SkyGeometryBuilder {
         coreVertices.reserveCapacity(2048)
         projectedObjects.reserveCapacity(2048)
 
-        for star in frameData.stars {
-            // CPU-side magnitude cutoff before any trigonometry.
-            guard star.magnitude < magnitudeLimit else { continue }
+        let plan = starScanPlan()
+        for range in plan.ranges {
+        for i in range {
+            let star = plan.stars[i]
+            // Magnitude is the cheapest possible rejection, and within a cell
+            // the stars are magnitude-ascending, so this ends the cell rather
+            // than skipping one star.
+            if star.magnitude >= magnitudeLimit { break }
+
             let visibility = StarAppearance.visibility(
                 magnitude: star.magnitude,
                 fieldOfViewDegrees: fov,
@@ -153,6 +168,45 @@ struct SkyGeometryBuilder {
                 visibility: visibility
             )
         }
+        }
+    }
+
+    /// Which slices of which star array `buildStars` should walk this frame.
+    ///
+    /// With a `StarIndex` present this is the spatial cull: the camera centre
+    /// is rotated into the equatorial frame (the same matrix the background
+    /// shader uses), the viewport's angular radius is derived exactly from the
+    /// stereographic projection, and every cell whose bounding cone cannot
+    /// reach that cone is dropped without a single star being touched.
+    ///
+    /// Without an index — catalogue still loading, or a hand-built snapshot in
+    /// a test — it degrades to one range covering the whole catalogue, which
+    /// produces byte-identical geometry, just slower.
+    private func starScanPlan() -> (stars: [Star], ranges: [Range<Int>]) {
+        guard let index = frameData.starIndex else {
+            return (frameData.stars, frameData.stars.isEmpty ? [] : [0..<frameData.stars.count])
+        }
+
+        let theta = StarIndex.fieldAngularRadiusRadians(
+            fieldOfViewDegrees: frameData.cameraFieldOfViewDegrees,
+            viewportSize: frameData.viewportSize
+        )
+
+        // Camera centre as a unit vector in the equatorial Cartesian frame the
+        // index is built in.
+        let horizontalToEquatorial = SkyBackgroundUniforms.horizontalToEquatorial(
+            observer: frameData.observerLocation,
+            julianDay: frameData.julianDay
+        )
+        let centerDirection = simd_normalize(
+            horizontalToEquatorial
+                * CoordinateTransformService.unitDirection(fromHorizontal: frameData.cameraCenter)
+        )
+
+        return (
+            index.stars,
+            index.visibleCellRanges(centerDirection: centerDirection, angularRadiusRadians: theta)
+        )
     }
 
     private mutating func addStarLabelIfWorthy(
@@ -256,22 +310,22 @@ struct SkyGeometryBuilder {
         for object in frameData.solarSystemObjects {
             guard let ndc = project(object.equatorial), isOnScreen(ndc, margin: 0.25) else { continue }
 
-            // The same sky-brightness limit the stars obey, so Venus and
-            // Jupiter linger into twilight while Uranus and Neptune are gone
-            // long before the sky is bright. The Sun and Moon are exempt —
-            // they *are* the daylight.
+            // Solar-system bodies are exempt from the magnitude cutoff
+            // entirely, at every hour of the day. A planetarium's job is to
+            // answer "where is Neptune right now", and Neptune at magnitude
+            // 7.8 would otherwise vanish under any daylight or wide-field
+            // limit — as would Uranus, and Mercury near superior conjunction.
+            // They are still modulated in *contrast* by the sky brightness, so
+            // they read as dimmer against a bright sky, but the multiplier
+            // bottoms out at `daylightContrastFloor` and never reaches zero.
+            // The Sun and Moon skip even that — they *are* the daylight.
             let visibility: Double
             switch object.kind {
             case .sun, .moon:
                 visibility = 1.0
             default:
-                visibility = StarAppearance.visibility(
-                    magnitude: object.magnitude,
-                    fieldOfViewDegrees: fov,
-                    sunAltitudeDegrees: sunAltitude
-                )
+                visibility = SkyBrightness.starContrast(sunAltitudeDegrees: sunAltitude)
             }
-            guard visibility > 0.02 else { continue }
 
             let position = SIMD2(Float(ndc.x), Float(ndc.y))
             let size = StarAppearance.solarSystemPointSize(
