@@ -132,3 +132,57 @@ depends on how positions are computed.
   scientifically-*oriented* placeholder — real astronomical imagery (e.g. a
   Milky Way panorama) would be a legitimate future upgrade, and should keep
   this same coordinate-transform seam if added.
+
+## Sky lighting model — analytic approximation, not radiative transfer
+
+Implemented in `Shaders.metal` (`backgroundFragmentShader`); see the extended
+comment block there for the full derivation.
+
+- **Angular term**: the Rayleigh phase function `(3/4)(1 + cos²γ)` for
+  molecular scattering, plus a forward-scattering Henyey–Greenstein lobe
+  (Henyey & Greenstein 1941) with `g = 0.76` standing in for aerosol/Mie
+  scattering. `γ` is the **true angular distance from the Sun**, taken from
+  `dot(skyDirection, sunDirection)`.
+- **Optical path term**: relative air mass from Kasten & Young (1989),
+  "Revised optical air mass tables and approximation formula", *Applied
+  Optics* 28(22), 4735 —
+  `X(h) = 1 / (sin h + 0.50572 (h_deg + 6.07995)^-1.6364)`.
+- **Shape borrowed from**: Preetham et al. (1999) and Hosek & Wilkie (2012)
+  analytic skylight models — the *structure* (angular term × optical-path
+  term), not their coefficient tables.
+- **Deliberately omitted**: aerosol turbidity parameter, ozone absorption,
+  multiple scattering, per-wavelength spectral integration / Rayleigh λ⁻⁴
+  weighting, illuminance calibration, tone mapping, clouds, terrain
+  shadowing, refraction of the solar disk. Colour is carried by an
+  interpolated RGB ramp keyed on Sun altitude; the phase functions modulate
+  brightness and saturation, not hue. **This is not physically based
+  rendering** and should not be cited as such.
+
+## Sky background brightness / star visibility — `Core/Astronomy/SkyBrightness.swift`
+
+- **What it is**: an empirical curve mapping Sun altitude to zenith sky
+  surface brightness in mag/arcsec², interpolated smoothly (smoothstep)
+  between hand-placed anchors straddling the standard twilight boundaries,
+  then converted to a naked-eye limiting magnitude by the linear fit
+  `m_lim = 0.55 μ − 5.55`.
+- **Calibration points**: a pristine 21.9 mag/arcsec² sky yields the textbook
+  naked-eye limit of 6.5; a midday 3.0 mag/arcsec² sky yields −3.9, so Venus
+  (−4.2) survives daylight and essentially nothing else does.
+- **Limitations**: the anchors are chosen to look right, not measured; there
+  is no airmass/extinction term for objects low in the sky, no Moon
+  contribution to sky brightness, no light-pollution (Bortle) parameter, and
+  no per-observer dark adaptation. The slope of 0.55 is a fit, not a
+  derivation. For a properly derived treatment see B. E. Schaefer,
+  "Telescopic Limiting Magnitudes", *PASP* 102, 212 (1990).
+
+## Planetary radii — `StarAppearance.angularDiameterDegrees`
+
+- **Source**: NASA/GSFC Planetary Fact Sheets (mean equatorial radii, in km).
+- **Use**: apparent angular diameter is computed as `2·atan(r / d)` where `d`
+  is the geocentric distance from the ephemeris, so disks grow and shrink
+  correctly as a planet approaches or recedes. A documented
+  minimum-visualization size keeps bodies clickable at wide field.
+- **Limitations**: Saturn's ring tilt is a fixed tasteful approximation, not
+  computed from true ring-plane geometry; oblateness is ignored (equatorial
+  radius used as a sphere); no limb darkening; procedural banding on Jupiter
+  is decorative, not a map of real belts and zones.
