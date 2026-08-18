@@ -29,6 +29,16 @@ final class SkyRenderer: NSObject, MTKViewDelegate {
     private let linePipelineState: MTLRenderPipelineState
     private let backgroundPipelineState: MTLRenderPipelineState
 
+    /// All-sky Milky Way panorama, sampled in galactic coordinates by the
+    /// background shader. Nil if the resource is missing or fails to decode,
+    /// in which case the shader keeps the analytic band it always had.
+    /// See DATA_SOURCES.md for source and licence (ESO/S. Brunier, CC BY 4.0).
+    private var milkyWayTexture: MTLTexture?
+    /// A 1x1 black stand-in, bound when the panorama is unavailable: a Metal
+    /// fragment function's texture argument must always be bound.
+    private let fallbackTexture: MTLTexture?
+    private let milkyWaySampler: MTLSamplerState?
+
     /// Supplies the latest frame data; set by the owning SwiftUI view.
     var frameDataProvider: (() -> SkyFrameData)?
 
@@ -96,7 +106,50 @@ final class SkyRenderer: NSObject, MTKViewDelegate {
             return nil
         }
 
+        // Wrapping in x (galactic longitude is periodic) and clamped in y
+        // (the poles are the edges of the image).
+        let samplerDescriptor = MTLSamplerDescriptor()
+        samplerDescriptor.minFilter = .linear
+        samplerDescriptor.magFilter = .linear
+        samplerDescriptor.mipFilter = .linear
+        samplerDescriptor.sAddressMode = .repeat
+        samplerDescriptor.tAddressMode = .clampToEdge
+        milkyWaySampler = device.makeSamplerState(descriptor: samplerDescriptor)
+
+        let fallbackDescriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rgba8Unorm, width: 1, height: 1, mipmapped: false
+        )
+        fallbackTexture = device.makeTexture(descriptor: fallbackDescriptor)
+        var black: [UInt8] = [0, 0, 0, 255]
+        fallbackTexture?.replace(
+            region: MTLRegionMake2D(0, 0, 1, 1), mipmapLevel: 0, withBytes: &black, bytesPerRow: 4
+        )
+
         super.init()
+
+        loadMilkyWayTexture()
+    }
+
+    /// Loads the bundled panorama off the critical path of the first frame:
+    /// the shader falls back to the analytic band until it arrives, so a
+    /// slow decode costs nothing but a moment of the old look.
+    private func loadMilkyWayTexture() {
+        let device = self.device
+        Task.detached(priority: .utility) {
+            guard let url = Bundle.main.url(forResource: "milkyway_panorama", withExtension: "jpg") else { return }
+            let loader = MTKTextureLoader(device: device)
+            let texture = try? await loader.newTexture(
+                URL: url,
+                options: [
+                    .textureUsage: NSNumber(value: MTLTextureUsage.shaderRead.rawValue),
+                    .textureStorageMode: NSNumber(value: MTLStorageMode.private.rawValue),
+                    .generateMipmaps: NSNumber(value: true),
+                    .SRGB: NSNumber(value: false)
+                ]
+            )
+            guard let texture else { return }
+            await MainActor.run { self.milkyWayTexture = texture }
+        }
     }
 
     nonisolated func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
@@ -123,8 +176,11 @@ final class SkyRenderer: NSObject, MTKViewDelegate {
 
         // 1. Background.
         var uniforms = SkyBackgroundUniforms.make(frameData: frameData)
+        uniforms.milkyWayTextureStrength = milkyWayTexture == nil ? 0 : 1
         encoder.setRenderPipelineState(backgroundPipelineState)
         encoder.setFragmentBytes(&uniforms, length: MemoryLayout<SkyBackgroundUniforms>.stride, index: 0)
+        encoder.setFragmentTexture(milkyWayTexture ?? fallbackTexture, index: 0)
+        encoder.setFragmentSamplerState(milkyWaySampler, index: 0)
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
 
         // 2. Constellation lines.

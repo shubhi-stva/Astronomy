@@ -74,7 +74,7 @@ struct BackgroundUniforms {
     float sunDirectionX;
     float sunDirectionY;
     float sunDirectionZ;
-    float _padding0;
+    float milkyWayTextureStrength;
     float _padding1;
     float _padding2;
 };
@@ -285,9 +285,29 @@ static inline float milkyWayIntensity(float3 galactic) {
     return saturate(intensity);
 }
 
+/// Equirectangular lookup into the all-sky panorama, in galactic coordinates.
+///
+/// The image is 2:1, centred on the galactic centre, with galactic longitude
+/// increasing to the *left* — verified against the catalogued positions of the
+/// Large and Small Magellanic Clouds, which land on the two obvious blobs in
+/// the lower right only under this sign convention. Latitude runs from
+/// b = +90 at the top edge to b = -90 at the bottom.
+static inline float3 milkyWayPanorama(
+    float3 galactic,
+    texture2d<float> panorama,
+    sampler panoramaSampler
+) {
+    float l = atan2(galactic.y, galactic.x);                  // -pi..pi, 0 = centre
+    float b = asin(clamp(galactic.z, -1.0f, 1.0f));           // -pi/2..pi/2
+    float2 uv = float2(0.5 - l / (2.0 * M_PI_F), 0.5 - b / M_PI_F);
+    return panorama.sample(panoramaSampler, uv).rgb;
+}
+
 fragment float4 backgroundFragmentShader(
     BackgroundVaryings in [[stage_in]],
-    constant BackgroundUniforms &u [[buffer(0)]]
+    constant BackgroundUniforms &u [[buffer(0)]],
+    texture2d<float> milkyWayPanoramaTexture [[texture(0)]],
+    sampler milkyWaySampler [[sampler(0)]]
 ) {
     float3 local = directionFromNDC(in.ndc, u);
     float3 horizontal = normalize(u.cameraToHorizontal * local);
@@ -360,10 +380,30 @@ fragment float4 backgroundFragmentShader(
         float darkness = saturate((-sunAlt - 8.0) / 8.0);
         float fovFade = saturate((u.fieldOfViewDegrees - 12.0) / 28.0);
         float horizonFade = saturate(altDeg / 8.0);
-        float mw = milkyWayIntensity(u.cameraToGalactic * local);
-        float amount = mw * darkness * fovFade * horizonFade * u.milkyWayStrength;
-        // Slightly warm-white, as the integrated light of the disk appears.
-        color += float3(0.052, 0.050, 0.046) * amount;
+        float3 galactic = u.cameraToGalactic * local;
+        float envelope = darkness * fovFade * horizonFade * u.milkyWayStrength;
+
+        if (u.milkyWayTextureStrength > 0.5) {
+            // Real photographic structure — dust lanes, the Great Rift, the
+            // bulge — from the bundled all-sky panorama. Added, never
+            // replacing the sky: the atmosphere model underneath still owns
+            // the colour of the sky itself.
+            float3 photo = milkyWayPanorama(galactic, milkyWayPanoramaTexture, milkyWaySampler);
+            // The panorama is a long-exposure image and is far brighter than a
+            // dark-adapted eye sees, so it is scaled down hard and pulled most
+            // of the way toward neutral: the point is the *structure*, not the
+            // saturation. A gamma above 1 deepens the dark lanes at the same
+            // time, which is what makes the Rift read.
+            float3 shaped = pow(saturate(photo), float3(1.35));
+            float lum = dot(shaped, float3(0.2126, 0.7152, 0.0722));
+            shaped = mix(float3(lum), shaped, 0.55);
+            color += shaped * 0.30 * envelope;
+        } else {
+            // No texture available: the analytic band, unchanged.
+            float mw = milkyWayIntensity(galactic);
+            // Slightly warm-white, as the integrated light of the disk appears.
+            color += float3(0.052, 0.050, 0.046) * (mw * envelope);
+        }
     } else {
         // Below the horizon: a distinctly darker, warmer ground tone so the
         // horizon line reads without needing a hard rule drawn across it.

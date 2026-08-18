@@ -50,7 +50,11 @@ struct SkyBackgroundUniforms {
     var sunDirectionX: Float
     var sunDirectionY: Float
     var sunDirectionZ: Float
-    var _padding0: Float = 0
+    /// 1 when the bundled all-sky Milky Way panorama is available as a
+    /// texture, 0 when it is not (in which case the shader falls back to the
+    /// analytic band). Set by `SkyRenderer` after `make`, since only the
+    /// renderer knows whether the texture actually loaded.
+    var milkyWayTextureStrength: Float = 0
     var _padding1: Float = 0
     var _padding2: Float = 0
 

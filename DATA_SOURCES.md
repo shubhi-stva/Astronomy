@@ -320,3 +320,42 @@ comment block there for the full derivation.
 - **Consequence worth knowing**: the drawn magnitude limit tops out at 9.0 (the
   star catalogue's completeness limit), so catalogue entries fainter than that
   never appear at any zoom. They are still searchable and selectable.
+
+## Milky Way panorama — `Rendering/Resources/milkyway_panorama.jpg`
+
+- **Source URL**: https://www.eso.org/public/images/eso0932a/ (image page),
+  file downloaded from https://cdn.eso.org/images/publicationjpg/eso0932a.jpg
+- **Title**: "The Milky Way panorama", from ESO's GigaGalaxy Zoom project.
+- **Credit / attribution (must be preserved)**: **ESO/S. Brunier**.
+- **Licence**: Creative Commons Attribution 4.0 International (CC BY 4.0).
+  ESO's terms (https://www.eso.org/public/copyright/) place all images on the
+  public ESO website under CC BY 4.0 "unless specifically noted"; the eso0932a
+  page carries no such note, and third-party credits such as S. Brunier are
+  cleared for reuse provided the credit line is reproduced unaltered. Only the
+  800-megapixel *original* is withheld for copyright reasons; the published
+  web-resolution versions used here are not.
+- **Format**: 4000 x 2000 equirectangular (2:1), 4.9 MB JPEG, used as
+  downloaded — no re-encoding, no crop.
+- **Projection and orientation**: equirectangular in **galactic** coordinates,
+  centred on the galactic centre (l = 0 at the horizontal centre, b = +90 at
+  the top edge). Galactic longitude increases to the **left**. That sign was
+  not assumed: it was verified by sampling the image at the catalogued
+  positions of the Large (l = 280.5, b = -32.9) and Small (l = 302.8,
+  b = -44.3) Magellanic Clouds, which land on the two obvious bright patches
+  in the lower right under this convention and on empty sky under the other.
+- **How it is used**: sampled per pixel in the background fragment shader
+  through the *existing* equatorial→galactic rotation
+  (`GalacticCoordinates.equatorialToGalactic`), added to the sky rather than
+  replacing it, and passed through the same envelope the analytic band always
+  used — it only appears once the Sun is below about -8 deg, fades out as you
+  zoom in past a ~40 deg field, and fades out near the horizon. It is scaled to
+  0.30, gamma-shaped (1.35, which deepens the dust lanes) and pulled 45% toward
+  neutral, because the panorama is a 120-hour long exposure and shows far more
+  light and colour than a dark-adapted eye ever does.
+- **Fallback**: if the resource is missing or fails to decode, the shader keeps
+  the original analytic Milky Way band. Both paths are still in `Shaders.metal`.
+- **Limitations**: the panorama is a photographic mosaic, so it carries its own
+  star field, which is added faintly on top of the catalogue-drawn stars (they
+  are in the same places, so this reads as bloom rather than as doubling). The
+  image is loaded without sRGB decoding, which is a deliberate simplification —
+  the layer is a subtle additive wash, not a colour-managed reproduction.
