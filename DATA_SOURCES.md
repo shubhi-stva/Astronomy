@@ -247,3 +247,76 @@ comment block there for the full derivation.
   computed from true ring-plane geometry; oblateness is ignored (equatorial
   radius used as a sphere); no limb darkening; procedural banding on Jupiter
   is decorative, not a map of real belts and zones.
+
+## Deep-sky catalogue — `Data/Catalogs/deepsky.json`
+
+- **Source**: [OpenNGC](https://github.com/mattiaverga/OpenNGC), a machine-
+  readable revision of the New General Catalogue and Index Catalogue.
+- **Author / attribution**: Mattia Verga.
+- **Licence**: Creative Commons Attribution-ShareAlike 4.0 International
+  (CC BY-SA 4.0) — the same licence family as the bundled star and
+  constellation data.
+- **Contents**: 909 objects — 342 galaxies, 344 open clusters, 115 globular
+  clusters, 55 planetary nebulae, 48 diffuse nebulae, 5 supernova remnants.
+  All 111 Messier objects are included.
+- **Selection rule**: every Messier object, plus any other OpenNGC object
+  brighter than magnitude 11 that has a recorded angular size. Objects with no
+  size could not be drawn at their true extent, which is the entire point of
+  the layer.
+- **Conversion**: `ra` and `dec` are J2000 in **degrees**, converted from
+  OpenNGC's sexagesimal columns. `positionAngleDegrees` is the orientation of
+  the **major axis, measured east of north** (the standard astronomical
+  position-angle convention); the renderer converts it into the current screen
+  frame by projecting a second point offset along that angle. Entries are
+  sorted magnitude-ascending. Any of `majorAxisArcmin`, `minorAxisArcmin` and
+  `positionAngleDegrees` may be `null`, in which case the object is drawn as a
+  circle at the minimum visualisation size.
+- **Dark nebulae** are dropped at load time. They are absorption features with
+  no light of their own; drawing them as bright blobs would be actively wrong.
+  (The selection rule above produced none in practice.)
+- **One deliberate reclassification**: OpenNGC types clusters with nebulosity
+  as `Cl+N`, which the conversion collapsed to `openCluster`. Three of those —
+  M42, IC 2944, IC 5146 — are dominated visually by their nebulosity, so
+  `DeepSkyObject.renderType` promotes any `openCluster` whose common name
+  contains "Nebula" back to `nebula`. Keyed off the catalogue's own name field,
+  no hand-written coordinates.
+
+### How deep-sky objects are drawn
+
+- **Size**: `majorAxisArcmin / 60 × pointsPerDegree`, with the same
+  `pointsPerDegree = viewportWidth / fieldOfViewDegrees` the planets use,
+  smooth-blended (`smoothMax`) against a 9 pt minimum so a small distant galaxy
+  stays visible and clickable at a wide field. M31's 2.96° spans ~5% of the
+  screen width at a 60° field.
+- **Shape**: an ellipse inscribed in the square point sprite, squashed by
+  `minorAxisArcmin / majorAxisArcmin` (floored at 0.12) and rotated to the
+  screen-space direction of the position angle. Falls back to a circle when
+  either the axes or the position angle are missing.
+- **Appearance**: entirely procedural — no imagery, no textures. Galaxies are a
+  soft elongated haze with a brighter core; globulars a concentrated core with
+  a granular outskirt; open clusters a very faint circular haze only (their
+  real member stars already come from the star catalogue, so anything stronger
+  would double-draw them); nebulae a lumpy diffuse glow; planetaries a small
+  fuzzy dot that grows a ring with zoom. Tints are close to white by design —
+  deep-sky objects are colourless to the eye — with only a restrained cool cast
+  on planetaries and a warm one on emission nebulae.
+- **Visibility — APPROXIMATION**: deep-sky objects go through exactly the same
+  `StarAppearance.visibility` path as the stars (no planet-style exemption),
+  but with two documented modifications.
+  1. *Surface-brightness bias*. Naked-eye detectability of an extended object
+     is set by surface brightness, not integrated magnitude. The true mean
+     surface brightness `m + 2.5·log10(area)` is not on the same scale as
+     stellar magnitudes, so instead a bounded fraction of it is added:
+     `penalty = clamp(0.5 × 2.5 × log10(area / 50 arcmin²), 0, 1.2)`. Objects
+     under ~50 arcmin² are unpenalised; the 1.2-magnitude cap is an aesthetic
+     choice, not physics, and exists so that M31 (3.44 → 4.64) and M45
+     (1.2 → 2.4) survive a wide field on a dark night while a magnitude 9
+     galaxy still needs zoom.
+  2. *Twilight suppression*. The star path floors its daylight contrast at 0.72
+     so the constellations stay legible under a bright sky. That convention is
+     right for point sources and wrong for low-surface-brightness smears, so
+     deep-sky objects are additionally multiplied by a factor that is 0 while
+     the Sun is above −2° and reaches 1 by −12°.
+- **Consequence worth knowing**: the drawn magnitude limit tops out at 9.0 (the
+  star catalogue's completeness limit), so catalogue entries fainter than that
+  never appear at any zoom. They are still searchable and selectable.
