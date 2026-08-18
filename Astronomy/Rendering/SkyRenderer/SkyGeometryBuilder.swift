@@ -84,7 +84,14 @@ struct SkyGeometryBuilder {
 
     private mutating func buildStars() {
         let fov = frameData.cameraFieldOfViewDegrees
-        let magnitudeLimit = StarAppearance.limitingMagnitude(fieldOfViewDegrees: fov)
+        let sunAltitude = frameData.sunAltitudeDegrees
+        // In daylight this collapses to about -3.9, so the loop below rejects
+        // the entire catalogue on an integer comparison and no trigonometry
+        // runs at all — the daylight sky is genuinely starless *and* free.
+        let magnitudeLimit = StarAppearance.effectiveLimitingMagnitude(
+            fieldOfViewDegrees: fov,
+            sunAltitudeDegrees: sunAltitude
+        )
 
         // Named/bright stars start earning labels only once you've zoomed in
         // past roughly a "whole constellation" field.
@@ -97,7 +104,11 @@ struct SkyGeometryBuilder {
         for star in frameData.stars {
             // CPU-side magnitude cutoff before any trigonometry.
             guard star.magnitude < magnitudeLimit else { continue }
-            let visibility = StarAppearance.visibility(magnitude: star.magnitude, fieldOfViewDegrees: fov)
+            let visibility = StarAppearance.visibility(
+                magnitude: star.magnitude,
+                fieldOfViewDegrees: fov,
+                sunAltitudeDegrees: sunAltitude
+            )
             guard visibility > 0.02 else { continue }
 
             guard let ndc = project(star.equatorial), isOnScreen(ndc) else { continue }
@@ -217,7 +228,8 @@ struct SkyGeometryBuilder {
                     ndc: CGPoint(x: ndc.x, y: ndc.y),
                     priority: .constellation,
                     style: .constellation,
-                    strength: strength
+                    strength: strength,
+                    verticalOffsetPoints: 0
                 )
             )
         }
@@ -238,33 +250,75 @@ struct SkyGeometryBuilder {
             return project(horizontal: horizontal, cullBelowHorizon: false)
         }
 
+        let sunAltitude = frameData.sunAltitudeDegrees
+
         for object in frameData.solarSystemObjects {
             guard let ndc = project(object.equatorial), isOnScreen(ndc, margin: 0.25) else { continue }
+
+            // The same sky-brightness limit the stars obey, so Venus and
+            // Jupiter linger into twilight while Uranus and Neptune are gone
+            // long before the sky is bright. The Sun and Moon are exempt —
+            // they *are* the daylight.
+            let visibility: Double
+            switch object.kind {
+            case .sun, .moon:
+                visibility = 1.0
+            default:
+                visibility = StarAppearance.visibility(
+                    magnitude: object.magnitude,
+                    fieldOfViewDegrees: fov,
+                    sunAltitudeDegrees: sunAltitude
+                )
+            }
+            guard visibility > 0.02 else { continue }
+
             let position = SIMD2(Float(ndc.x), Float(ndc.y))
             let size = StarAppearance.solarSystemPointSize(
+                objectID: object.id,
                 kind: object.kind,
                 magnitude: object.magnitude,
+                distanceKilometres: object.distanceKilometres,
                 fieldOfViewDegrees: fov,
                 viewportWidth: viewportWidth
             )
+            let detail = StarAppearance.detailLevel(pointSize: size)
+            let alpha = Float(visibility)
+
+            // Screen-space direction toward the Sun: the bright limb of any
+            // phased body points that way. Same construction the Moon has
+            // always used, reused unchanged for the inferior planets.
+            let limbAngle = Self.brightLimbAngle(moonNDC: ndc, sunNDC: sunScreen)
+
+            /// Radius of the drawn sprite in points, used to push the label
+            /// clear of the body.
+            var spriteRadius = Double(size) * 0.5
 
             switch object.kind {
             case .sun:
-                appendGlow(at: position, color: StarAppearance.sunColor, size: size * 3.4, alpha: 0.40)
+                // The bloom is a *smooth* minimum of "3.4x the disk" and
+                // "a bounded offset from the disk", so it dominates at wide
+                // field and then stops growing instead of swallowing the view.
+                let glowSize = StarAppearance.smoothMin(
+                    Double(size) * 3.4,
+                    Double(size) * 1.25 + 110.0,
+                    softness: 40.0
+                )
+                appendGlow(at: position, color: StarAppearance.sunColor,
+                           size: Float(glowSize), alpha: 0.40)
                 coreVertices.append(
                     PointVertex(positionNDC: position, color: StarAppearance.sunColor,
-                                pointSize: size, shape: PointSpriteShape.disk.rawValue)
+                                pointSize: size, shape: PointSpriteShape.sunDisk.rawValue,
+                                param2: detail)
                 )
 
             case .moon:
-                let k = frameData.moonIlluminatedFraction
+                let k = object.illuminatedFraction ?? frameData.moonIlluminatedFraction
                 appendGlow(
                     at: position,
                     color: StarAppearance.moonColor,
                     size: size * 2.6,
                     alpha: Float(0.06 + 0.22 * k)
                 )
-                let limbAngle = Self.brightLimbAngle(moonNDC: ndc, sunNDC: sunScreen)
                 coreVertices.append(
                     PointVertex(
                         positionNDC: position,
@@ -277,16 +331,46 @@ struct SkyGeometryBuilder {
                 )
 
             case .planet:
-                let color = StarAppearance.planetColor(id: object.id)
-                appendGlow(at: position, color: color, size: size * 3.0, alpha: 0.20)
+                var color = StarAppearance.planetColor(id: object.id)
+                color.w = alpha
+                var glowColor = color
+                glowColor.w = 0.20 * alpha
+                glowVertices.append(
+                    PointVertex(positionNDC: position, color: glowColor,
+                                pointSize: min(200, size * 3.0),
+                                shape: PointSpriteShape.glow.rawValue)
+                )
+
+                // Saturn's sprite widens to make room for its rings; the
+                // shader shrinks the disk inside it by exactly the same
+                // factor, so the planet itself is unaffected.
+                var spriteSize = size
+                if object.id == "saturn" {
+                    let scale = StarAppearance.saturnSpriteScale(detail: detail)
+                    // Hard cap: Metal point sizes are limited (511 on current
+                    // Apple GPUs), and 260 * 2.4 would overshoot it.
+                    spriteSize = min(500, size * scale)
+                    spriteRadius = Double(spriteSize) * 0.5
+                }
+
                 coreVertices.append(
-                    PointVertex(positionNDC: position, color: color,
-                                pointSize: size, shape: PointSpriteShape.disk.rawValue)
+                    PointVertex(
+                        positionNDC: position,
+                        color: color,
+                        pointSize: spriteSize,
+                        shape: PointSpriteShape.planetDisk.rawValue,
+                        param0: Float(object.illuminatedFraction ?? 1.0),
+                        param1: Float(limbAngle),
+                        param2: detail,
+                        param3: StarAppearance.planetShaderCode(id: object.id)
+                    )
                 )
 
             case .star:
+                var color = StarAppearance.color(colorIndex: nil)
+                color.w = alpha
                 coreVertices.append(
-                    PointVertex(positionNDC: position, color: StarAppearance.color(colorIndex: nil),
+                    PointVertex(positionNDC: position, color: color,
                                 pointSize: size, shape: PointSpriteShape.starCore.rawValue)
                 )
             }
@@ -305,6 +389,8 @@ struct SkyGeometryBuilder {
             // Solar-system labels are always worth showing when the body is on
             // screen; only the very faintest outer planets fade at wide field.
             let base = object.magnitude > 5.0 ? Self.fadeIn(value: 45.0 - fov, over: 20.0) : 1.0
+            // At extreme zoom the disk fills the view and its name is noise.
+            let zoomFade = 1.0 - Self.fadeIn(value: spriteRadius - 110.0, over: 60.0)
             labelCandidates.append(
                 SkyLabelCandidate(
                     id: object.id,
@@ -312,7 +398,11 @@ struct SkyGeometryBuilder {
                     ndc: CGPoint(x: ndc.x, y: ndc.y),
                     priority: priority,
                     style: .solarSystem,
-                    strength: isSelected ? 1.0 : base
+                    strength: (isSelected ? 1.0 : base * visibility) * zoomFade,
+                    // Offset tracks the drawn disk, so a big Jupiter never
+                    // covers its own label. 14 pt at marker scale, growing
+                    // linearly with the radius after that.
+                    verticalOffsetPoints: spriteRadius + 12.0
                 )
             )
         }
@@ -336,14 +426,18 @@ struct SkyGeometryBuilder {
 
         let baseSize: Float
         switch projected.object.kind {
-        case .sun, .moon:
+        case .sun, .moon, .planet:
+            // Ring tracks the actual drawn disk, so selecting a zoomed-in
+            // planet rings the planet rather than sitting inside it.
             baseSize = StarAppearance.solarSystemPointSize(
+                objectID: projected.object.id,
                 kind: projected.object.kind,
                 magnitude: projected.object.magnitude,
+                distanceKilometres: projected.object.distanceKilometres,
                 fieldOfViewDegrees: frameData.cameraFieldOfViewDegrees,
                 viewportWidth: Double(frameData.viewportSize.width)
             ) * 1.9
-        default:
+        case .star:
             baseSize = max(26, StarAppearance.pointSize(forMagnitude: projected.object.magnitude) * 3.2)
         }
 
@@ -351,7 +445,7 @@ struct SkyGeometryBuilder {
             PointVertex(
                 positionNDC: SIMD2(Float(projected.ndcPosition.x), Float(projected.ndcPosition.y)),
                 color: StarAppearance.selectionRingColor,
-                pointSize: min(180, max(22, baseSize)),
+                pointSize: min(500, max(22, baseSize)),
                 shape: PointSpriteShape.selectionRing.rawValue
             )
         )

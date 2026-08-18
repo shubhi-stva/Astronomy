@@ -95,4 +95,42 @@ enum MoonPosition {
 
         return EquatorialCoordinate(rightAscensionDegrees: ra, declinationDegrees: dec)
     }
+
+    /// Geocentric distance to the Moon's centre, in kilometres.
+    ///
+    /// Meeus, Chapter 47: `distance = 385000.56 km + Sigma_r / 1000`, with
+    /// `Sigma_r` the cosine series in Table 47.a. As with the longitude series
+    /// above, only the largest-amplitude terms are kept — enough to reproduce
+    /// the perigee/apogee swing (roughly 356,500 km to 406,700 km, a 12%
+    /// change in apparent diameter) to within a few hundred kilometres.
+    static func distanceKilometres(julianDay jd: Double) -> Double {
+        let t = JulianDate.julianCenturies(fromJulianDay: jd)
+
+        let d = Angle.degreesToRadians(Angle.normalizeDegrees(
+            297.8501921 + 445267.1114034 * t - 0.0018819 * t * t + t * t * t / 545868.0
+        ))
+        let m = Angle.degreesToRadians(Angle.normalizeDegrees(
+            357.5291092 + 35999.0502909 * t - 0.0001536 * t * t
+        ))
+        let mPrime = Angle.degreesToRadians(Angle.normalizeDegrees(
+            134.9633964 + 477198.8675055 * t + 0.0087414 * t * t + t * t * t / 69699.0
+        ))
+        let f = Angle.degreesToRadians(Angle.normalizeDegrees(
+            93.2720950 + 483202.0175233 * t - 0.0036539 * t * t - t * t * t / 3526000.0
+        ))
+
+        var sigmaR = 0.0
+        sigmaR += -20905355 * cos(mPrime)
+        sigmaR += -3699111 * cos(2 * d - mPrime)
+        sigmaR += -2955968 * cos(2 * d)
+        sigmaR += -569925 * cos(2 * mPrime)
+        sigmaR += 48888 * cos(m)
+        sigmaR += -3149 * cos(2 * f)
+        sigmaR += 246158 * cos(2 * d - 2 * mPrime)
+        sigmaR += -152138 * cos(2 * d - m - mPrime)
+        sigmaR += -170733 * cos(2 * d + mPrime)
+        sigmaR += -204586 * cos(2 * d - m)
+
+        return 385000.56 + sigmaR / 1000.0
+    }
 }

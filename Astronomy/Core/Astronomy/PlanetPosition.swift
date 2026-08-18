@@ -106,10 +106,42 @@ private let earthElements = OrbitalElements(
     node0: 0.0, nodeDot: 0.0
 )
 
+/// Everything the renderer needs about a planet at one instant: where it is,
+/// how far away it is (so its disk can be sized truthfully), and how much of
+/// the disk the Sun lights up (so Mercury and Venus can show a phase).
+struct PlanetState {
+    let equatorial: EquatorialCoordinate
+    /// Earth-planet distance, AU. Drives the apparent angular diameter.
+    let geocentricDistanceAU: Double
+    /// Sun-planet distance, AU.
+    let heliocentricDistanceAU: Double
+    /// Illuminated fraction of the disk, 0 (new) ... 1 (full).
+    let illuminatedFraction: Double
+}
+
 enum PlanetPosition {
 
     /// Geocentric apparent RA/Dec for a planet at the given Julian Day.
     static func equatorialCoordinate(planet: Planet, julianDay jd: Double) -> EquatorialCoordinate {
+        state(planet: planet, julianDay: jd).equatorial
+    }
+
+    /// Full geocentric state: direction, both distances, and phase.
+    ///
+    /// The distances fall straight out of the heliocentric position vectors the
+    /// Keplerian solution already produces — no extra model is introduced.
+    /// The phase angle `i` comes from the Sun-planet-Earth triangle,
+    ///
+    ///     cos(i) = (r^2 + delta^2 - R^2) / (2 * r * delta)
+    ///
+    /// with `r` the Sun-planet distance, `delta` the Earth-planet distance and
+    /// `R` the Sun-Earth distance (Meeus, *Astronomical Algorithms*, 2nd ed.,
+    /// eq. 41.2), and then the illuminated fraction `k = (1 + cos i) / 2`
+    /// (eq. 41.1) — the same relation `MoonPhase` uses, generalised to any
+    /// planet. For the superior planets `i` never exceeds a few degrees to
+    /// about 47 degrees (Mars), so `k` stays close to 1; for Mercury and Venus
+    /// it sweeps the full crescent-to-full range.
+    static func state(planet: Planet, julianDay jd: Double) -> PlanetState {
         let t = JulianDate.julianCenturies(fromJulianDay: jd)
 
         let earthHelio = heliocentricEclipticPosition(elements: earthElements, t: t)
@@ -119,6 +151,21 @@ enum PlanetPosition {
         let gx = planetHelio.x - earthHelio.x
         let gy = planetHelio.y - earthHelio.y
         let gz = planetHelio.z - earthHelio.z
+
+        let delta = (gx * gx + gy * gy + gz * gz).squareRoot()
+        let r = (planetHelio.x * planetHelio.x + planetHelio.y * planetHelio.y
+            + planetHelio.z * planetHelio.z).squareRoot()
+        let bigR = (earthHelio.x * earthHelio.x + earthHelio.y * earthHelio.y
+            + earthHelio.z * earthHelio.z).squareRoot()
+
+        let denominator = 2 * r * delta
+        let cosPhaseAngle: Double
+        if denominator > 1e-9 {
+            cosPhaseAngle = max(-1.0, min(1.0, (r * r + delta * delta - bigR * bigR) / denominator))
+        } else {
+            cosPhaseAngle = 1.0
+        }
+        let k = max(0.0, min(1.0, (1 + cosPhaseAngle) / 2))
 
         // Obliquity of the ecliptic (mean, of date).
         let meanObliquity = 23.439291 - 0.0130042 * t
@@ -132,9 +179,14 @@ enum PlanetPosition {
         let raRad = atan2(yEq, xEq)
         let decRad = atan2(zEq, sqrt(xEq * xEq + yEq * yEq))
 
-        return EquatorialCoordinate(
-            rightAscensionDegrees: Angle.normalizeDegrees(Angle.radiansToDegrees(raRad)),
-            declinationDegrees: Angle.radiansToDegrees(decRad)
+        return PlanetState(
+            equatorial: EquatorialCoordinate(
+                rightAscensionDegrees: Angle.normalizeDegrees(Angle.radiansToDegrees(raRad)),
+                declinationDegrees: Angle.radiansToDegrees(decRad)
+            ),
+            geocentricDistanceAU: delta,
+            heliocentricDistanceAU: r,
+            illuminatedFraction: k
         )
     }
 

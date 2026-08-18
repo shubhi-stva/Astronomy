@@ -25,6 +25,13 @@ enum PointSpriteShape: Float {
     case moon = 3
     /// Hollow ring used to highlight the selected object.
     case selectionRing = 4
+    /// Planetary disk with procedural detail that fades in with zoom.
+    /// `param0` = illuminated fraction, `param1` = bright-limb angle (radians),
+    /// `param2` = detail level 0...1, `param3` = planet code (see
+    /// `StarAppearance.planetShaderCode`).
+    case planetDisk = 5
+    /// Solar disk: a clear limb plus a bounded bloom. `param2` = detail level.
+    case sunDisk = 6
 }
 
 /// One instance of a point sprite: a star, its glow, the Sun, the Moon, a
@@ -37,6 +44,8 @@ struct PointVertex {
     var shape: Float
     var param0: Float = 0
     var param1: Float = 0
+    var param2: Float = 0
+    var param3: Float = 0
 }
 
 /// One vertex of a constellation line segment.

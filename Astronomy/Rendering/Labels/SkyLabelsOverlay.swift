@@ -22,7 +22,7 @@ struct SkyLabelsOverlay: View {
                     .foregroundStyle(color(for: label.style))
                     .shadow(color: .black.opacity(0.6), radius: 3)
                     .fixedSize()
-                    .position(x: label.position.x, y: label.position.y + offset(for: label.style))
+                    .position(x: label.position.x, y: label.position.y)
                     .opacity(label.opacity)
                     .animation(.easeInOut(duration: 0.35), value: label.opacity)
             }
@@ -46,12 +46,9 @@ struct SkyLabelsOverlay: View {
         }
     }
 
-    /// Nudges the label just below its object's point, more so for
-    /// constellation names (which sit at a figure centroid, not a point).
-    private func offset(for style: LabelStyle) -> CGFloat {
-        switch style {
-        case .constellation: return 0
-        case .star, .solarSystem: return 14
-        }
-    }
+    // The vertical nudge below the object's point now travels with the
+    // candidate (`SkyLabelCandidate.verticalOffsetPoints`) and is baked into
+    // `label.position` by `LabelLayoutEngine`, so collision testing sees the
+    // same rectangle the user does. Constellations still use 0, stars 14, and
+    // solar-system bodies scale theirs with their rendered disk.
 }

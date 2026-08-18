@@ -53,6 +53,11 @@ struct SkyLabelCandidate {
     /// Visibility weight in 0...1 from the FOV fade curves; the engine
     /// multiplies it into the final opacity and drops near-invisible entries.
     let strength: Double
+    /// How far *below* the object's screen position the label should sit, in
+    /// points. Solar-system bodies grow their own offset with their rendered
+    /// disk so a zoomed-in Jupiter never sits on top of its own name; stars
+    /// and constellations keep the fixed values they always had.
+    var verticalOffsetPoints: Double = 14
 }
 
 /// A label that survived layout, positioned in view (point) coordinates with
@@ -121,7 +126,8 @@ final class LabelLayoutEngine {
 
         for candidate in ordered {
             guard placed.count < Self.maximumLabels else { break }
-            let point = Self.viewPoint(ndc: candidate.ndc, viewportSize: viewportSize)
+            var point = Self.viewPoint(ndc: candidate.ndc, viewportSize: viewportSize)
+            point.y += candidate.verticalOffsetPoints
             var box = Self.boundingBox(text: candidate.text, at: point)
 
             // Hysteresis: a label already on screen defends its spot with a

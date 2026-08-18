@@ -75,10 +75,39 @@ enum StarAppearance {
         return narrowLimit + (wideLimit - narrowLimit) * t
     }
 
-    /// Opacity multiplier for a star, fading it out over the last magnitude
-    /// before the cutoff so stars dissolve instead of popping.
-    static func visibility(magnitude: Double, fieldOfViewDegrees fov: Double) -> Double {
-        let limit = limitingMagnitude(fieldOfViewDegrees: fov)
+    /// The magnitude cutoff actually in force: the more restrictive of the
+    /// aesthetic field-of-view limit and the physical sky-brightness limit
+    /// (`SkyBrightness`). In daylight the sky limit dominates and drops to
+    /// about -3.9, so the star field simply is not there; by astronomical
+    /// night the sky limit has risen past 6 and the FOV limit takes over
+    /// again, exactly as before this existed.
+    static func effectiveLimitingMagnitude(
+        fieldOfViewDegrees fov: Double,
+        sunAltitudeDegrees sunAltitude: Double
+    ) -> Double {
+        min(
+            limitingMagnitude(fieldOfViewDegrees: fov),
+            SkyBrightness.limitingMagnitude(sunAltitudeDegrees: sunAltitude)
+        )
+    }
+
+    /// Opacity multiplier for an object, fading it out over the last magnitude
+    /// before the cutoff so objects dissolve instead of popping.
+    ///
+    /// Note the fade is *magnitude-dependent*, not a global daylight dimmer:
+    /// as the limit sweeps down through sunset, mag 5 stars vanish long before
+    /// mag 1 ones, and Venus outlasts everything. That ordering is the whole
+    /// point — a uniform opacity multiplier would keep the faint field visible
+    /// (just dimmer) in broad daylight, which is exactly the wrong look.
+    static func visibility(
+        magnitude: Double,
+        fieldOfViewDegrees fov: Double,
+        sunAltitudeDegrees sunAltitude: Double = -90
+    ) -> Double {
+        let limit = effectiveLimitingMagnitude(
+            fieldOfViewDegrees: fov,
+            sunAltitudeDegrees: sunAltitude
+        )
         let fadeWidth = 1.1
         if magnitude <= limit - fadeWidth { return 1.0 }
         if magnitude >= limit { return 0.0 }
@@ -141,36 +170,148 @@ enum StarAppearance {
         }
     }
 
-    /// Angular diameter, in degrees, used to size a solar-system disk.
-    /// The Sun and Moon get their true ~0.5 deg; planets are point sources to
-    /// the naked eye, so they get a small floor instead so they never vanish.
-    static func angularDiameterDegrees(kind: CelestialObjectKind) -> Double {
-        switch kind {
-        case .sun, .moon: return 0.53
-        case .planet: return 0.02
-        case .star: return 0.0
+    /// Mean equatorial radii in kilometres.
+    ///
+    /// Source: NASA/GSFC Planetary Fact Sheets (equatorial radius, itself
+    /// derived from the IAU Working Group on Cartographic Coordinates and
+    /// Rotational Elements report). See DATA_SOURCES.md.
+    static func equatorialRadiusKilometres(objectID id: String) -> Double? {
+        switch id {
+        case "sun":     return 696_000.0
+        case "moon":    return 1_737.4
+        case "mercury": return 2_439.7
+        case "venus":   return 6_051.8
+        case "mars":    return 3_389.5
+        case "jupiter": return 71_492.0
+        case "saturn":  return 60_268.0
+        case "uranus":  return 25_559.0
+        case "neptune": return 24_764.0
+        default:        return nil
         }
     }
 
-    /// Screen diameter in points for a solar-system body: its true angular
-    /// size where that dominates, with a magnitude-driven floor so a planet
-    /// still reads as a bright point at wide field, and a ceiling so nothing
-    /// becomes a giant blob when zoomed in.
+    /// True apparent angular diameter of a body, in degrees:
+    /// `2 * atan(radius / distance)`, using the real equatorial radius above
+    /// and the *current* distance from the ephemeris. This is what makes Mars
+    /// swell near opposition and the Moon change size between perigee and
+    /// apogee — the old code returned a flat 0.02 deg for every planet, so
+    /// nothing ever changed and no planet ever resolved into a disk.
+    ///
+    /// Returns 0 for anything without a radius (stars — unresolvable).
+    static func angularDiameterDegrees(objectID id: String, distanceKilometres: Double?) -> Double {
+        guard let radius = equatorialRadiusKilometres(objectID: id),
+              let distance = distanceKilometres, distance > radius else { return 0 }
+        return 2 * atan(radius / distance) * 180.0 / .pi
+    }
+
+    /// Smooth analogue of `max(a, b)`.
+    ///
+    /// `0.5 * (a + b + sqrt((a-b)^2 + k^2))` is >= max(a, b), exceeds it by at
+    /// most k/2 (where the two curves cross), and is differentiable
+    /// everywhere. Used instead of a hard `max` so the moment the true angular
+    /// size overtakes the minimum visualisation size — which happens *while
+    /// the user is pinching* — has no kink or pop in it.
+    static func smoothMax(_ a: Double, _ b: Double, softness k: Double) -> Double {
+        0.5 * (a + b + ((a - b) * (a - b) + k * k).squareRoot())
+    }
+
+    /// Smooth analogue of `min(a, b)`. Mirror of `smoothMax`.
+    static func smoothMin(_ a: Double, _ b: Double, softness k: Double) -> Double {
+        0.5 * (a + b - ((a - b) * (a - b) + k * k).squareRoot())
+    }
+
+    /// Ceiling on rendered disk diameter, in points, per kind. Generous: the
+    /// point of zooming in is to see a disk, and a point sprite is cheap. The
+    /// ceiling exists only so an extreme zoom cannot exceed the GPU's maximum
+    /// point size.
+    static func maximumPointSize(kind: CelestialObjectKind) -> Double {
+        switch kind {
+        case .sun: return 300
+        case .moon: return 340
+        case .planet: return 260
+        case .star: return 13
+        }
+    }
+
+    /// Minimum visualisation size, in points: the diameter a body is drawn at
+    /// when its true angular size is too small to see or click. Driven by
+    /// magnitude (a bright planet earns a bigger marker than a faint one),
+    /// with a hard floor per kind.
+    static func minimumVisualizationSize(kind: CelestialObjectKind, magnitude: Double) -> Double {
+        let byMagnitude = Double(pointSize(forMagnitude: magnitude))
+        switch kind {
+        case .sun: return max(14.0, byMagnitude)
+        case .moon: return max(12.0, byMagnitude)
+        case .planet: return max(3.5, byMagnitude)
+        case .star: return byMagnitude
+        }
+    }
+
+    /// Screen diameter in points for a solar-system body.
+    ///
+    ///     pointsPerDegree = viewportWidth / fieldOfViewDegrees
+    ///     trueSize        = angularDiameterDegrees * pointsPerDegree
+    ///     size            = min(ceiling, smoothMax(trueSize, floor))
+    ///
+    /// `trueSize` is the truthful term and it is linear in the zoom factor, so
+    /// it dominates completely once you are zoomed in: halve the field of
+    /// view, double the disk. `floor` is the documented minimum visualisation
+    /// size, which dominates at wide field where the true disk would be a
+    /// fraction of a pixel. `smoothMax` blends the two with no kink.
     static func solarSystemPointSize(
+        objectID: String,
         kind: CelestialObjectKind,
         magnitude: Double,
+        distanceKilometres: Double?,
         fieldOfViewDegrees fov: Double,
         viewportWidth: Double
     ) -> Float {
+        guard kind != .star else { return pointSize(forMagnitude: magnitude) }
+
         let pointsPerDegree = max(1.0, viewportWidth / max(fov, 0.001))
-        let angular = angularDiameterDegrees(kind: kind) * pointsPerDegree
-        let floorSize = Double(pointSize(forMagnitude: magnitude))
-        let raw = max(angular, floorSize)
-        switch kind {
-        case .sun: return Float(min(120.0, max(14.0, raw)))
-        case .moon: return Float(min(140.0, max(12.0, raw)))
-        case .planet: return Float(min(46.0, max(3.0, raw)))
-        case .star: return pointSize(forMagnitude: magnitude)
+        let trueSize = angularDiameterDegrees(objectID: objectID, distanceKilometres: distanceKilometres)
+            * pointsPerDegree
+        let floorSize = minimumVisualizationSize(kind: kind, magnitude: magnitude)
+
+        // Softness proportional to the floor, so the blend region scales with
+        // the marker and is never a fixed number of pixels.
+        let blended = smoothMax(trueSize, floorSize, softness: floorSize * 0.75)
+        return Float(min(maximumPointSize(kind: kind), blended))
+    }
+
+    /// How far the rendered disk has grown past the point where surface
+    /// detail is worth drawing: 0 below `detailStart` points across, 1 above
+    /// `detailFull`, smoothstepped between. Multiplies every procedural
+    /// feature (bands, rings, terminator contrast) so nothing ever appears
+    /// abruptly as you pinch.
+    static func detailLevel(pointSize size: Float) -> Float {
+        let start: Float = 16, full: Float = 52
+        let t = max(0, min(1, (size - start) / (full - start)))
+        return t * t * (3 - 2 * t)
+    }
+
+    /// Saturn's sprite is widened so the rings have somewhere to live: the
+    /// planet's disk occupies only `1 / ringSpriteScale` of the sprite. The
+    /// scale itself fades in with detail so the sprite is a plain disk when
+    /// small. The shader recomputes this identically — keep the two in sync.
+    static let saturnRingSpriteScale: Float = 2.4
+
+    static func saturnSpriteScale(detail: Float) -> Float {
+        1.0 + (saturnRingSpriteScale - 1.0) * detail
+    }
+
+    /// Numeric identity passed to the shader so it can pick a planet's
+    /// procedural treatment. Keep in sync with `Shaders.metal`.
+    static func planetShaderCode(id: String) -> Float {
+        switch id {
+        case "mercury": return 0
+        case "venus":   return 1
+        case "mars":    return 2
+        case "jupiter": return 3
+        case "saturn":  return 4
+        case "uranus":  return 5
+        case "neptune": return 6
+        default:        return 7
         }
     }
 

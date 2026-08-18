@@ -41,7 +41,18 @@ struct SkyBackgroundUniforms {
     /// Current field of view in degrees; the Milky Way fades as you zoom in.
     var fieldOfViewDegrees: Float
     var milkyWayStrength: Float
-    var _padding: SIMD2<Float> = .zero
+    /// Unit vector toward the Sun in the horizontal frame (X = East,
+    /// Y = Zenith, Z = South) — the same frame `cameraToHorizontal` maps into,
+    /// so the shader can take `dot(skyDirection, sunDirection)` directly and
+    /// get the true scattering angle. Sent as three scalars rather than a
+    /// `SIMD3<Float>` so Swift and MSL agree on the packing without any
+    /// 16-byte alignment surprises.
+    var sunDirectionX: Float
+    var sunDirectionY: Float
+    var sunDirectionZ: Float
+    var _padding0: Float = 0
+    var _padding1: Float = 0
+    var _padding2: Float = 0
 
     static func make(frameData: SkyFrameData) -> SkyBackgroundUniforms {
         let centerDir = CoordinateTransformService.unitDirection(fromHorizontal: frameData.cameraCenter)
@@ -67,6 +78,7 @@ struct SkyBackgroundUniforms {
         }
 
         let sunHorizontal = frameData.sunHorizontal ?? HorizontalCoordinate(altitudeDegrees: -90, azimuthDegrees: 0)
+        let sunDirection = CoordinateTransformService.unitDirection(fromHorizontal: sunHorizontal)
 
         return SkyBackgroundUniforms(
             cameraToHorizontal: Self.floatMatrix(cameraToHorizontal),
@@ -78,7 +90,10 @@ struct SkyBackgroundUniforms {
             sunAltitudeDegrees: Float(sunHorizontal.altitudeDegrees),
             sunAzimuthDegrees: Float(sunHorizontal.azimuthDegrees),
             fieldOfViewDegrees: Float(frameData.cameraFieldOfViewDegrees),
-            milkyWayStrength: Float(frameData.milkyWayStrength)
+            milkyWayStrength: Float(frameData.milkyWayStrength),
+            sunDirectionX: Float(sunDirection.x),
+            sunDirectionY: Float(sunDirection.y),
+            sunDirectionZ: Float(sunDirection.z)
         )
     }
 

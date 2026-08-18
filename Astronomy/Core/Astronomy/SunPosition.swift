@@ -56,4 +56,34 @@ enum SunPosition {
 
         return EquatorialCoordinate(rightAscensionDegrees: ra, declinationDegrees: dec)
     }
+
+    /// Earth-Sun distance (the Sun's radius vector R) in astronomical units.
+    ///
+    /// Meeus, *Astronomical Algorithms*, 2nd ed., eq. 25.5:
+    ///
+    ///     R = 1.000001018 * (1 - e^2) / (1 + e * cos(nu))
+    ///
+    /// where `nu` is the Sun's true anomaly (mean anomaly plus the equation of
+    /// centre). Varies between about 0.9833 AU (perihelion, early January) and
+    /// 1.0167 AU (aphelion, early July), which is a 3.4% swing in the Sun's
+    /// apparent angular diameter — visible once you zoom in.
+    static func radiusVectorAU(julianDay jd: Double) -> Double {
+        let t = JulianDate.julianCenturies(fromJulianDay: jd)
+
+        let m = Angle.normalizeDegrees(357.52911 + 35999.05029 * t - 0.0001537 * t * t)
+        let mRad = Angle.degreesToRadians(m)
+        let e = 0.016708634 - 0.000042037 * t - 0.0000001267 * t * t
+
+        let c = (1.914602 - 0.004817 * t - 0.000014 * t * t) * sin(mRad)
+            + (0.019993 - 0.000101 * t) * sin(2 * mRad)
+            + 0.000289 * sin(3 * mRad)
+
+        let nu = Angle.degreesToRadians(m + c)
+        return 1.000001018 * (1 - e * e) / (1 + e * cos(nu))
+    }
+}
+
+/// One astronomical unit in kilometres (IAU 2012 defining value).
+enum AstronomicalConstants {
+    static let astronomicalUnitKilometres = 149_597_870.7
 }

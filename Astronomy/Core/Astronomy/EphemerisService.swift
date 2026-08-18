@@ -17,12 +17,15 @@ enum EphemerisService {
         var objects: [CelestialObject] = []
 
         let sunEq = SunPosition.equatorialCoordinate(julianDay: jd)
+        let sunDistanceKm = SunPosition.radiusVectorAU(julianDay: jd)
+            * AstronomicalConstants.astronomicalUnitKilometres
         objects.append(CelestialObject(
             id: "sun",
             name: "Sun",
             kind: .sun,
             equatorial: sunEq,
-            magnitude: -26.7
+            magnitude: -26.7,
+            distanceKilometres: sunDistanceKm
         ))
 
         let moonEq = MoonPosition.equatorialCoordinate(julianDay: jd)
@@ -31,17 +34,22 @@ enum EphemerisService {
             name: "Moon",
             kind: .moon,
             equatorial: moonEq,
-            magnitude: -12.7
+            magnitude: -12.7,
+            distanceKilometres: MoonPosition.distanceKilometres(julianDay: jd),
+            illuminatedFraction: MoonPhase.illuminatedFraction(sun: sunEq, moon: moonEq)
         ))
 
         for planet in Planet.allCases {
-            let eq = PlanetPosition.equatorialCoordinate(planet: planet, julianDay: jd)
+            let state = PlanetPosition.state(planet: planet, julianDay: jd)
             objects.append(CelestialObject(
                 id: planet.rawValue,
                 name: planet.displayName,
                 kind: .planet,
-                equatorial: eq,
-                magnitude: approximateMagnitude(for: planet)
+                equatorial: state.equatorial,
+                magnitude: approximateMagnitude(for: planet),
+                distanceKilometres: state.geocentricDistanceAU
+                    * AstronomicalConstants.astronomicalUnitKilometres,
+                illuminatedFraction: state.illuminatedFraction
             ))
         }
 

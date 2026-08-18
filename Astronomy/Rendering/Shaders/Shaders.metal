@@ -29,6 +29,8 @@ struct PointVertexIn {
     float shape;
     float param0;
     float param1;
+    float param2;
+    float param3;
 };
 
 struct LineVertexIn {
@@ -43,6 +45,8 @@ struct PointVaryings {
     float shape;
     float param0;
     float param1;
+    float param2;
+    float param3;
 };
 
 struct LineVaryings {
@@ -64,7 +68,15 @@ struct BackgroundUniforms {
     float sunAzimuthDegrees;
     float fieldOfViewDegrees;
     float milkyWayStrength;
-    float2 _padding;
+    // Unit vector toward the Sun in the horizontal frame (X = East,
+    // Y = Zenith, Z = South). Scalars, not a float3, so the layout matches
+    // `SkyBackgroundUniforms` in Swift without alignment padding.
+    float sunDirectionX;
+    float sunDirectionY;
+    float sunDirectionZ;
+    float _padding0;
+    float _padding1;
+    float _padding2;
 };
 
 // Shape selectors — keep in sync with `PointSpriteShape` in RenderTypes.swift.
@@ -73,6 +85,17 @@ constant float kShapeGlow         = 1.0;
 constant float kShapeDisk         = 2.0;
 constant float kShapeMoon         = 3.0;
 constant float kShapeSelectionRing = 4.0;
+constant float kShapePlanetDisk   = 5.0;
+constant float kShapeSunDisk      = 6.0;
+
+// Planet codes — keep in sync with `StarAppearance.planetShaderCode`.
+constant int kPlanetMercury = 0;
+constant int kPlanetVenus   = 1;
+constant int kPlanetMars    = 2;
+constant int kPlanetJupiter = 3;
+constant int kPlanetSaturn  = 4;
+constant int kPlanetUranus  = 5;
+constant int kPlanetNeptune = 6;
 
 // MARK: - Background pass
 
@@ -104,47 +127,121 @@ static inline float3 directionFromNDC(float2 ndc, constant BackgroundUniforms &u
     return float3(proj.x / r * s, proj.y / r * s, cos(c));
 }
 
-/// Smoothly interpolated twilight colour ramp, keyed on the Sun's altitude.
-/// Boundaries follow the standard definitions: sunrise/sunset -0.833 deg,
-/// civil -6 deg, nautical -12 deg, astronomical -18 deg. Night is a deep
-/// blue-black, never pure black.
-static inline float3 twilightZenithColor(float sunAlt) {
-    const float3 day        = float3(0.16, 0.32, 0.62);
-    const float3 sunset     = float3(0.10, 0.17, 0.36);
-    const float3 civil      = float3(0.045, 0.075, 0.185);
-    const float3 nautical   = float3(0.020, 0.036, 0.095);
-    const float3 astronomical = float3(0.011, 0.018, 0.048);
-    const float3 night      = float3(0.006, 0.010, 0.028);
+// ---------------------------------------------------------------------------
+//  SKY LIGHTING MODEL — an analytic approximation, NOT physically based
+//  rendering.
+//
+//  What it borrows, and from where:
+//
+//   * The *shape* of the daytime sky comes from the same two ingredients that
+//     drive the Preetham et al. (1999) and Hosek-Wilkie (2012) analytic
+//     skylight models: an angular term built from scattering phase functions,
+//     multiplied by a term that grows with the optical path length through the
+//     atmosphere.
+//   * Angular term: the Rayleigh phase function `(3/4)(1 + cos^2 gamma)` for
+//     molecular scattering (this is why the sky is deepest ~90 deg from the
+//     Sun and brightens both toward the Sun and toward the antisolar point),
+//     plus a forward-scattering Henyey-Greenstein lobe (Henyey & Greenstein
+//     1941) with g = 0.76 standing in for aerosol/Mie scattering (this is the
+//     broad soft brightening around the Sun, and the golden-hour glow).
+//     `gamma` is the TRUE angular distance from the Sun, from
+//     dot(skyDirection, sunDirection) — not an azimuth difference.
+//   * Optical path term: relative air mass from Kasten & Young (1989),
+//         X(h) = 1 / (sin h + 0.50572 * (h_deg + 6.07995)^-1.6364)
+//     which runs from 1.0 at the zenith to about 38 at the horizon. A longer
+//     path means more scattering, so the horizon is lighter, less saturated
+//     and slightly warmer. (An older, similar published fit is Young & Irvine
+//     1967, `1/(sin h + 0.15 (h_deg + 3.885)^-1.253)`; Kasten-Young is the
+//     more accurate of the two and is what is used here.)
+//
+//  What it deliberately OMITS — do not mistake this for a radiative transfer
+//  solution:
+//   * No aerosol turbidity parameter (Preetham's T). Aerosol load is a single
+//     baked-in constant.
+//   * No ozone absorption (which is what actually makes deep twilight blue).
+//   * No multiple scattering. Only a single-scattering-shaped angular profile;
+//     the twilight colours below the horizon-crossing are an artistic ramp,
+//     not an integration along Earth-shadow geometry.
+//   * No per-wavelength spectral integration and no Rayleigh 1/lambda^4
+//     weighting — colour is carried by an interpolated RGB ramp keyed on Sun
+//     altitude, so the phase functions modulate brightness and saturation,
+//     not hue.
+//   * No sun/sky illuminance calibration, no tone mapping, no exposure model.
+//   * No clouds, no terrain shadowing, no refraction of the solar disk.
+//  See DATA_SOURCES.md for the same list in prose.
+// ---------------------------------------------------------------------------
 
-    if (sunAlt >= 0.0) {
-        return mix(sunset, day, saturate(sunAlt / 6.0));
-    } else if (sunAlt >= -0.833) {
-        return mix(sunset, day, saturate((sunAlt + 0.833) / 0.833) * 0.35);
-    } else if (sunAlt >= -6.0) {
-        return mix(civil, sunset, saturate((sunAlt + 6.0) / 5.167));
-    } else if (sunAlt >= -12.0) {
-        return mix(nautical, civil, saturate((sunAlt + 12.0) / 6.0));
-    } else if (sunAlt >= -18.0) {
-        return mix(astronomical, nautical, saturate((sunAlt + 18.0) / 6.0));
-    }
-    return mix(night, astronomical, saturate((sunAlt + 24.0) / 6.0));
+/// One segment of a colour ramp. `smoothstep` clamps outside [x0, x1] and has
+/// zero derivative at both ends, so chaining segments that share endpoint
+/// colours is continuous *and* has no visible crease at an anchor.
+static inline float3 rampSegment(float x, float x0, float x1, float3 c0, float3 c1) {
+    return mix(c0, c1, smoothstep(x0, x1, x));
 }
 
-/// Warm colour of the glow hugging the horizon, also keyed on Sun altitude.
-static inline float3 horizonGlowColor(float sunAlt) {
-    const float3 daylight = float3(0.62, 0.72, 0.88);
-    const float3 goldenH  = float3(0.85, 0.50, 0.26);
-    const float3 civilH   = float3(0.30, 0.20, 0.24);
-    const float3 nightH   = float3(0.055, 0.070, 0.115);
+/// Zenith sky colour, keyed on the Sun's altitude. Anchors sit on the standard
+/// twilight boundaries — sunset -0.833 deg, civil -6, nautical -12,
+/// astronomical -18 — so each band ends where it should, but every transition
+/// is a smoothstep between neighbouring anchors, with no branch able to
+/// disagree with its neighbour at the boundary. Night is a deep blue-black,
+/// never pure black.
+static inline float3 twilightZenithColor(float a) {
+    const float3 cHigh   = float3(0.105, 0.255, 0.620);  // +60 deg: rich deep blue
+    const float3 cMid    = float3(0.140, 0.305, 0.640);  // +20 deg
+    const float3 cLow    = float3(0.170, 0.310, 0.575);  //  +5 deg
+    const float3 cSunset = float3(0.115, 0.190, 0.400);  //   0 deg
+    const float3 cDusk   = float3(0.085, 0.135, 0.300);  // -0.833 deg
+    const float3 cCivil  = float3(0.045, 0.075, 0.185);  //  -6 deg
+    const float3 cNaut   = float3(0.020, 0.036, 0.095);  // -12 deg
+    const float3 cAstro  = float3(0.011, 0.018, 0.048);  // -18 deg
+    const float3 cNight  = float3(0.006, 0.010, 0.028);  // -25 deg and below
 
-    if (sunAlt >= 4.0) {
-        return daylight;
-    } else if (sunAlt >= -2.0) {
-        return mix(goldenH, daylight, saturate((sunAlt + 2.0) / 6.0));
-    } else if (sunAlt >= -10.0) {
-        return mix(civilH, goldenH, saturate((sunAlt + 10.0) / 8.0));
-    }
-    return mix(nightH, civilH, saturate((sunAlt + 18.0) / 8.0));
+    if (a <= -25.0)  { return cNight; }
+    if (a <= -18.0)  { return rampSegment(a, -25.0, -18.0, cNight, cAstro); }
+    if (a <= -12.0)  { return rampSegment(a, -18.0, -12.0, cAstro, cNaut); }
+    if (a <=  -6.0)  { return rampSegment(a, -12.0,  -6.0, cNaut,  cCivil); }
+    if (a <=  -0.833){ return rampSegment(a,  -6.0,  -0.833, cCivil, cDusk); }
+    if (a <=   0.0)  { return rampSegment(a,  -0.833, 0.0, cDusk,  cSunset); }
+    if (a <=   5.0)  { return rampSegment(a,   0.0,   5.0, cSunset, cLow); }
+    if (a <=  20.0)  { return rampSegment(a,   5.0,  20.0, cLow,   cMid); }
+    return rampSegment(a, 20.0, 60.0, cMid, cHigh);
+}
+
+/// Colour the sky tends toward along a long horizon path — pale blue-white by
+/// day, gold at sunset, dropping to a dim slate at night. Same continuous
+/// anchor-ramp construction as above.
+static inline float3 horizonGlowColor(float a) {
+    const float3 hHigh   = float3(0.600, 0.710, 0.880);  // +20 deg: pale haze
+    const float3 hLow    = float3(0.740, 0.760, 0.840);  //  +6 deg
+    const float3 hGolden = float3(0.900, 0.550, 0.280);  //   0 deg: golden hour
+    const float3 hDeep   = float3(0.700, 0.360, 0.250);  //  -4 deg
+    const float3 hCivil  = float3(0.300, 0.200, 0.240);  // -10 deg
+    const float3 hNight  = float3(0.055, 0.070, 0.115);  // -18 deg and below
+
+    if (a <= -18.0) { return hNight; }
+    if (a <= -10.0) { return rampSegment(a, -18.0, -10.0, hNight,  hCivil); }
+    if (a <=  -4.0) { return rampSegment(a, -10.0,  -4.0, hCivil,  hDeep); }
+    if (a <=   0.0) { return rampSegment(a,  -4.0,   0.0, hDeep,   hGolden); }
+    if (a <=   6.0) { return rampSegment(a,   0.0,   6.0, hGolden, hLow); }
+    return rampSegment(a, 6.0, 20.0, hLow, hHigh);
+}
+
+/// Relative optical air mass, Kasten & Young (1989), "Revised optical air mass
+/// tables and approximation formula", Applied Optics 28, 4735. 1.0 at the
+/// zenith, ~38 at the true horizon. Extended smoothly a little below the
+/// horizon so the ground blend has no discontinuity at alt = 0.
+static inline float relativeAirMass(float altDeg) {
+    float h = max(altDeg, -1.0);
+    float sinH = sin(h * (M_PI_F / 180.0f));
+    float denom = sinH + 0.50572 * pow(max(h + 6.07995, 1e-3), -1.6364);
+    return clamp(1.0f / max(denom, 1e-3f), 1.0f, 40.0f);
+}
+
+/// Henyey-Greenstein phase function (Henyey & Greenstein 1941), the standard
+/// cheap stand-in for the strongly forward-peaked Mie phase function.
+static inline float henyeyGreenstein(float cosTheta, float g) {
+    float g2 = g * g;
+    float denom = 1.0 + g2 - 2.0 * g * cosTheta;
+    return (1.0 - g2) / (4.0 * M_PI_F * pow(max(denom, 1e-4f), 1.5f));
 }
 
 /// Analytic Milky Way. Purely procedural: a Gaussian band around the galactic
@@ -186,28 +283,67 @@ fragment float4 backgroundFragmentShader(
     float3 local = directionFromNDC(in.ndc, u);
     float3 horizontal = normalize(u.cameraToHorizontal * local);
     float altDeg = asin(clamp(horizontal.y, -1.0f, 1.0f)) * (180.0f / M_PI_F);
-    // Azimuth measured from north, eastward: X = East, Z = South.
-    float azDeg = atan2(horizontal.x, -horizontal.z) * (180.0f / M_PI_F);
 
     float sunAlt = u.sunAltitudeDegrees;
     float3 zenith = twilightZenithColor(sunAlt);
     float3 glow = horizonGlowColor(sunAlt);
 
+    // --- Scattering geometry (see the model comment block above) ------------
+    float3 sunDir = float3(u.sunDirectionX, u.sunDirectionY, u.sunDirectionZ);
+    float sunLen = length(sunDir);
+    sunDir = sunLen > 1e-5 ? sunDir / sunLen : float3(0.0, -1.0, 0.0);
+    // cos of the true angular distance gamma between this pixel and the Sun.
+    float cosGamma = clamp(dot(horizontal, sunDir), -1.0f, 1.0f);
+
+    // Rayleigh phase, normalised to 0...1 over its 0.5...1.0 range: 1 straight
+    // at and straight away from the Sun, 0 at 90 deg elongation, which is the
+    // band of deepest, most saturated blue.
+    float rayleigh = saturate((1.0 + cosGamma * cosGamma) * 0.5);
+
+    // Mie: a sharp forward lobe, normalised against its own peak, softened by
+    // a deliberately broad cos-power lobe so the result reads as a wide gentle
+    // brightening rather than a hard disk of glow around the Sun.
+    float mieNorm = henyeyGreenstein(cosGamma, 0.76) / henyeyGreenstein(1.0, 0.76);
+    float broadLobe = pow(saturate(0.5 + 0.5 * cosGamma), 4.0);
+    float sunward = saturate(0.55 * mieNorm + 0.75 * broadLobe);
+
+    // Optical path: 0 at the zenith, approaching 1 at the horizon.
+    float airMass = relativeAirMass(altDeg);
+    float pathAmount = 1.0 - exp(-0.20 * (airMass - 1.0));
+
+    // How "daylit" the atmosphere is; gates the pale washed-out look so it
+    // does not survive into twilight, where the warm ramp should take over.
+    float dayFactor = saturate((sunAlt + 2.0) / 8.0);
+
     float3 color;
 
     if (altDeg >= 0.0) {
-        // Above the horizon: exponential brightening toward the horizon line,
-        // with an extra lobe centred on the Sun's azimuth so the afterglow
-        // sits where the Sun actually went down.
-        float horizonFalloff = exp(-altDeg / 11.0);
+        // Horizon lightening: more air to look through means more scattered
+        // light reaches the eye, and it does so preferentially near the Sun.
+        float horizonAmount = pathAmount * (0.42 + 0.58 * sunward);
+        color = mix(zenith, glow, saturate(horizonAmount));
 
-        float dAz = azDeg - u.sunAzimuthDegrees;
-        dAz = dAz - 360.0 * round(dAz / 360.0);
-        float sunward = exp(-0.5 * pow(dAz / 55.0, 2.0));
-        float sunwardStrength = mix(0.25, 1.0, saturate((sunAlt + 18.0) / 20.0));
+        // Rayleigh angular modulation: a few percent, enough to read as a
+        // deeper blue at right angles to the Sun without looking banded.
+        color *= mix(0.88, 1.06, rayleigh);
 
-        float glowAmount = horizonFalloff * (0.35 + 0.65 * sunward * sunwardStrength);
-        color = mix(zenith, glow, saturate(glowAmount));
+        // Desaturate and brighten toward the Sun: near the Sun the sky is
+        // washed out and low-contrast, far from it deep and saturated.
+        float pale = sunward * dayFactor;
+        float lum = dot(color, float3(0.2126, 0.7152, 0.0722));
+        float3 washed = saturate(mix(color, float3(lum), 0.75) * 1.45 + float3(0.060, 0.055, 0.050));
+        color = mix(color, washed, saturate(0.60 * pale));
+
+        // Golden hour: a warm additive term that peaks with the Sun near the
+        // horizon (Gaussian in Sun altitude, sigma 7 deg), concentrated both
+        // toward the Sun's direction and toward the horizon via the path term.
+        float golden = exp(-0.5 * pow(sunAlt / 7.0, 2.0));
+        color += float3(0.42, 0.20, 0.07) * golden * sunward * pow(pathAmount, 1.5);
+
+        // A last touch of warmth in the bottom few degrees, where the longest
+        // paths preferentially scatter the blue out of the beam.
+        float veryLow = 1.0 - smoothstep(0.0, 7.0, altDeg);
+        color = mix(color, color * float3(1.07, 1.00, 0.94), veryLow * 0.6 * dayFactor);
 
         // Milky Way, additive, only where the sky is dark enough for it to be
         // physically plausible, and fading out as you zoom in (a telescopic
@@ -245,7 +381,21 @@ vertex PointVaryings starVertexShader(
     out.shape = v.shape;
     out.param0 = v.param0;
     out.param1 = v.param1;
+    out.param2 = v.param2;
+    out.param3 = v.param3;
     return out;
+}
+
+/// Shared terminator test for a phased body. Returns 1 on the sunlit side of
+/// the projected terminator and 0 on the night side, with a soft edge.
+/// `q` is sprite-local, already rotated so the bright limb points along +x;
+/// `k` is the illuminated fraction. The terminator is the ellipse
+/// `x = (1 - 2k) * sqrt(1 - y^2)` in unit-disk coordinates — the projection of
+/// the great circle separating day from night.
+static inline float terminatorLit(float2 q, float k, float diskEdge, float softness) {
+    float yn = clamp(q.y / diskEdge, -1.0, 1.0);
+    float terminatorX = (1.0 - 2.0 * k) * sqrt(max(0.0, 1.0 - yn * yn)) * diskEdge;
+    return smoothstep(-softness, softness, q.x - terminatorX);
 }
 
 fragment float4 starFragmentShader(
@@ -257,6 +407,7 @@ fragment float4 starFragmentShader(
     float dist = length(p);
 
     float alpha = 0.0;
+    float3 rgb = in.color.rgb;
 
     if (in.shape == kShapeGlow) {
         // Wide, smooth halo: a Gaussian-ish falloff with no visible edge.
@@ -281,14 +432,116 @@ fragment float4 starFragmentShader(
 
         // Terminator: the projected boundary is the ellipse
         // x = (1 - 2k) * sqrt(1 - y^2) in unit-disk coordinates.
-        float yn = clamp(q.y / diskEdge, -1.0, 1.0);
-        float terminatorX = (1.0 - 2.0 * k) * sqrt(max(0.0, 1.0 - yn * yn)) * diskEdge;
-        float lit = smoothstep(-0.07, 0.07, q.x - terminatorX);
+        float lit = terminatorLit(q, k, diskEdge, 0.07);
 
         // Earthshine keeps the dark limb faintly visible instead of a hole.
         float brightness = mix(0.055, 1.0, lit);
         float bloom = pow(saturate(1.0 - dist), 3.0) * 0.28 * (0.3 + 0.7 * k);
         alpha = saturate(disk * brightness + bloom);
+    } else if (in.shape == kShapeSunDisk) {
+        // Solar disk: a clear limb, plus a bloom whose *relative* extent
+        // shrinks as the sprite grows, so zooming in gives a bigger disk and
+        // not an ever-larger ball of glare.
+        float detail = saturate(in.param2);
+        float disk = 1.0 - smoothstep(0.80, 0.87, dist);
+        float bloomStrength = mix(0.45, 0.16, detail);
+        float bloomPower = mix(2.6, 4.5, detail);
+        float bloom = pow(saturate(1.0 - dist), bloomPower) * bloomStrength;
+        // A hint of limb darkening: no invented surface detail, just the
+        // radial falloff every star actually has.
+        float limbDarkening = mix(1.0, 0.90, detail * smoothstep(0.0, 0.80, dist));
+        alpha = saturate(disk * limbDarkening + bloom);
+    } else if (in.shape == kShapePlanetDisk) {
+        // Planetary disk. `param0` = illuminated fraction, `param1` = angle of
+        // the bright limb on screen, `param2` = detail level (fades every
+        // feature in with zoom), `param3` = which planet.
+        float k = clamp(in.param0, 0.0, 1.0);
+        float detail = saturate(in.param2);
+        int code = int(in.param3 + 0.5);
+
+        float ca = cos(in.param1);
+        float sa = sin(in.param1);
+        float2 q = float2(p.x * ca + p.y * sa, -p.x * sa + p.y * ca);
+
+        // Saturn's sprite is widened to make room for the rings, so its disk
+        // occupies a smaller fraction of the sprite. Must match
+        // `StarAppearance.saturnSpriteScale`.
+        float spriteScale = (code == kPlanetSaturn) ? mix(1.0, 2.4, detail) : 1.0;
+        float diskEdge = 0.86 / spriteScale;
+
+        float edgeSoftness = mix(0.10, 0.035, detail) / spriteScale;
+        float disk = 1.0 - smoothstep(diskEdge - edgeSoftness, diskEdge + edgeSoftness * 0.6, dist);
+
+        // Phase. Mercury and Venus swing through real crescents; the outer
+        // planets have k ~ 1 so this is a no-op for them. Contrast fades in
+        // with detail so a 4-pixel marker is never a crescent sliver.
+        float lit = terminatorLit(q, k, diskEdge, mix(0.20, 0.05, detail) / spriteScale);
+        float phaseDepth = detail * 0.95;
+        float shading = mix(1.0, mix(0.03, 1.0, lit), phaseDepth);
+
+        // Normalised disk coordinates for surface features.
+        float2 uv = q / max(diskEdge, 1e-4);
+        // Fake a sphere normal so features compress toward the limb the way
+        // they do on a real globe.
+        float latitude = clamp(uv.y, -1.0, 1.0);
+
+        float3 surface = float3(1.0);
+        if (code == kPlanetJupiter) {
+            // Two or three very gentle horizontal belts. Understated on
+            // purpose: this is a suggestion of banding, not a texture.
+            float bands = sin(latitude * 7.5) * 0.5 + sin(latitude * 3.1 + 0.7) * 0.5;
+            surface = mix(float3(1.0), float3(1.0) + bands * float3(0.10, 0.055, 0.0), detail);
+        } else if (code == kPlanetMars) {
+            // Slightly warmer toward the centre, cooler at the limb.
+            float centre = 1.0 - saturate(length(uv));
+            surface = mix(float3(1.0), float3(1.0) + centre * float3(0.06, 0.01, -0.04), detail);
+        } else if (code == kPlanetVenus) {
+            // Featureless bright cloud deck — Venus genuinely has no visible
+            // surface detail in white light.
+            surface = mix(float3(1.0), float3(1.03, 1.02, 0.99), detail);
+        } else if (code == kPlanetUranus || code == kPlanetNeptune) {
+            // Ice giants: genuinely featureless in visible light. All they get
+            // is a fractionally cooler, bluer centre so the disk reads as a
+            // sphere rather than a flat coin.
+            float centre = 1.0 - saturate(length(uv));
+            surface = mix(float3(1.0), float3(1.0) + centre * float3(-0.03, 0.0, 0.05), detail);
+        } else if (code == kPlanetMercury) {
+            // Grey, airless, and mostly seen as a crescent — the terminator
+            // above does all the work here.
+            surface = mix(float3(1.0), float3(1.0, 0.99, 0.97), detail);
+        }
+
+        // Subtle centre-to-limb brightening falloff for every planet.
+        float limbFade = mix(1.0, 0.82, detail * smoothstep(0.35, 1.0, length(uv)));
+
+        rgb = in.color.rgb * surface * limbFade;
+        alpha = saturate(disk * shading);
+
+        // Saturn's rings: an ellipse (a circle in the ring plane, foreshortened
+        // on screen) drawn around the disk once the sprite is big enough.
+        // NOTE: the tilt is a fixed tasteful approximation — the true ring
+        // opening angle, which varies from edge-on to ~27 deg over Saturn's
+        // 29-year orbit, is NOT computed. See DATA_SOURCES.md.
+        if (code == kPlanetSaturn) {
+            const float ringTiltY = 0.42;      // foreshortening of the ring plane
+            const float ringInner = 1.15;      // in units of the planet's radius
+            const float ringOuter = 2.28;      // outer edge of the A ring
+            float2 ringP = float2(p.x, p.y / ringTiltY);
+            float ringR = length(ringP) / max(diskEdge, 1e-4);
+            float ring = smoothstep(ringInner - 0.10, ringInner + 0.05, ringR)
+                       * (1.0 - smoothstep(ringOuter - 0.10, ringOuter + 0.06, ringR));
+            // Cassini-like gap: one soft dark annulus, nothing more.
+            ring *= 1.0 - 0.45 * exp(-0.5 * pow((ringR - 1.95) / 0.06, 2.0));
+            ring *= detail * 0.85;
+            // Disk draws over the ring; the ring arc that crosses in front of
+            // the globe is not modelled.
+            alpha = saturate(alpha + ring * (1.0 - alpha));
+        }
+
+        // Bloom, tightly bounded, so a planet still reads as a bright point at
+        // wide field but does not glare once it is a resolved disk.
+        float bloom = pow(saturate(1.0 - dist), 3.0) * mix(0.30, 0.06, detail);
+        alpha = saturate(alpha + bloom);
     } else if (in.shape == kShapeSelectionRing) {
         // Thin ring with soft inner/outer edges.
         float ring = smoothstep(0.60, 0.72, dist) * (1.0 - smoothstep(0.84, 0.96, dist));
@@ -305,7 +558,7 @@ fragment float4 starFragmentShader(
     if (alpha <= 0.002) {
         discard_fragment();
     }
-    return float4(in.color.rgb, alpha);
+    return float4(rgb, alpha);
 }
 
 // MARK: - Line pass

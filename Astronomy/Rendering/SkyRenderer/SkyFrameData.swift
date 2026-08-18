@@ -40,6 +40,12 @@ struct SkyFrameData {
     /// selection ring and boost that object's label priority.
     var selectedObjectID: String?
 
+    /// Sun altitude in degrees, or a deep-night sentinel if the ephemeris has
+    /// not been computed. Drives the sky-brightness / star-visibility model.
+    var sunAltitudeDegrees: Double {
+        sunHorizontal?.altitudeDegrees ?? -90
+    }
+
     /// Illuminated fraction of the Moon's disk (Meeus ch. 48), 0...1.
     /// Defaults to a full disk if the ephemeris hasn't been computed yet.
     var moonIlluminatedFraction: Double {
