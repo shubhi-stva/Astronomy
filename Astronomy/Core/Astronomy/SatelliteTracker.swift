@@ -17,10 +17,15 @@
 //     is the expensive, accurate step.
 //   * **Extrapolation** runs on the render thread, every frame, and is a
 //     single fused multiply-add: `r + v * dt`. SGP4 hands back velocity as
-//     well as position, so this costs nothing and is accurate to metres over
-//     the 0.4 s between ticks (a LEO satellite's acceleration is ~8.7 m/s^2,
-//     so the neglected quadratic term is 0.5 * 8.7 * 0.4^2 ~ 0.7 m at 400 km
-//     range: about 0.0001 degrees, four orders of magnitude below a pixel).
+//     well as position, so this costs nothing.
+//
+//  Measured over the standard verification set (see
+//  `testLinearExtrapolationOverOneTickStaysBelowAPixel`), the extrapolation
+//  error over one 0.4-second tick is a few metres for ordinary orbits: partly
+//  the neglected quadratic term, partly the fact that SGP4's reported velocity
+//  is an osculating two-body velocity rather than the exact derivative of its
+//  own position function. A few metres at typical viewing range is around
+//  0.0003 degrees — about a hundredth of a pixel at a 90-degree field.
 //
 //  The result is motion that is both correct and perfectly smooth: the sky
 //  updates at the display's full rate, and nothing ever visibly steps.
@@ -32,10 +37,10 @@ import simd
 
 actor SatelliteTracker {
 
-    /// Propagation ticks per second. Chosen as the slowest rate at which the
-    /// linear extrapolation between ticks stays sub-metre; going slower would
-    /// save little (the pass is already a small fraction of a core) and would
-    /// start to let the quadratic term show.
+    /// Propagation ticks per second. Fast enough that the linear extrapolation
+    /// between ticks stays far below a pixel, slow enough that the whole pass
+    /// costs a small fraction of one core. Going much slower would start to let
+    /// the neglected quadratic term show on fast LEO passes.
     static let tickRateHertz: Double = 2.5
     static var tickInterval: TimeInterval { 1.0 / tickRateHertz }
 

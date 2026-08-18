@@ -97,11 +97,15 @@ enum CoordinateTransformService {
         let az = Angle.degreesToRadians(horizontal.azimuthDegrees - 180.0)
         let lat = Angle.degreesToRadians(observer.latitudeDegrees)
 
-        let sinDec = sin(alt) * sin(lat) + cos(alt) * cos(lat) * cos(az)
+        // Meeus 13.3/13.4, the inverse pair of the transform above. The sign
+        // flips relative to `horizontal` are not a typo: going the other way
+        // exchanges the roles of the two poles, so the cosine term changes
+        // sign and the tangent term does too.
+        let sinDec = sin(alt) * sin(lat) - cos(alt) * cos(lat) * cos(az)
         let declination = asin(max(-1.0, min(1.0, sinDec)))
 
         let y = sin(az)
-        let x = cos(az) * sin(lat) - tan(alt) * cos(lat)
+        let x = cos(az) * sin(lat) + tan(alt) * cos(lat)
         let hourAngle = Angle.radiansToDegrees(atan2(y, x))
 
         let lst = localSiderealTimeDegrees(julianDay: jd, longitudeDegrees: observer.longitudeDegrees)
