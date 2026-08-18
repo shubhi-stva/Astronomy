@@ -145,6 +145,12 @@ final class Satellite: @unchecked Sendable {
     /// brightness or size field, so "notable" cannot be derived; pretending
     /// otherwise would mean inventing a ranking out of orbital elements, which
     /// says nothing about whether a person has heard of the object.
+    ///
+    /// Every entry was checked against the bundled snapshot: retired objects
+    /// (Envisat, the older NOAA and MetOp satellites) have left CelesTrak's
+    /// "active" group and were removed rather than left here to match nothing.
+    /// An unmatched entry is harmless but silently useless, which is worse than
+    /// a shorter list.
     static let notableCatalogNumbers: Set<Int> = [
         25544, // ISS (ZARYA)
         20580, // Hubble Space Telescope
@@ -153,21 +159,18 @@ final class Satellite: @unchecked Sendable {
         54216, // CSS (MENGTIAN)
         25994, // Terra
         27424, // Aqua
-        27386, // Envisat
         39084, // Landsat 8
         49260, // Landsat 9
-        25338, // NOAA 15
-        28654, // NOAA 18
-        33591, // NOAA 19
         43013, // NOAA 20 (JPSS-1)
         37849, // Suomi NPP
-        29499, // MetOp-A
         38771, // MetOp-B
         43689, // MetOp-C
         40069, // Meteor M2
         41866, // GOES 16
         43226, // GOES 17
         51850, // GOES 18
+        54234, // NOAA 21 (JPSS-2)
+        40697, // Sentinel-2A
     ]
 }
 
