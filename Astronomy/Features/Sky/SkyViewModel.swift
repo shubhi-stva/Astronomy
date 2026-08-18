@@ -71,24 +71,89 @@ final class SkyViewModel {
     }
 
     /// Loads the satellite catalogue, then propagates it forever at the
-    /// tracker's tick rate. A daily CelesTrak refresh is kicked off once, after
-    /// the first tick, so a slow network never delays the first satellites
-    /// appearing.
+    /// tracker's tick rate, on its own detached task. A daily CelesTrak
+    /// refresh is kicked off once, after the first tick, so a slow network
+    /// never delays the first satellites appearing.
+    ///
+    /// Detached deliberately. A plain `Task { }` created here inherits the
+    /// view model's `@MainActor` isolation, which means the loop body, the
+    /// `Task.sleep` resumption and the publish all queue for main-actor time —
+    /// and the main actor is the busiest thread in the app, driving geometry
+    /// for every frame at up to 120 Hz. The propagation loop lost that race
+    /// badly: ticks meant to land 0.4 s apart were arriving tens of seconds
+    /// apart, so the extrapolation ran out (it is clamped to a couple of
+    /// seconds, on purpose) and satellites sat still until the next snapshot
+    /// finally landed and teleported them.
+    ///
+    /// Detaching puts the loop and its sleeps on the global executor. The only
+    /// main-actor work left is reading the frame inputs and publishing the
+    /// result — two short hops per tick instead of the whole loop.
     private func startSatelliteTracking() {
-        satelliteTask = Task { [weak self] in
+        satelliteTask = Task.detached(priority: .utility) { [weak self] in
             guard let self else { return }
             await self.satelliteTracker.load()
             await self.updateSatelliteDescriptors()
 
             var didAttemptRefresh = false
             while !Task.isCancelled {
-                await self.propagateSatellitesOnce()
+                let tickStart = ContinuousClock.now
+
+                guard let inputs = await self.satellitePropagationInputs() else { return }
+                let snapshot = await self.satelliteTracker.propagate(
+                    julianDay: inputs.julianDay,
+                    observer: inputs.observer,
+                    sunEquatorial: inputs.sunEquatorial,
+                    sunDistanceKilometres: inputs.sunDistanceKilometres
+                )
+                await self.publish(snapshot: snapshot)
+
                 if !didAttemptRefresh {
                     didAttemptRefresh = true
                     await self.refreshSatelliteElements()
                 }
-                try? await Task.sleep(for: .seconds(SatelliteTracker.tickInterval))
+
+                // Sleep for whatever is left of the tick rather than a fixed
+                // interval, so a slow pass shortens the wait instead of adding
+                // to it and letting the cadence drift.
+                let spent = ContinuousClock.now - tickStart
+                let remaining = .seconds(SatelliteTracker.tickInterval) - spent
+                if remaining > .zero {
+                    try? await Task.sleep(for: remaining)
+                } else {
+                    await Task.yield()
+                }
             }
+        }
+    }
+
+    /// Everything a propagation pass needs from main-actor state, read in one
+    /// short hop so the detached loop touches the main actor as little as
+    /// possible.
+    private func satellitePropagationInputs() -> (
+        julianDay: Double,
+        observer: GeographicLocation,
+        sunEquatorial: EquatorialCoordinate,
+        sunDistanceKilometres: Double
+    )? {
+        guard satellitesEnabled else { return nil }
+        let jd = time.julianDay
+        let sunEquatorial = solarSystemObjects.first { $0.kind == .sun }?.equatorial
+            ?? SunPosition.equatorialCoordinate(julianDay: jd)
+        let sunDistance = SunPosition.radiusVectorAU(julianDay: jd)
+            * AstronomicalConstants.astronomicalUnitKilometres
+        return (jd, location.currentLocation, sunEquatorial, sunDistance)
+    }
+
+    /// Publishes a finished snapshot. The visible-count reduction runs here
+    /// because it is a scan of 16,000 samples and has no business on the
+    /// render path.
+    private func publish(snapshot: SatelliteSnapshot) {
+        satelliteSnapshot = snapshot
+        visibleSatelliteCount = snapshot.samples.reduce(into: 0) { count, sample in
+            if sample.illumination.isSunlit && sample.altitudeDegreesAtSnapshot > 0 { count += 1 }
+        }
+        if snapshot.propagationDuration > 0 {
+            lastSatellitePropagationSeconds = snapshot.propagationDuration
         }
     }
 
@@ -105,29 +170,6 @@ final class SkyViewModel {
         // Lower-cased once here rather than sixteen thousand times per
         // keystroke in `satelliteMatches`.
         satelliteSearchNames = satelliteDescriptors.map { $0.name.lowercased() }
-    }
-
-    private func propagateSatellitesOnce() async {
-        guard satellitesEnabled else { return }
-        let jd = time.julianDay
-        let sunEquatorial = solarSystemObjects.first { $0.kind == .sun }?.equatorial
-            ?? SunPosition.equatorialCoordinate(julianDay: jd)
-        let sunDistance = SunPosition.radiusVectorAU(julianDay: jd)
-            * AstronomicalConstants.astronomicalUnitKilometres
-
-        let snapshot = await satelliteTracker.propagate(
-            julianDay: jd,
-            observer: location.currentLocation,
-            sunEquatorial: sunEquatorial,
-            sunDistanceKilometres: sunDistance
-        )
-        satelliteSnapshot = snapshot
-        visibleSatelliteCount = snapshot.samples.reduce(into: 0) { count, sample in
-            if sample.illumination.isSunlit && sample.altitudeDegreesAtSnapshot > 0 { count += 1 }
-        }
-        if snapshot.propagationDuration > 0 {
-            lastSatellitePropagationSeconds = snapshot.propagationDuration
-        }
     }
 
     /// Fetches fresh element sets, at most once a day (the interval is enforced
