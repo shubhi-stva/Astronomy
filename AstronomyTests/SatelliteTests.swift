@@ -696,6 +696,7 @@ final class SatelliteSnapshotTests: XCTestCase {
     private func sample(index: Int) -> SatelliteSample {
         SatelliteSample(
             index: index, catalogNumber: 10_000 + index, regime: .lowEarth, isNotable: false,
+            epochJulianDay: JulianDate.j2000,
             position: SIMD3(7000, 0, 0), velocity: SIMD3(0, 7.5, 0),
             illumination: .sunlit, altitudeDegreesAtSnapshot: 45
         )
@@ -774,6 +775,7 @@ final class SatelliteRenderingTests: XCTestCase {
     ) -> SatelliteSample {
         SatelliteSample(
             index: index, catalogNumber: catalogNumber, regime: .lowEarth, isNotable: notable,
+            epochJulianDay: Self.julianDay - 1,
             position: overheadPosition(), velocity: SIMD3(0, 7.5, 0),
             illumination: illumination, altitudeDegreesAtSnapshot: altitude
         )
