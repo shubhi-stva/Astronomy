@@ -808,3 +808,205 @@ final class StarIndexTests: XCTestCase {
         XCTAssertLessThan(kept.count, stars.count / 50)
     }
 }
+
+// MARK: - Deep-sky catalogue and rendering
+
+/// The bundled deep-sky catalogue and the geometry that turns an angular
+/// extent into a screen size.
+///
+/// Decoded synchronously and directly from the bundle rather than through
+/// `CatalogService`, for the reason documented on
+/// `testBundledCatalogueIndexesConsistently`: an `async` test lets the test
+/// *host application* finish launching mid-test, and the host has a
+/// pre-existing startup crash unrelated to any of this.
+final class DeepSkyCatalogueTests: XCTestCase {
+
+    private func loadCatalogue() throws -> [DeepSkyObject] {
+        let url = try XCTUnwrap(Bundle.main.url(forResource: "deepsky", withExtension: "json"))
+        return try JSONDecoder().decode([DeepSkyObject].self, from: Data(contentsOf: url))
+    }
+
+    func testBundledDeepSkyCatalogueDecodes() throws {
+        let objects = try loadCatalogue()
+        XCTAssertGreaterThan(objects.count, 800, "expected the full OpenNGC-derived selection")
+        // Dark nebulae are absorption features and must not be drawn; the
+        // selection should not contain any in the first place.
+        XCTAssertFalse(objects.contains { $0.type == .darkNebula })
+        // Sorted magnitude-ascending, which the loader and the renderer both
+        // assume when they talk about "the brightest few".
+        XCTAssertEqual(objects.map(\.magnitude), objects.map(\.magnitude).sorted())
+    }
+
+    func testFamousObjectsArePresentAtTheirPublishedCoordinates() throws {
+        let objects = try loadCatalogue()
+        let byDesignation = Dictionary(objects.map { ($0.catalogName, $0) }, uniquingKeysWith: { a, _ in a })
+
+        // J2000 positions, NED / OpenNGC.
+        let m31 = try XCTUnwrap(byDesignation["M31"])
+        XCTAssertEqual(m31.name, "Andromeda Galaxy")
+        XCTAssertEqual(m31.type, .galaxy)
+        XCTAssertEqual(m31.ra, 10.6848, accuracy: 0.01)     // 00h 42m 44s
+        XCTAssertEqual(m31.dec, 41.2691, accuracy: 0.01)    // +41d 16'
+        XCTAssertEqual(m31.magnitude, 3.44, accuracy: 0.2)
+        XCTAssertEqual(try XCTUnwrap(m31.majorAxisArcmin), 177.8, accuracy: 1.0)
+
+        let m45 = try XCTUnwrap(byDesignation["M45"])
+        XCTAssertEqual(m45.name, "Pleiades")
+        XCTAssertEqual(m45.ra, 56.869, accuracy: 0.05)      // 03h 47m
+        XCTAssertEqual(m45.dec, 24.105, accuracy: 0.05)     // +24d 06'
+
+        let m42 = try XCTUnwrap(byDesignation["M42"])
+        XCTAssertEqual(m42.ra, 83.819, accuracy: 0.05)      // 05h 35m 17s
+        XCTAssertEqual(m42.dec, -5.390, accuracy: 0.05)     // -05d 23'
+        // OpenNGC types M42 "Cl+N"; it must still be *drawn* as a nebula.
+        XCTAssertEqual(m42.renderType, .nebula)
+
+        // Every Messier object is meant to be in here.
+        let messier = objects.filter { $0.catalogName.hasPrefix("M") && Int($0.catalogName.dropFirst()) != nil }
+        XCTAssertGreaterThanOrEqual(messier.count, 100)
+    }
+
+    func testAndromedaSpansASensibleFractionOfTheScreen() throws {
+        let width = 1600.0
+        // 177.8 arcmin is 2.963 deg, so at a 60 deg field it should occupy
+        // 2.963/60 = 4.9% of the screen width.
+        let size = StarAppearance.deepSkyPointSize(
+            majorAxisArcmin: 177.83, fieldOfViewDegrees: 60, viewportWidth: width
+        )
+        XCTAssertEqual(Double(size) / width, 177.83 / 60.0 / 60.0, accuracy: 0.004)
+        XCTAssertGreaterThan(Double(size), 60, "M31 must read as an object, not a dot")
+
+        // Linear in the zoom factor once the true size dominates.
+        let zoomed = StarAppearance.deepSkyPointSize(
+            majorAxisArcmin: 177.83, fieldOfViewDegrees: 30, viewportWidth: width
+        )
+        XCTAssertEqual(Double(zoomed) / Double(size), 2.0, accuracy: 0.05)
+    }
+
+    func testMinimumSizeAppliesToSmallObjectsAtWideField() throws {
+        // A 1-arcmin planetary at a 120 deg field projects to well under a
+        // point; the floor keeps it visible and clickable.
+        let tiny = StarAppearance.deepSkyPointSize(
+            majorAxisArcmin: 1.0, fieldOfViewDegrees: 120, viewportWidth: 1600
+        )
+        XCTAssertGreaterThanOrEqual(Double(tiny), StarAppearance.deepSkyMinimumSize)
+        XCTAssertLessThan(Double(tiny), StarAppearance.deepSkyMinimumSize * 2)
+
+        // Missing size data also falls back to the floor rather than zero.
+        let unknown = StarAppearance.deepSkyPointSize(
+            majorAxisArcmin: nil, fieldOfViewDegrees: 60, viewportWidth: 1600
+        )
+        XCTAssertGreaterThanOrEqual(Double(unknown), StarAppearance.deepSkyMinimumSize)
+
+        // The size curve is monotonic in the true extent.
+        let small = StarAppearance.deepSkyPointSize(
+            majorAxisArcmin: 5, fieldOfViewDegrees: 20, viewportWidth: 1600
+        )
+        let large = StarAppearance.deepSkyPointSize(
+            majorAxisArcmin: 25, fieldOfViewDegrees: 20, viewportWidth: 1600
+        )
+        XCTAssertGreaterThan(large, small)
+        // And it never exceeds the GPU's point-size ceiling.
+        let huge = StarAppearance.deepSkyPointSize(
+            majorAxisArcmin: 646, fieldOfViewDegrees: 1, viewportWidth: 1600
+        )
+        XCTAssertLessThanOrEqual(Double(huge), 500)
+    }
+
+    func testAxisRatioSquashesGalaxiesAndFallsBackToACircle() throws {
+        XCTAssertEqual(
+            StarAppearance.deepSkyAxisRatio(majorAxisArcmin: 177.83, minorAxisArcmin: 69.66),
+            0.3917, accuracy: 0.001
+        )
+        XCTAssertEqual(StarAppearance.deepSkyAxisRatio(majorAxisArcmin: 10, minorAxisArcmin: nil), 1.0)
+        XCTAssertEqual(StarAppearance.deepSkyAxisRatio(majorAxisArcmin: nil, minorAxisArcmin: nil), 1.0)
+        // Edge-on discs are floored so they stay a few pixels wide.
+        XCTAssertEqual(
+            StarAppearance.deepSkyAxisRatio(majorAxisArcmin: 100, minorAxisArcmin: 1),
+            0.12, accuracy: 1e-9
+        )
+    }
+
+    /// The surface-brightness bias is an approximation (see
+    /// `deepSkyDetectionMagnitude`): bounded, so the famous large objects
+    /// survive a wide field while faint ones still need zoom.
+    func testSurfaceBrightnessPenaltyIsBoundedAndOrdered() throws {
+        let m31 = StarAppearance.deepSkyDetectionMagnitude(
+            magnitude: 3.44, majorAxisArcmin: 177.83, minorAxisArcmin: 69.66
+        )
+        XCTAssertEqual(m31, 4.64, accuracy: 0.01, "penalty must saturate at 1.2 mag")
+
+        // A compact object of the same integrated magnitude is penalised less.
+        let compact = StarAppearance.deepSkyDetectionMagnitude(
+            magnitude: 3.44, majorAxisArcmin: 4, minorAxisArcmin: 4
+        )
+        XCTAssertEqual(compact, 3.44, accuracy: 1e-9)
+        XCTAssertLessThan(compact, m31)
+
+        // M31 and M45 are visible at a wide field on a dark night; a faint
+        // small galaxy is not, and needs zoom to appear.
+        let night = -20.0
+        XCTAssertGreaterThan(
+            StarAppearance.visibility(magnitude: m31, fieldOfViewDegrees: 90, sunAltitudeDegrees: night), 0.2
+        )
+        let m45 = StarAppearance.deepSkyDetectionMagnitude(
+            magnitude: 1.2, majorAxisArcmin: 150, minorAxisArcmin: 150
+        )
+        XCTAssertGreaterThan(
+            StarAppearance.visibility(magnitude: m45, fieldOfViewDegrees: 90, sunAltitudeDegrees: night), 0.5
+        )
+
+        let faint = StarAppearance.deepSkyDetectionMagnitude(
+            magnitude: 8.5, majorAxisArcmin: 3, minorAxisArcmin: 2
+        )
+        XCTAssertEqual(
+            StarAppearance.visibility(magnitude: faint, fieldOfViewDegrees: 90, sunAltitudeDegrees: night), 0.0
+        )
+        XCTAssertGreaterThan(
+            StarAppearance.visibility(magnitude: faint, fieldOfViewDegrees: 4, sunAltitudeDegrees: night), 0.0
+        )
+
+        // Nothing is drawn in daylight. Deep-sky objects take the same
+        // visibility path the stars take — no planet-style exemption — and are
+        // then additionally suppressed through twilight, because the star
+        // path's deliberate daylight floor is wrong for extended objects.
+        XCTAssertEqual(StarAppearance.deepSkyTwilightFactor(sunAltitudeDegrees: 40), 0.0)
+        XCTAssertEqual(StarAppearance.deepSkyTwilightFactor(sunAltitudeDegrees: 0), 0.0)
+        XCTAssertGreaterThan(StarAppearance.deepSkyTwilightFactor(sunAltitudeDegrees: -8), 0.0)
+        XCTAssertLessThan(StarAppearance.deepSkyTwilightFactor(sunAltitudeDegrees: -8), 1.0)
+        XCTAssertEqual(StarAppearance.deepSkyTwilightFactor(sunAltitudeDegrees: -14), 1.0)
+    }
+
+    /// Mirrors `SkyViewModel.updateSearchResults`' deep-sky matching rule:
+    /// common name *or* catalogue designation, whitespace-insensitive.
+    private func matches(_ query: String, in objects: [DeepSkyObject]) -> [DeepSkyObject] {
+        let lowered = query.lowercased()
+        let condensed = lowered.replacingOccurrences(of: " ", with: "")
+        return objects.filter { object in
+            if let name = object.name?.lowercased(), name.contains(lowered) { return true }
+            let designation = object.catalogName.lowercased().replacingOccurrences(of: " ", with: "")
+            return designation.contains(condensed) || object.id.lowercased().contains(condensed)
+        }
+    }
+
+    func testSearchFindsObjectsByCommonNameAndByDesignation() throws {
+        let objects = try loadCatalogue()
+
+        XCTAssertTrue(matches("Andromeda", in: objects).contains { $0.catalogName == "M31" })
+        XCTAssertTrue(matches("M31", in: objects).contains { $0.catalogName == "M31" })
+        XCTAssertTrue(matches("Pleiades", in: objects).contains { $0.catalogName == "M45" })
+        XCTAssertTrue(matches("m45", in: objects).contains { $0.catalogName == "M45" })
+        XCTAssertTrue(matches("Orion Nebula", in: objects).contains { $0.catalogName == "M42" })
+        // Designation matching ignores the space in "NGC 7000".
+        XCTAssertTrue(matches("NGC 7000", in: objects).contains { $0.id == "NGC7000" })
+        XCTAssertTrue(matches("ngc7000", in: objects).contains { $0.id == "NGC7000" })
+
+        // The bridge to the selectable/searchable model keeps both spellings.
+        let m31 = try XCTUnwrap(objects.first { $0.catalogName == "M31" }).asCelestialObject
+        XCTAssertEqual(m31.id, "dso-NGC0224")
+        XCTAssertEqual(m31.name, "Andromeda Galaxy")
+        XCTAssertEqual(m31.catalogDesignation, "M31")
+        XCTAssertEqual(m31.kind, .deepSky)
+        XCTAssertEqual(m31.deepSkyType, .galaxy)
+    }
+}

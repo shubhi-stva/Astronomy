@@ -313,8 +313,14 @@ struct SkyGeometryBuilder {
         // objects should be named, or the view becomes a wall of text.
         let labelFOVStrength = Self.fadeIn(value: 80.0 - fov, over: 45.0)
 
+        // Extended objects wash out into twilight sooner than point sources
+        // do; see `StarAppearance.deepSkyTwilightFactor`.
+        let twilightFactor = StarAppearance.deepSkyTwilightFactor(sunAltitudeDegrees: sunAltitude)
+        guard twilightFactor > 0.01 else { return }
+
         for dso in frameData.deepSkyObjects {
             guard dso.type.isRenderable else { continue }
+            let type = dso.renderType
 
             // Extended objects are governed by the *same* brightness model the
             // stars use — invisible in daylight, emerging as the sky darkens,
@@ -330,7 +336,7 @@ struct SkyGeometryBuilder {
                 magnitude: detectionMagnitude,
                 fieldOfViewDegrees: fov,
                 sunAltitudeDegrees: sunAltitude
-            )
+            ) * twilightFactor
             guard visibility > 0.02 else { continue }
 
             guard let ndc = project(dso.equatorial), isOnScreen(ndc, margin: 0.35) else { continue }
@@ -364,8 +370,8 @@ struct SkyGeometryBuilder {
                 }
             }
 
-            var color = StarAppearance.deepSkyColor(type: dso.type)
-            color.w = Float(visibility * StarAppearance.deepSkyOpacity(type: dso.type))
+            var color = StarAppearance.deepSkyColor(type: type)
+            color.w = Float(visibility * StarAppearance.deepSkyOpacity(type: type))
 
             glowVertices.append(
                 PointVertex(
@@ -376,7 +382,7 @@ struct SkyGeometryBuilder {
                     param0: Float(axisRatio),
                     param1: Float(screenAngle),
                     param2: detail,
-                    param3: StarAppearance.deepSkyShaderCode(type: dso.type)
+                    param3: StarAppearance.deepSkyShaderCode(type: type)
                 )
             )
 

@@ -409,6 +409,22 @@ enum StarAppearance {
         return magnitude + penalty
     }
 
+    /// Extra twilight suppression applied to deep-sky objects on top of the
+    /// shared star visibility model: 0 while the Sun is up, rising to 1 by the
+    /// end of nautical twilight.
+    ///
+    /// The star path deliberately floors its daylight contrast at 0.72 so the
+    /// constellations stay legible through a bright sky — a planetarium
+    /// convention, and one the rest of this app keeps. That convention is wrong
+    /// for extended objects: a galaxy is a low-surface-brightness smear that
+    /// competes with the sky *background*, not a point source competing with
+    /// its neighbourhood, so it is genuinely gone long before the stars are.
+    /// Faint fuzzy patches painted over a blue noon sky would also simply look
+    /// like a rendering bug.
+    static func deepSkyTwilightFactor(sunAltitudeDegrees sunAltitude: Double) -> Double {
+        SkyGeometryBuilder.fadeIn(value: -2.0 - sunAltitude, over: 10.0)
+    }
+
     /// Per-type tint. Deliberately close to white: real deep-sky objects are
     /// colourless to the eye, and saturated blobs would fight the muted
     /// palette the rest of the sky uses. Only planetaries (cool) and emission

@@ -68,6 +68,22 @@ struct DeepSkyObject: Identifiable, Codable, Hashable {
         return catalogName
     }
 
+    /// The class actually used for drawing and for the info panel.
+    ///
+    /// OpenNGC classifies clusters *with* nebulosity as "Cl+N", which the
+    /// catalogue conversion collapsed to `openCluster`. That is the wrong
+    /// treatment for the three affected objects here — M42 above all — because
+    /// open clusters are drawn as an almost invisible haze (their member stars
+    /// already come from the star catalogue) whereas what dominates the view of
+    /// the Orion Nebula is emphatically the nebulosity. Three objects, keyed
+    /// off the common name the catalogue itself gives them.
+    var renderType: DeepSkyType {
+        if type == .openCluster, let name, name.lowercased().contains("nebula") {
+            return .nebula
+        }
+        return type
+    }
+
     var equatorial: EquatorialCoordinate {
         EquatorialCoordinate(rightAscensionDegrees: ra, declinationDegrees: dec)
     }
@@ -80,7 +96,7 @@ struct DeepSkyObject: Identifiable, Codable, Hashable {
             equatorial: equatorial,
             magnitude: magnitude
         )
-        object.deepSkyType = type
+        object.deepSkyType = renderType
         object.catalogDesignation = catalogName
         object.majorAxisArcmin = majorAxisArcmin
         object.minorAxisArcmin = minorAxisArcmin
