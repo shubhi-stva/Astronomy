@@ -49,8 +49,16 @@ struct SkyGeometryBuilder {
     // terrain coverage lies in its direction (see `TerrainProfile.dimming`),
     // matching the same haze the shader composites over the background.
 
+    /// J2000 -> mean-equinox-of-date rotation for this frame's instant.
+    ///
+    /// Built once here and shared by every catalogue object. The catalogues are
+    /// J2000; the observer's celestial equator is not, and by 2026 the two are
+    /// already 0.36 degrees apart. See `Precession`.
+    private let precessionMatrix: simd_double3x3
+
     init(frameData: SkyFrameData) {
         self.frameData = frameData
+        self.precessionMatrix = Precession.rotationMatrix(julianDay: frameData.julianDay)
     }
 
     mutating func run() {
@@ -132,28 +140,46 @@ struct SkyGeometryBuilder {
 
     /// Projects an equatorial coordinate to viewport NDC, or nil if it falls
     /// outside the projection's valid region.
-    private func project(_ equatorial: EquatorialCoordinate) -> SIMD2<Double>? {
-        projectShaded(equatorial)?.ndc
+    private func project(_ equatorial: EquatorialCoordinate, precess: Bool = true) -> SIMD2<Double>? {
+        projectShaded(equatorial, precess: precess)?.ndc
     }
 
-    /// Projection plus the terrain brightness multiplier for the direction.
+    /// Projection, the terrain brightness multiplier, and the altitude, for one
+    /// catalogue direction.
     ///
-    /// One call does both because they need the same horizontal coordinate,
-    /// and recomputing the transform for the dimming separately would double
-    /// the cost of the hottest loop in the frame.
+    /// One call does all three because they need the same horizontal
+    /// coordinate, and recomputing the transform separately would multiply the
+    /// cost of the hottest loop in the frame.
+    ///
+    /// `precess` selects the reference frame of the input. Catalogue positions
+    /// (stars, deep-sky objects, constellation centres) are J2000 mean places
+    /// and must be rotated to the equinox of date before meeting the observer's
+    /// sidereal time — that is the `true` default. Solar-system bodies pass
+    /// `false`: `SunPosition` and `MoonPosition` follow Meeus's series, which
+    /// already produce positions referred to the equinox of date, and
+    /// `PlanetPosition` applies the same rotation itself before returning.
+    /// Precessing them again would double-count it.
     private func projectShaded(
-        _ equatorial: EquatorialCoordinate
-    ) -> (ndc: SIMD2<Double>, dimming: Double)? {
+        _ equatorial: EquatorialCoordinate,
+        precess: Bool = true
+    ) -> (ndc: SIMD2<Double>, dimming: Double, altitudeDegrees: Double)? {
+        let ofDate = precess
+            ? Precession.precess(equatorial, matrix: precessionMatrix)
+            : equatorial
         let horizontal = CoordinateTransformService.horizontal(
-            from: equatorial,
+            from: ofDate,
             observer: frameData.observerLocation,
             julianDay: frameData.julianDay
         )
         guard let ndc = project(horizontal: horizontal) else { return nil }
-        return (ndc, TerrainProfile.dimming(
-            altitudeDegrees: horizontal.altitudeDegrees,
-            azimuthDegrees: horizontal.azimuthDegrees
-        ))
+        return (
+            ndc,
+            TerrainProfile.dimming(
+                altitudeDegrees: horizontal.altitudeDegrees,
+                azimuthDegrees: horizontal.azimuthDegrees
+            ),
+            horizontal.altitudeDegrees
+        )
     }
 
     /// Pure projection. Terrain no longer rejects anything — the dunes are
@@ -183,10 +209,34 @@ struct SkyGeometryBuilder {
         // so the field stays visible through a bright sky, the way a
         // planetarium needs it to be. Positions are unaffected — only how
         // many stars are drawn, and how strongly.
-        let magnitudeLimit = StarAppearance.effectiveLimitingMagnitude(
+        let aboveHorizonLimit = StarAppearance.effectiveLimitingMagnitude(
             fieldOfViewDegrees: fov,
             sunAltitudeDegrees: sunAltitude
         )
+
+        // The see-through-Earth hemisphere is a *different sky*, and it gets
+        // its own limit. Daylight is scattered sunlight in the air along the
+        // line of sight; a sightline aimed below the horizon never crosses it,
+        // and comes out on a part of the Earth that may well be in night. See
+        // `SkyBrightness.effectiveSunAltitudeDegrees` for the chord geometry.
+        //
+        // Only the darkest such direction is needed here — it bounds the whole
+        // sub-horizon set, so the magnitude scan can be sized once for the
+        // frame and both culls in `StarIndex` keep working untouched. By day
+        // this deepens the scan to the night-time limit; at night it is
+        // identical to what the scan already was, so the worst-case per-frame
+        // cost is unchanged from the night-time cost the app already pays.
+        let darkestSubHorizonLimit = StarAppearance.effectiveLimitingMagnitude(
+            fieldOfViewDegrees: fov,
+            sunAltitudeDegrees: SkyBrightness.darkestSightlineSunAltitudeDegrees(
+                sunAltitudeDegrees: sunAltitude
+            )
+        )
+        let magnitudeLimit = max(aboveHorizonLimit, darkestSubHorizonLimit)
+        // When the two agree there is nothing to model per star, so the whole
+        // sub-horizon branch is skipped. That is every night, i.e. most of the
+        // time the app is actually used.
+        let subHorizonSkyDiffers = darkestSubHorizonLimit > aboveHorizonLimit + 1e-9
 
         // Named/bright stars start earning labels only once you've zoomed in
         // past roughly a "whole constellation" field.
@@ -205,16 +255,32 @@ struct SkyGeometryBuilder {
             // than skipping one star.
             if star.magnitude >= magnitudeLimit { break }
 
-            let baseVisibility = StarAppearance.visibility(
-                magnitude: star.magnitude,
-                fieldOfViewDegrees: fov,
-                sunAltitudeDegrees: sunAltitude
-            )
-            guard baseVisibility > 0.02 else { continue }
+            // Cheap pre-reject against the *above-horizon* limit only when the
+            // two limits agree; otherwise the star has to be projected before
+            // its limit is known, since the limit depends on which hemisphere
+            // it falls in.
+            if !subHorizonSkyDiffers && star.magnitude >= aboveHorizonLimit { break }
 
             guard let shaded = projectShaded(star.equatorial) else { continue }
             let ndc = shaded.ndc
             guard isOnScreen(ndc) else { continue }
+
+            // One Sun altitude drives both the magnitude limit and the
+            // contrast, so the sub-horizon sky needs no parallel code path —
+            // just the darker of the two hemispheres fed through the existing
+            // curves.
+            let skySunAltitude = subHorizonSkyDiffers
+                ? SkyBrightness.effectiveSunAltitudeDegrees(
+                    sunAltitudeDegrees: sunAltitude,
+                    viewAltitudeDegrees: shaded.altitudeDegrees
+                )
+                : sunAltitude
+            let baseVisibility = StarAppearance.visibility(
+                magnitude: star.magnitude,
+                fieldOfViewDegrees: fov,
+                sunAltitudeDegrees: skySunAltitude
+            )
+            guard baseVisibility > 0.02 else { continue }
             // Sub-horizon stars are folded into the same alpha every other
             // brightness factor already multiplies, so they sit consistently
             // with the dimmed background rather than on a parallel path.
@@ -300,6 +366,27 @@ struct SkyGeometryBuilder {
         )
     }
 
+    /// Brightness at or below which a *named* star is labelled permanently.
+    ///
+    /// 1.5 is the conventional edge of "first magnitude", and in the bundled
+    /// HYG catalogue exactly 23 stars carry a proper name and clear it —
+    /// Sirius, Canopus, Arcturus, Rigil Kentaurus, Vega, Capella, Rigel,
+    /// Procyon, Achernar, Betelgeuse, Hadar, Altair, Acrux, Aldebaran, Spica,
+    /// Antares, Pollux, Fomalhaut, Mimosa, Deneb, Toliman, Regulus, Adhara.
+    /// Roughly half are above the horizon at any moment and only a fraction of
+    /// those fall inside the viewport, so a normal wide field shows a handful
+    /// rather than a wall of text.
+    ///
+    /// Deliberately a magnitude threshold plus "has a proper name in the
+    /// catalogue" rather than a hard-coded list of stars: the rule stays true
+    /// if the catalogue is ever swapped, and it never has to be maintained.
+    static let persistentStarLabelMagnitude = 1.5
+
+    /// Whether this star is labelled without zooming or clicking.
+    static func isPersistentlyLabelled(_ star: Star) -> Bool {
+        star.name != nil && star.magnitude <= persistentStarLabelMagnitude
+    }
+
     private mutating func addStarLabelIfWorthy(
         star: Star,
         object: CelestialObject,
@@ -309,13 +396,18 @@ struct SkyGeometryBuilder {
     ) {
         // Only stars that a person would actually name: the catalogue's proper
         // names, plus anything genuinely bright.
-        guard star.name != nil || star.magnitude <= 1.5 else { return }
+        guard star.name != nil || star.magnitude <= Self.persistentStarLabelMagnitude else { return }
         guard isOnScreen(ndc, margin: 0.02) else { return }
 
         let isSelected = frameData.selectedObjectID == object.id
         // The brighter the star, the earlier its label earns its place.
         let brightnessWeight = Self.fadeIn(value: 3.2 - star.magnitude, over: 2.2)
-        let strength = isSelected ? 1.0 : min(1.0, fovStrength * (0.35 + 0.65 * brightnessWeight) * visibility)
+        // The first-magnitude named stars skip the field-of-view gate
+        // entirely: they are labelled the moment they are on screen, at any
+        // field, without being clicked. Everything else keeps the old
+        // behaviour and earns its label by zooming in.
+        let gate = Self.isPersistentlyLabelled(star) ? 1.0 : fovStrength
+        let strength = isSelected ? 1.0 : min(1.0, gate * (0.35 + 0.65 * brightnessWeight) * visibility)
 
         labelCandidates.append(
             SkyLabelCandidate(
@@ -624,6 +716,24 @@ struct SkyGeometryBuilder {
         let tailStrength = frameData.showAllSatellites
             ? Self.fadeIn(value: 100.0 - fov, over: 55.0)
             : 0.0
+
+        // Cheap exact necessary condition for being on screen: the angular
+        // separation between two directions is at least the difference of
+        // their altitudes, so anything further than the viewport radius (plus
+        // slack for the off-screen margin and the extrapolation) in altitude
+        // alone cannot possibly project into the frame.
+        //
+        // This runs on `altitudeDegreesAtSnapshot`, a field already in the
+        // sample, before any trigonometry — which is what makes drawing the
+        // sub-horizon hemisphere affordable. At a 90-degree field it discards
+        // roughly half the catalogue on one comparison; at narrow fields it
+        // discards nearly all of it.
+        let cameraAltitude = frameData.cameraCenter.altitudeDegrees
+        let altitudeBandDegrees = Angle.radiansToDegrees(
+            StarIndex.fieldAngularRadiusRadians(
+                fieldOfViewDegrees: fov, viewportSize: frameData.viewportSize
+            )
+        ) + 10.0
         // Point sources wash out in daylight exactly as the planets do, with
         // the same floor so a daytime "where is the ISS" still answers.
         let skyContrast = SkyBrightness.starContrast(
@@ -638,17 +748,40 @@ struct SkyGeometryBuilder {
         )
 
         for sample in snapshot.samples {
-            // Tier gate first: it is a couple of comparisons on already-loaded
-            // fields, and it rejects the overwhelming majority of the 16,000
-            // before any trigonometry happens.
-            let isGenuinelyVisible = sample.illumination.isSunlit
-                && sample.altitudeDegreesAtSnapshot > -1.0
+            // ACCURACY GATE, before anything else. An SGP4 propagation more
+            // than a few days from its element-set epoch is not a position,
+            // it is a guess along an orbital plane. The time machine can put
+            // the clock a month out with one click, so this has to be a hard
+            // refusal rather than a caveat: see `SatelliteAccuracy`.
+            guard SatelliteAccuracy.isReliable(
+                julianDay: julianDay, epochJulianDay: sample.epochJulianDay
+            ) else { continue }
+
+            // Cheap geometric reject on a field already in the sample.
+            guard abs(sample.altitudeDegreesAtSnapshot - cameraAltitude) <= altitudeBandDegrees
+            else { continue }
+
+            // Tier gate: a couple of comparisons on already-loaded fields,
+            // rejecting most of what survives above before any trigonometry.
+            let isBelowHorizon = sample.altitudeDegreesAtSnapshot <= -1.0
+            let isGenuinelyVisible = sample.illumination.isSunlit && !isBelowHorizon
             var tierStrength: Double
             if sample.isNotable {
                 tierStrength = 1.0
             } else if isGenuinelyVisible {
                 tierStrength = 1.0
+            } else if isBelowHorizon {
+                // The see-through-Earth hemisphere shows *everything* orbiting
+                // that part of the sky, by default and without "Show all".
+                // These objects are genuinely there — showing the ones the
+                // ground happens to be in front of is the entire point of a
+                // see-through view, and unlike the above-horizon tail they are
+                // never a swarm competing with visible passes, because the
+                // terrain dimming already pushes the whole hemisphere back.
+                tierStrength = 1.0
             } else if tailStrength > 0.02 {
+                // Still above the horizon but in the Earth's shadow: invisible
+                // from the ground, so it stays behind "Show all" as before.
                 tierStrength = tailStrength
             } else {
                 continue
@@ -709,6 +842,12 @@ struct SkyGeometryBuilder {
             // Labels are only ever for the notable few and the selection.
             // Naming a swarm would defeat the point of drawing it quietly.
             let isSelected = frameData.selectedObjectID == object.id
+            // The ISS is the exception: it carries its name continuously
+            // whenever it is on screen, at full strength, so it never has to
+            // be found by clicking. Its label still goes through the ordinary
+            // collision engine at ordinary satellite priority — it will lose
+            // to a planet, which is correct.
+            let isStation = sample.catalogNumber == Satellite.issCatalogNumber
             guard isSelected || sample.isNotable else { continue }
             guard isOnScreen(ndc, margin: 0.02) else { continue }
             labelCandidates.append(
@@ -718,7 +857,7 @@ struct SkyGeometryBuilder {
                     ndc: CGPoint(x: ndc.x, y: ndc.y),
                     priority: isSelected ? .selected : .satellite,
                     style: .satellite,
-                    strength: isSelected ? 1.0 : min(1.0, visibility),
+                    strength: (isSelected || isStation) ? 1.0 : min(1.0, visibility),
                     verticalOffsetPoints: 13
                 )
             )
@@ -790,6 +929,8 @@ struct SkyGeometryBuilder {
         // Screen position of the Sun, which resolves whether or not the Sun is
         // visible, so the Moon's bright limb still points the right way after
         // sunset.
+        // No precession: `SunPosition` returns an apparent place already
+        // referred to the equinox of date.
         let sunScreen: SIMD2<Double>? = frameData.sunEquatorial.flatMap { eq in
             let horizontal = CoordinateTransformService.horizontal(
                 from: eq, observer: frameData.observerLocation, julianDay: frameData.julianDay
@@ -800,7 +941,9 @@ struct SkyGeometryBuilder {
         let sunAltitude = frameData.sunAltitudeDegrees
 
         for object in frameData.solarSystemObjects {
-            guard let shaded = projectShaded(object.equatorial) else { continue }
+            // `precess: false` — every solar-system position in this app is
+            // already of-date (see `projectShaded`).
+            guard let shaded = projectShaded(object.equatorial, precess: false) else { continue }
             let ndc = shaded.ndc
             guard isOnScreen(ndc, margin: 0.25) else { continue }
 

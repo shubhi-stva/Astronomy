@@ -178,6 +178,92 @@ enum SkyBrightness {
         return daylightDisplayFloor + (darkSkyDisplayCeiling - daylightDisplayFloor) * eased
     }
 
+    // MARK: - The sky below the horizon (the see-through-Earth view)
+
+    /// Sun altitude governing the sky background for a line of sight that
+    /// points *below* the observer's horizon.
+    ///
+    /// The see-through-Earth view draws the whole celestial sphere, including
+    /// the half of it the ground is in the way of. Applying the observer's own
+    /// sky brightness to those directions is wrong in a specific, correctable
+    /// way: **daylight is an atmospheric foreground.** The blue glow that
+    /// drowns out stars is sunlight scattered by the air *along the line of
+    /// sight*. A sightline aimed below the horizon does not traverse that
+    /// illuminated air — it goes down through the ground, and whatever sky lies
+    /// at the far end belongs to a different part of the Earth, quite possibly
+    /// the night hemisphere.
+    ///
+    /// The geometry is exact and elementary. An observer on a sphere of radius
+    /// R looking at depression angle |a| below the local horizon sends a chord
+    /// into the sphere. The chord and the inward radius meet at 90 - |a|; the
+    /// triangle observer-centre-exit is isoceles, so the central angle is
+    /// **2|a|**. The sightline therefore leaves the Earth a great-circle
+    /// distance of 2|a| away, reaching the exact antipode when a = -90.
+    ///
+    /// Displacing an observer by a great-circle distance d changes the Sun's
+    /// altitude h to
+    ///
+    ///     sin h' = sin h cos d + cos h sin d cos(psi)
+    ///
+    /// where psi is the bearing of the displacement relative to the Sun's
+    /// azimuth. The app has no reason to prefer one bearing, and the
+    /// azimuth-averaged value of the second term is zero, so the model keeps
+    /// the first term only:
+    ///
+    ///     sin h' = sin h cos(2|a|)
+    ///
+    /// which is continuous at the horizon (d = 0 gives h' = h) and exact at
+    /// a = -90 (d = 180 gives h' = -h, the antipode). It is a genuine
+    /// derivation rather than a fudge, and it is the whole story: no arbitrary
+    /// magnitude bonus is added anywhere.
+    static func sightlineSunAltitudeDegrees(
+        sunAltitudeDegrees sunAltitude: Double,
+        viewAltitudeDegrees viewAltitude: Double
+    ) -> Double {
+        guard viewAltitude < 0 else { return sunAltitude }
+        let d = Angle.degreesToRadians(2.0 * min(90.0, -viewAltitude))
+        let sinH = sin(Angle.degreesToRadians(sunAltitude)) * cos(d)
+        return Angle.radiansToDegrees(asin(max(-1.0, min(1.0, sinH))))
+    }
+
+    /// The Sun altitude that should drive the *displayed* brightness for a
+    /// given viewing direction: whichever of the two hemispheres is darker.
+    ///
+    /// The minimum rather than a straight substitution, because the mechanism
+    /// above only ever *removes* a foreground — a sightline through the Earth
+    /// can never be dimmed by daylight it does not pass through. In practice:
+    ///
+    ///  * By day, sub-horizon directions get the night-side value. Looking
+    ///    down at noon shows the depth of a dark sky, which is exactly what is
+    ///    physically there behind the rock.
+    ///  * At night, the far end of the sightline is the *day* hemisphere, so
+    ///    the minimum keeps the observer's own dark sky and nothing regresses.
+    ///  * Above the horizon it is the observer's own value, unchanged.
+    ///
+    /// Everything downstream (`displayLimitingMagnitude`, `starContrast`) is
+    /// monotone decreasing in Sun altitude, so feeding this single number
+    /// through the existing curves gives the darker of the two hemispheres for
+    /// both the magnitude limit and the contrast, with no parallel code path.
+    static func effectiveSunAltitudeDegrees(
+        sunAltitudeDegrees sunAltitude: Double,
+        viewAltitudeDegrees viewAltitude: Double
+    ) -> Double {
+        min(
+            sunAltitude,
+            sightlineSunAltitudeDegrees(
+                sunAltitudeDegrees: sunAltitude, viewAltitudeDegrees: viewAltitude
+            )
+        )
+    }
+
+    /// The darkest effective Sun altitude any direction can reach for a given
+    /// real Sun altitude — the value at view altitude -90, where the sightline
+    /// reaches the antipode. Used once per frame to size the magnitude scan,
+    /// so the spatial/magnitude cull keeps working unchanged.
+    static func darkestSightlineSunAltitudeDegrees(sunAltitudeDegrees sunAltitude: Double) -> Double {
+        -abs(sunAltitude)
+    }
+
     /// Opacity multiplier applied to stars as the sky background brightens.
     ///
     /// Stars stay visible in daylight, but a bright sky legitimately lowers

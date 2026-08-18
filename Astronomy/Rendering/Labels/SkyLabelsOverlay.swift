@@ -40,7 +40,11 @@ struct SkyLabelsOverlay: View {
     private func font(for style: LabelStyle) -> Font {
         switch style {
         case .constellation: return .system(size: 12, weight: .light, design: .rounded)
-        case .star: return .system(size: 11, weight: .regular)
+        // Star names are now on screen permanently for the first-magnitude
+        // stars, so they are set deliberately *lighter* than a planet's name:
+        // one weight down and one size step down. They should read as a quiet
+        // annotation on the star field, not as chrome competing with it.
+        case .star: return .system(size: 10.5, weight: .light)
         case .solarSystem: return .system(size: 12, weight: .medium)
         case .deepSky: return .system(size: 11, weight: .regular, design: .rounded)
         // Monospaced, because a satellite label is a designation rather than a
@@ -55,7 +59,10 @@ struct SkyLabelsOverlay: View {
     private func color(for style: LabelStyle) -> Color {
         switch style {
         case .constellation: return SkyPalette.chromeSecondaryText.opacity(0.85)
-        case .star: return SkyPalette.chromeText.opacity(0.9)
+        // Lower contrast than `.solarSystem` as well as lighter: the secondary
+        // chrome tint at 82% against the planets' full-strength primary. Still
+        // comfortably legible over the sky, which is very dark.
+        case .star: return SkyPalette.chromeSecondaryText.opacity(0.82)
         case .solarSystem: return SkyPalette.chromeText
         case .deepSky: return SkyPalette.chromeSecondaryText.opacity(0.95)
         case .satellite: return SkyPalette.satelliteLabel

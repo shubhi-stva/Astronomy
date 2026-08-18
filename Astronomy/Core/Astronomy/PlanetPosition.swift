@@ -15,6 +15,7 @@
 //
 
 import Foundation
+import simd
 
 enum Planet: String, CaseIterable, Identifiable {
     case mercury, venus, mars, jupiter, saturn, uranus, neptune
@@ -167,23 +168,32 @@ enum PlanetPosition {
         }
         let k = max(0.0, min(1.0, (1 + cosPhaseAngle) / 2))
 
-        // Obliquity of the ecliptic (mean, of date).
-        let meanObliquity = 23.439291 - 0.0130042 * t
-        let epsilon = Angle.degreesToRadians(meanObliquity)
+        // The JPL Keplerian elements are referred to the **J2000.0 ecliptic**,
+        // so the geocentric vector above is in the J2000 frame. Rotating it by
+        // the J2000 obliquity gives J2000 equatorial coordinates.
+        let epsilonJ2000 = Angle.degreesToRadians(23.4392911)
 
         // Rotate ecliptic -> equatorial.
         let xEq = gx
-        let yEq = gy * cos(epsilon) - gz * sin(epsilon)
-        let zEq = gy * sin(epsilon) + gz * cos(epsilon)
+        let yEq = gy * cos(epsilonJ2000) - gz * sin(epsilonJ2000)
+        let zEq = gy * sin(epsilonJ2000) + gz * cos(epsilonJ2000)
 
-        let raRad = atan2(yEq, xEq)
-        let decRad = atan2(zEq, sqrt(xEq * xEq + yEq * yEq))
+        // ...and then precess J2000 -> equinox of date, because everything the
+        // planets are drawn against is of-date: the observer's sidereal time,
+        // the Sun (Meeus Ch. 25) and the Moon (Ch. 47) all are, and as of
+        // `Precession` the star catalogue is too. Leaving the planets in J2000
+        // put them 0.36 degrees out of register with the rest of the sky in
+        // 2026 — small, but exactly the kind of quiet inconsistency that makes
+        // a conjunction render wrong. The obliquity term above was previously
+        // evaluated at the date, which was a partial and inconsistent version
+        // of this same correction.
+        let ofDate = Precession.precess(
+            Precession.equatorial(fromVector: SIMD3(xEq, yEq, zEq)),
+            julianDay: jd
+        )
 
         return PlanetState(
-            equatorial: EquatorialCoordinate(
-                rightAscensionDegrees: Angle.normalizeDegrees(Angle.radiansToDegrees(raRad)),
-                declinationDegrees: Angle.radiansToDegrees(decRad)
-            ),
+            equatorial: ofDate,
             geocentricDistanceAU: delta,
             heliocentricDistanceAU: r,
             illuminatedFraction: k

@@ -144,6 +144,7 @@ actor SatelliteTracker {
                                 catalogNumber: satellite.catalogNumber,
                                 regime: satellite.regime,
                                 isNotable: satellite.isNotable,
+                                epochJulianDay: satellite.epochJulianDay,
                                 position: state.position,
                                 velocity: state.velocity,
                                 illumination: illumination,

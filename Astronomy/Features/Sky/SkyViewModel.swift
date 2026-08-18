@@ -162,6 +162,50 @@ final class SkyViewModel {
     /// also exactly the default render set's size, which is the point.
     private(set) var visibleSatelliteCount = 0
 
+    // MARK: - Accuracy reporting
+
+    /// Median element-set epoch of the loaded catalogue, as a Julian Day.
+    ///
+    /// The median rather than any single satellite's, because CelesTrak's
+    /// element sets are generated at different times across a day or two and
+    /// the question being answered — "is the displayed instant anywhere near
+    /// the elements?" — is about the catalogue as a whole.
+    private var medianElementEpochJulianDay: Double = 0
+
+    /// True when the displayed instant is far enough from the element sets that
+    /// the satellite layer has suppressed itself. See `SatelliteAccuracy`.
+    var satelliteElementsAreOutOfDate: Bool {
+        guard medianElementEpochJulianDay > 0, !satelliteDescriptors.isEmpty else { return false }
+        return !SatelliteAccuracy.isReliable(
+            julianDay: time.julianDay, epochJulianDay: medianElementEpochJulianDay
+        )
+    }
+
+    /// The one honest sentence to put under the time bar about what on screen
+    /// can still be trusted at the displayed instant. `nil` when everything is
+    /// within its modelled range, which is the case at real time.
+    ///
+    /// Ordered by severity: satellites fail first and hardest, then the
+    /// solar-system models at the edges of their window. Stars are never
+    /// listed, because precession keeps them right across the whole range (only
+    /// proper motion is missing, and that stays sub-pixel for centuries).
+    var timeAccuracyCaveat: String? {
+        var notes: [String] = []
+        if satellitesEnabled && satelliteElementsAreOutOfDate {
+            let days = Int(SatelliteAccuracy.maximumElementSetAgeDays)
+            notes.append(
+                "Satellites hidden: orbital element sets are only meaningful within about \(days) days of their epoch, so positions at this time would be meaningless rather than merely imprecise."
+            )
+        }
+        let year = Calendar.current.component(.year, from: time.currentDate)
+        if !EphemerisService.validYearRange.contains(year) {
+            notes.append(
+                "Outside \(EphemerisService.validYearRange.lowerBound)–\(EphemerisService.validYearRange.upperBound), planet positions are extrapolated beyond their fitted range."
+            )
+        }
+        return notes.isEmpty ? nil : notes.joined(separator: " ")
+    }
+
     /// Lower-cased satellite names, parallel to `satelliteDescriptors`.
     private var satelliteSearchNames: [String] = []
 
@@ -170,6 +214,8 @@ final class SkyViewModel {
         // Lower-cased once here rather than sixteen thousand times per
         // keystroke in `satelliteMatches`.
         satelliteSearchNames = satelliteDescriptors.map { $0.name.lowercased() }
+        let epochs = satelliteDescriptors.map(\.epochJulianDay).sorted()
+        medianElementEpochJulianDay = epochs.isEmpty ? 0 : epochs[epochs.count / 2]
     }
 
     /// Fetches fresh element sets, at most once a day (the interval is enforced
@@ -368,6 +414,12 @@ final class SkyViewModel {
         var matches: [CelestialObject] = []
         for sample in satelliteSnapshot.samples {
             guard sample.index < satelliteDescriptors.count else { continue }
+            // Same accuracy gate the renderer applies: never offer a search
+            // result the sky is refusing to draw, and never fly the camera to
+            // a position the propagator cannot justify. See `SatelliteAccuracy`.
+            guard SatelliteAccuracy.isReliable(
+                julianDay: jd, epochJulianDay: sample.epochJulianDay
+            ) else { continue }
             let descriptor = satelliteDescriptors[sample.index]
             let numberMatches = queryNumber != nil && descriptor.catalogNumber == queryNumber
             let nameMatches = sample.index < satelliteSearchNames.count
@@ -399,14 +451,31 @@ final class SkyViewModel {
         .map { $0 }
     }
 
+    /// Where to point the camera for an object, in the same frame the renderer
+    /// draws it in.
+    ///
+    /// Stars and deep-sky objects carry J2000 catalogue places and have to be
+    /// precessed to the displayed epoch first — exactly as `SkyGeometryBuilder`
+    /// does — or search would centre the camera a third of a degree off the
+    /// star it just found, and further still under the time machine. Everything
+    /// else (solar-system bodies, topocentric satellite places) is already
+    /// of-date and must not be rotated again.
+    private static func horizontalForCamera(
+        object: CelestialObject, observer: GeographicLocation, julianDay: Double
+    ) -> HorizontalCoordinate {
+        let needsPrecession = object.kind == .star || object.kind == .deepSky
+        let equatorial = needsPrecession
+            ? Precession.precess(object.equatorial, julianDay: julianDay)
+            : object.equatorial
+        return CoordinateTransformService.horizontal(
+            from: equatorial, observer: observer, julianDay: julianDay
+        )
+    }
+
     /// Recenters the camera on an object and selects it, instantly (used by
     /// search, where the object may currently be off-screen).
     func focus(on object: CelestialObject) {
-        let horizontal = CoordinateTransformService.horizontal(
-            from: object.equatorial,
-            observer: location.currentLocation,
-            julianDay: time.julianDay
-        )
+        let horizontal = Self.horizontalForCamera(object: object, observer: location.currentLocation, julianDay: time.julianDay)
         camera.center(on: horizontal)
         selectedObject = object
         searchText = ""
@@ -417,11 +486,7 @@ final class SkyViewModel {
     /// little if the current field of view is very wide.
     func flyToFocus(on object: CelestialObject?) {
         guard let object else { return }
-        let horizontal = CoordinateTransformService.horizontal(
-            from: object.equatorial,
-            observer: location.currentLocation,
-            julianDay: time.julianDay
-        )
+        let horizontal = Self.horizontalForCamera(object: object, observer: location.currentLocation, julianDay: time.julianDay)
         let targetFOV = min(camera.fieldOfViewDegrees, 30)
         camera.flyTo(horizontal, fieldOfViewDegrees: targetFOV)
         selectedObject = object

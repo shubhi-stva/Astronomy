@@ -20,6 +20,12 @@ enum SkyPalette {
 
     static let panelStroke = Color.white.opacity(0.08)
 
+    /// Reserved for one job: telling the user the sky on screen is not the sky
+    /// outside. Used by the time bar when simulated time has left real time and
+    /// by the accuracy caveats that go with it. Warm enough to read as a
+    /// caution against the cool chrome without shouting.
+    static let warningAmber = Color(red: 0.96, green: 0.74, blue: 0.38)
+
     /// Satellite labels. Matches the cool cyan cast of the satellite marker in
     /// `StarAppearance`, kept quiet enough that a dozen of them on screen never
     /// competes with a star name.

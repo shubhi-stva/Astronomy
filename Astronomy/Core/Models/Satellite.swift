@@ -151,6 +151,12 @@ final class Satellite: @unchecked Sendable {
     /// "active" group and were removed rather than left here to match nothing.
     /// An unmatched entry is harmless but silently useless, which is worse than
     /// a shorter list.
+    /// The International Space Station. Singled out because it is the one
+    /// object in the catalogue everybody wants named on sight: it carries a
+    /// label whenever it is on screen, at full strength, regardless of
+    /// selection or of how dim the pass happens to be.
+    static let issCatalogNumber = 25544
+
     static let notableCatalogNumbers: Set<Int> = [
         25544, // ISS (ZARYA)
         20580, // Hubble Space Telescope
@@ -174,6 +180,49 @@ final class Satellite: @unchecked Sendable {
     ]
 }
 
+/// How far from its element-set epoch an SGP4 propagation may be trusted, and
+/// what the app does about it.
+///
+/// **This is the hard accuracy limit of the whole satellite layer, and it is
+/// the reason the time machine cannot simply run satellites forward.**
+///
+/// SGP4 is not an ephemeris. It is a fit: a TLE encodes mean elements plus a
+/// drag term tuned so the model reproduces the observed orbit *near its
+/// epoch*. Away from that epoch the fit degrades fast, and in low orbit the
+/// dominant error is atmospheric drag, whose actual magnitude depends on solar
+/// and geomagnetic activity nobody encoded in the two lines. The operational
+/// rule of thumb — and CelesTrak's own guidance — is roughly a kilometre of
+/// along-track error per day for a typical LEO object, growing worse than
+/// linearly, and far worse during a geomagnetic storm.
+///
+/// A kilometre at 500 km range is about 0.1 degrees, so a few days is where the
+/// prediction stops being pixel-accurate. At one month it is hundreds to
+/// thousands of kilometres: the satellite is somewhere in its orbital plane,
+/// and the app has no idea where. That is not "imprecise", it is *meaningless* —
+/// a position drawn from it would be indistinguishable from a random point
+/// along the ground track.
+///
+/// So the app refuses. Beyond the window the satellite is not drawn at all,
+/// and the UI says why rather than leaving the user to wonder where the
+/// satellites went. Silently propagating months out and drawing the result
+/// would be the single most dishonest thing this app could do.
+enum SatelliteAccuracy {
+
+    /// Maximum |simulated time - element epoch|, in days, at which a satellite
+    /// is still drawn. Five days is deliberately at the generous end of "a few
+    /// days": inside it a LEO object is typically within a few kilometres, so
+    /// the marker is in the right part of the sky even if the exact pass timing
+    /// has slipped by seconds.
+    static let maximumElementSetAgeDays: Double = 5.0
+
+    /// Whether a propagation at `julianDay` from `epochJulianDay` is worth
+    /// drawing. Symmetric: elements are no more valid five days *before* their
+    /// epoch than five days after.
+    static func isReliable(julianDay: Double, epochJulianDay: Double) -> Bool {
+        abs(julianDay - epochJulianDay) <= maximumElementSetAgeDays
+    }
+}
+
 /// One satellite's propagated state at a tick, in a form the renderer can copy
 /// cheaply and extrapolate between ticks.
 ///
@@ -190,6 +239,13 @@ struct SatelliteSample: Sendable {
     let catalogNumber: Int
     let regime: OrbitalRegime
     let isNotable: Bool
+
+    /// This object's element-set epoch as a Julian Day. Carried in the sample
+    /// (a bare `Double`, so it costs nothing to copy) rather than looked up in
+    /// the descriptor array, because `SatelliteAccuracy` has to gate *before*
+    /// any trigonometry: the descriptor lookup is deliberately deferred until
+    /// after every rejection in the geometry builder.
+    let epochJulianDay: Double
 
     /// Geocentric TEME position at the snapshot's epoch, in kilometres.
     let position: SIMD3<Double>
