@@ -53,12 +53,18 @@ final class SkyRenderer: NSObject, MTKViewDelegate {
     private var lastLabelPublish: CFTimeInterval = 0
     private var lastPublishedLabels: [SkyLabel] = []
 
-    /// Labels are the only SwiftUI content driven by the sky. Republishing at
-    /// the full display rate would invalidate the overlay 60-120 times a
-    /// second for no visible benefit, so the layout is pushed at ~30 Hz —
-    /// still faster than the eye tracks a fading label, and half the SwiftUI
-    /// diffing work.
-    private static let labelPublishInterval: CFTimeInterval = 1.0 / 30.0
+    /// Labels are published every frame, in lockstep with the geometry they
+    /// annotate.
+    ///
+    /// This used to be throttled to ~30 Hz to halve the SwiftUI diffing work.
+    /// That was a mistake: a label is *attached* to its object, so a frame
+    /// where the sky moved and the label did not is a frame where the label is
+    /// visibly in the wrong place. At 120 Hz the throttle held labels up to
+    /// three frames behind a pan, which reads as them dragging along behind
+    /// the stars. The layout is cheap (a few dozen candidates) and the
+    /// `labels != lastPublishedLabels` check below still suppresses the
+    /// genuinely redundant updates, so nothing is gained by waiting.
+    private static let labelPublishInterval: CFTimeInterval = 0
 
     init?(device: MTLDevice) {
         self.device = device

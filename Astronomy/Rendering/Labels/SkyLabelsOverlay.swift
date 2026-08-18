@@ -23,12 +23,18 @@ struct SkyLabelsOverlay: View {
                     .foregroundStyle(color(for: label.style))
                     .shadow(color: .black.opacity(0.6), radius: 3)
                     .fixedSize()
-                    .position(x: label.position.x, y: label.position.y)
+                    // Opacity is the *only* animated property. It is applied —
+                    // and its animation scoped — beneath `.position`, so the
+                    // fade cannot leak into the placement below.
                     .opacity(label.opacity)
-                    .animation(.easeInOut(duration: 0.35), value: label.opacity)
+                    .animation(.easeInOut(duration: 0.28), value: label.opacity)
+                    // Position is set outside that scope and must never be
+                    // animated: the label has to sit on its object in the same
+                    // frame the object moves. Anything easing here reads as the
+                    // labels sliding along behind the sky while you pan.
+                    .position(x: label.position.x, y: label.position.y)
             }
         }
-        .animation(.easeInOut(duration: 0.35), value: labels)
     }
 
     private func font(for style: LabelStyle) -> Font {
