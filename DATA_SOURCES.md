@@ -359,3 +359,89 @@ comment block there for the full derivation.
   are in the same places, so this reads as bloom rather than as doubling). The
   image is loaded without sRGB decoding, which is a deliberate simplification —
   the layer is a subtle additive wash, not a colour-managed reproduction.
+
+## Satellite element sets — `Astronomy/Data/Catalogs/satellites.txt`
+
+- **Source**: [CelesTrak](https://celestrak.org) GP element sets, the `active`
+  group in TLE format
+  (`https://celestrak.org/NORAD/elements/gp.php?GROUP=active&FORMAT=tle`).
+  CelesTrak is maintained by Dr T.S. Kelso and has redistributed this data
+  since 1985.
+- **Underlying data**: the orbital elements themselves originate with the
+  US Space Force's 18th/19th Space Defense Squadron and are published through
+  Space-Track. As a work of the US Government they are not subject to
+  copyright in the United States.
+- **License — stated honestly**: **no explicit license statement could be
+  found on CelesTrak's pages.** The underlying element sets being public-domain
+  US Government work is the basis on which they are bundled here; the CelesTrak
+  attribution is a courtesy, not a licence obligation being discharged. If
+  CelesTrak later publishes terms that conflict with this use, this file and the
+  bundled snapshot should be revisited. The attribution is shown in the app's
+  footer line alongside the ESO and catalogue credits.
+- **Politeness measures**, because CelesTrak explicitly dislikes abusive
+  clients and rate-limits them:
+  - the app polls **at most once per day**, enforced in
+    `SatelliteCatalogService.minimumRefreshInterval` by comparing the cache
+    file's modification date before any request is made;
+  - every request carries a descriptive `User-Agent`
+    (`Astronomy-macOS-Planetarium/1.0 (satellite tracking; TLE refresh once per day)`);
+  - a response that does not parse as element sets is discarded rather than
+    written over a working cache, so a rate-limit page cannot poison it.
+- **Snapshot bundled**: 16,079 element sets, 2.6 MB, fetched 2026-08-17.
+  Bundling it is what lets the app work with no network at all, the same
+  promise the star catalogue makes.
+- **Refresh and caching**: a fresh copy is written to
+  `~/Library/Application Support/Astronomy/satellites.txt` and preferred over
+  the bundle on subsequent launches. Any failure — offline, timeout, rate
+  limit, malformed response — leaves the previous elements in place and is
+  logged, never surfaced as an error. A network failure can never break the
+  sky.
+- **Regime breakdown** of the bundled snapshot, as classified by
+  `OrbitalRegime.classify`: **15,275 LEO, 179 MEO, 584 GEO, 41 highly
+  elliptical**. Of these, **799 have orbital periods of 225 minutes or more**
+  and are propagated through the deep-space (SDP4) branch of the model.
+
+### Accuracy, and its real limits
+
+Satellite positions come from **SGP4/SDP4**, the analytical model that TLEs are
+*defined* against. The implementation in `Core/Astronomy/SGP4/` is a faithful
+port of David Vallado's public-domain reference `SGP4.cpp` (version 2020-07-13,
+companion code to Vallado, Crawford, Hujsak & Kelso, "Revisiting Spacetrack
+Report #3", AIAA 2006-6753, itself descended from Hoots & Roehrich, Spacetrack
+Report No. 3, 1980). It is verified against the standard `SGP4-VER.TLE` set to
+sub-millimetre agreement with the reference; see `AstronomyTests`.
+
+What remains approximate, in decreasing order of how much it matters:
+
+- **Element-set age dominates everything else.** A TLE is a snapshot, and SGP4's
+  drag model is a coarse one. A LEO element set accumulates on the order of
+  kilometres of along-track error per day, so a week-old set can place the ISS
+  a noticeable distance along its own track — visible as the pass happening a
+  few seconds early or late. This is a property of the data, not of the
+  implementation, and no amount of care in the propagator removes it. The app
+  surfaces the age directly: select a satellite and the info panel shows
+  "Element set: 2.3 days old". Treat that number as the accuracy caveat it is.
+- **Atmospheric drag** is modelled by SGP4's `B*` term, a single fitted
+  coefficient. It does not know about solar activity, the satellite's attitude,
+  or a manoeuvre. Objects that manoeuvre (the ISS reboosts; Starlink raises
+  orbit continuously) invalidate their elements sooner than the drag model
+  alone would suggest.
+- **TEME frame handling.** SGP4 emits positions in TEME (True Equator, Mean
+  Equinox of date). `TopocentricTransform` rotates the observer into that frame
+  using Greenwich *Mean* Sidereal Time, which is the standard practice for TEME.
+  Strictly, TEME's origin of right ascension differs from the true equinox by
+  the equation of the equinoxes, up to about 1.1 seconds of time (~16
+  arcseconds). That is four orders of magnitude below the element-set error
+  above, and it is noted in the code rather than silently ignored.
+- **Observer height** is assumed to be sea level on the WGS-84 ellipsoid; the
+  app does not know the user's elevation. A few hundred metres of elevation is
+  negligible against a target hundreds of kilometres away. The ellipsoid itself
+  is *not* an approximation that could be skipped: a spherical Earth would be
+  wrong by up to 21 km, which for a 400 km target is degrees of mispointing.
+- **No apparent magnitude.** The element-set catalogue carries no photometry,
+  and a satellite's brightness depends on its attitude and phase angle in ways
+  two lines of orbital elements cannot express. The app therefore reports no
+  magnitude for a satellite rather than inventing one. What it *does* report is
+  whether the object is in sunlight, computed from a conical umbra/penumbra
+  test against the Sun direction — which is the thing that actually determines
+  whether you could see it.
