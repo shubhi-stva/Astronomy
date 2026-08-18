@@ -189,18 +189,25 @@ final class SkyViewModel {
         camera.tick()
         refreshSelectedSatellite()
 
+        // Sample the clock exactly once per frame. `time.julianDay` is
+        // continuous — it reads the system clock on every access — so calling
+        // it repeatedly would build one frame from several slightly different
+        // instants. Physically that difference is microseconds and harmless,
+        // but a frame should be a single moment.
+        let frameJulianDay = time.julianDay
+
         let sun = solarSystemObjects.first { $0.kind == .sun }
         let moon = solarSystemObjects.first { $0.kind == .moon }
         let sunHorizontal = sun.map {
             CoordinateTransformService.horizontal(
                 from: $0.equatorial,
                 observer: location.currentLocation,
-                julianDay: time.julianDay
+                julianDay: frameJulianDay
             )
         }
 
         // Keep ephemeris reasonably fresh even between the 30s refresh ticks
-        // (time keeps advancing every second via TimeController).
+        // (time advances continuously via TimeController).
         var frame = SkyFrameData(
             stars: stars,
             solarSystemObjects: solarSystemObjects,
@@ -210,7 +217,7 @@ final class SkyViewModel {
             starsByID: starsByID,
             starIndex: starIndex,
             observerLocation: location.currentLocation,
-            julianDay: time.julianDay,
+            julianDay: frameJulianDay,
             cameraCenter: camera.centerHorizontal,
             cameraFieldOfViewDegrees: camera.fieldOfViewDegrees,
             viewportSize: viewportSize,

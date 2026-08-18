@@ -1214,3 +1214,67 @@ final class CardinalPointTests: XCTestCase {
         XCTAssertEqual(horizontal.azimuthDegrees, 90.0, accuracy: 0.5)
     }
 }
+
+@MainActor
+final class TimeContinuityTests: XCTestCase {
+
+    /// The render clock must advance continuously, not in one-second steps.
+    ///
+    /// This is the regression that made satellites judder: everything else in
+    /// the sky moves slowly enough that a quantised clock is invisible, but a
+    /// low-orbit satellite crosses about a degree of sky per second, so a
+    /// one-second staircase in `julianDay` showed up directly as a one-second
+    /// stutter no amount of position extrapolation could hide.
+    func testJulianDayAdvancesBetweenTicks() throws {
+        let controller = TimeController()
+        let first = controller.julianDay
+        // Well under the one-second display tick.
+        Thread.sleep(forTimeInterval: 0.05)
+        let second = controller.julianDay
+
+        XCTAssertGreaterThan(second, first, "the render clock stalled between display ticks")
+
+        // Sanity: it advanced by roughly the elapsed wall time, not a whole
+        // second and not zero.
+        let elapsedSeconds = (second - first) * 86_400.0
+        XCTAssertEqual(elapsedSeconds, 0.05, accuracy: 0.04)
+    }
+
+    /// Distinct reads must give distinct instants — the value is computed, not
+    /// cached behind an observable property.
+    func testSuccessiveReadsAreNotIdentical() throws {
+        let controller = TimeController()
+        var previous = controller.date
+        for _ in 0..<5 {
+            Thread.sleep(forTimeInterval: 0.005)
+            let next = controller.date
+            XCTAssertGreaterThan(next, previous)
+            previous = next
+        }
+    }
+
+    func testResetToNowClearsTheOffset() throws {
+        let controller = TimeController()
+        controller.shift(by: 3600)
+        XCTAssertFalse(controller.isFollowingRealTime)
+        XCTAssertEqual(controller.date.timeIntervalSinceNow, 3600, accuracy: 1.0)
+
+        controller.resetToNow()
+        XCTAssertTrue(controller.isFollowingRealTime)
+        XCTAssertEqual(controller.date.timeIntervalSinceNow, 0, accuracy: 0.1)
+    }
+
+    /// Simulated time must keep *flowing* after a jump, not freeze at the
+    /// target instant — this is what lets the future Time Machine scrub and
+    /// then watch events unfold.
+    func testTimeKeepsFlowingAfterAJump() throws {
+        let controller = TimeController()
+        let target = Date(timeIntervalSinceNow: 86_400)
+        controller.jump(to: target)
+
+        let first = controller.julianDay
+        Thread.sleep(forTimeInterval: 0.05)
+        let second = controller.julianDay
+        XCTAssertGreaterThan(second, first)
+    }
+}
