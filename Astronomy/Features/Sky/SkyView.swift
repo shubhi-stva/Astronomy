@@ -71,7 +71,18 @@ struct SkyView: View {
                     }
 
                     TimeBarView(viewModel: viewModel)
-                        .padding(.bottom, 20)
+                        .padding(.bottom, 6)
+
+                    // Required attribution. The Milky Way panorama is ESO's
+                    // under CC BY 4.0, which obliges the credit to be shown
+                    // "in a clear and readable manner to all users" — a note
+                    // in DATA_SOURCES.md does not satisfy that, since users
+                    // never see the repository. Kept deliberately quiet so it
+                    // does not compete with the sky.
+                    Text("Milky Way: ESO/S. Brunier (CC BY 4.0) · Catalogues: HYG, OpenNGC (CC BY-SA 4.0)")
+                        .font(.system(size: 9))
+                        .foregroundStyle(SkyPalette.chromeSecondaryText.opacity(0.55))
+                        .padding(.bottom, 10)
                 }
 
                 if viewModel.isLoadingCatalog {
