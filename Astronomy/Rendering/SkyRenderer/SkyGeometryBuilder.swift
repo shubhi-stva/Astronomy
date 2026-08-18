@@ -57,8 +57,67 @@ struct SkyGeometryBuilder {
         buildDeepSky()
         buildSolarSystem()
         buildConstellationLabels()
+        buildCardinalPoints()
 
         pointVertices = glowVertices + coreVertices
+    }
+
+    // MARK: - Compass points
+
+    /// The eight compass bearings, as (label, azimuth in degrees).
+    ///
+    /// Azimuth in this app is measured from north increasing eastward — the
+    /// standard compass convention, established in
+    /// `CoordinateTransformService.horizontal` — so these are simply the
+    /// eight-point rose at 45-degree steps.
+    ///
+    /// These are *true* (geographic) bearings, not magnetic ones: they are
+    /// derived from the same horizontal frame as every object in the sky, so
+    /// "N" points at the north point of the true horizon, directly below the
+    /// celestial pole. A handheld magnetic compass will disagree by the local
+    /// magnetic declination (roughly 13 degrees east in the Bay Area), which
+    /// is expected and correct — planetarium bearings are always true.
+    private static let compassPoints: [(text: String, azimuth: Double)] = [
+        ("N", 0), ("NE", 45), ("E", 90), ("SE", 135),
+        ("S", 180), ("SW", 225), ("W", 270), ("NW", 315),
+    ]
+
+    /// Test seam: the rose is a plain constant, and its correctness is a
+    /// property worth asserting rather than eyeballing.
+    static var compassPointsForTesting: [(text: String, azimuth: Double)] { compassPoints }
+
+    private mutating func buildCardinalPoints() {
+        // Drawn on the true horizon. The four cardinals carry more weight than
+        // the intercardinals, which fade out at wide fields so the horizon
+        // does not turn into a ribbon of text.
+        let fov = frameData.cameraFieldOfViewDegrees
+        let intercardinalStrength = Self.fadeIn(value: 110.0 - fov, over: 35.0)
+
+        for point in Self.compassPoints {
+            let isCardinal = point.text.count == 1
+            let strength = isCardinal ? 0.9 : intercardinalStrength * 0.75
+            guard strength > 0.02 else { continue }
+
+            let horizontal = HorizontalCoordinate(altitudeDegrees: 0, azimuthDegrees: point.azimuth)
+            // `cullBelowHorizon: false` because the marker sits exactly *on*
+            // the horizon, and the shared cull uses a small negative margin.
+            guard let ndc = project(horizontal: horizontal, cullBelowHorizon: false),
+                  isOnScreen(ndc, margin: 0.02) else { continue }
+
+            labelCandidates.append(
+                SkyLabelCandidate(
+                    id: "cardinal-\(point.text)",
+                    text: point.text,
+                    ndc: CGPoint(x: ndc.x, y: ndc.y),
+                    priority: .cardinal,
+                    style: .cardinal,
+                    strength: strength,
+                    // Sits just above the horizon line rather than below it,
+                    // where it would fall into the ground region.
+                    verticalOffsetPoints: -12
+                )
+            )
+        }
     }
 
     // MARK: - Projection

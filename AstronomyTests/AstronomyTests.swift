@@ -1026,3 +1026,61 @@ final class DeepSkyCatalogueTests: XCTestCase {
         XCTAssertEqual(m31.deepSkyType, .galaxy)
     }
 }
+
+final class CardinalPointTests: XCTestCase {
+
+    /// The compass rose must agree with the azimuth convention the rest of the
+    /// app uses: measured from north, increasing eastward.
+    func testCompassRoseUsesCompassConvention() throws {
+        let expected: [(String, Double)] = [
+            ("N", 0), ("NE", 45), ("E", 90), ("SE", 135),
+            ("S", 180), ("SW", 225), ("W", 270), ("NW", 315),
+        ]
+        let actual = SkyGeometryBuilder.compassPointsForTesting
+        XCTAssertEqual(actual.count, expected.count)
+        for (a, e) in zip(actual, expected) {
+            XCTAssertEqual(a.text, e.0)
+            XCTAssertEqual(a.azimuth, e.1, accuracy: 1e-9)
+        }
+    }
+
+    /// The north point of the horizon must lie directly below the north
+    /// celestial pole — that is what makes "N" geographically true rather than
+    /// an arbitrary label. Checked by confirming that a star on the meridian
+    /// at the pole's azimuth comes back at azimuth 0.
+    func testNorthPointLiesUnderTheCelestialPole() throws {
+        let jd = JulianDate.julianDay(from: Date())
+        for latitude in [10.0, 37.5, 60.0] {
+            let observer = GeographicLocation(latitudeDegrees: latitude, longitudeDegrees: -122.0)
+            let pole = EquatorialCoordinate(rightAscensionDegrees: 0, declinationDegrees: 90)
+            let horizontal = CoordinateTransformService.horizontal(
+                from: pole, observer: observer, julianDay: jd
+            )
+            XCTAssertEqual(horizontal.azimuthDegrees, 0.0, accuracy: 0.5,
+                           "the celestial pole must sit due north at latitude \(latitude)")
+            XCTAssertEqual(horizontal.altitudeDegrees, latitude, accuracy: 0.01)
+        }
+    }
+
+    /// A star rising due east crosses the horizon at azimuth 90, and the
+    /// equinox point is the textbook case: declination 0 rises exactly east
+    /// for any observer.
+    func testCelestialEquatorRisesDueEast() throws {
+        let jd = JulianDate.julianDay(from: Date())
+        let observer = GeographicLocation(latitudeDegrees: 37.5, longitudeDegrees: -122.0)
+        let lst = CoordinateTransformService.localSiderealTimeDegrees(
+            julianDay: jd, longitudeDegrees: observer.longitudeDegrees
+        )
+        // Six hours of hour angle before transit puts a dec-0 object on the
+        // eastern horizon.
+        let equatorial = EquatorialCoordinate(
+            rightAscensionDegrees: Angle.normalizeDegrees(lst + 90),
+            declinationDegrees: 0
+        )
+        let horizontal = CoordinateTransformService.horizontal(
+            from: equatorial, observer: observer, julianDay: jd
+        )
+        XCTAssertEqual(horizontal.altitudeDegrees, 0.0, accuracy: 0.5)
+        XCTAssertEqual(horizontal.azimuthDegrees, 90.0, accuracy: 0.5)
+    }
+}

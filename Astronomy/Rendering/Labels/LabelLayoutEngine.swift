@@ -24,6 +24,11 @@ import Foundation
 
 /// Ranking used to resolve label collisions. Higher wins.
 enum LabelPriority: Int, Comparable {
+    /// Compass points on the horizon. Lowest priority of all: they are
+    /// orientation furniture, and if a real celestial object wants the same
+    /// pixels it should win. They also sit in a band of the screen nothing
+    /// else usually occupies, so they rarely lose.
+    case cardinal = -1
     case constellation = 0
     /// Galaxies, nebulae and clusters. Deliberately just above constellation
     /// names and below named stars: a deep-sky label is worth more than the
@@ -44,6 +49,8 @@ enum LabelStyle {
     case star
     case solarSystem
     case deepSky
+    /// Cardinal/intercardinal compass points ("N", "NE", ...).
+    case cardinal
 }
 
 /// A label the renderer would *like* to draw this frame, in viewport NDC.

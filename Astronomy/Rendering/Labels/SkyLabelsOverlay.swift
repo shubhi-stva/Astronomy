@@ -19,6 +19,7 @@ struct SkyLabelsOverlay: View {
             ForEach(labels) { label in
                 Text(label.text)
                     .font(font(for: label.style))
+                    .tracking(label.style == .cardinal ? 1.6 : 0)
                     .foregroundStyle(color(for: label.style))
                     .shadow(color: .black.opacity(0.6), radius: 3)
                     .fixedSize()
@@ -36,6 +37,9 @@ struct SkyLabelsOverlay: View {
         case .star: return .system(size: 11, weight: .regular)
         case .solarSystem: return .system(size: 12, weight: .medium)
         case .deepSky: return .system(size: 11, weight: .regular, design: .rounded)
+        // Wide-tracked small caps read as a compass bearing rather than as
+        // the name of something in the sky.
+        case .cardinal: return .system(size: 11, weight: .semibold, design: .rounded)
         }
     }
 
@@ -45,6 +49,7 @@ struct SkyLabelsOverlay: View {
         case .star: return SkyPalette.chromeText.opacity(0.9)
         case .solarSystem: return SkyPalette.chromeText
         case .deepSky: return SkyPalette.chromeSecondaryText.opacity(0.95)
+        case .cardinal: return SkyPalette.chromeText.opacity(0.75)
         }
     }
 
