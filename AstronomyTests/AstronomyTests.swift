@@ -1027,6 +1027,136 @@ final class DeepSkyCatalogueTests: XCTestCase {
     }
 }
 
+/// The "see-through Earth" skyline.
+///
+/// The profile is implemented twice — `TerrainProfile.swift` (which decides
+/// which objects are hidden) and `Shaders.metal` (which paints the band). These
+/// tests pin the Swift side hard, so an edit to the Metal copy that is not
+/// mirrored back here shows up as a failure rather than as objects silently
+/// clipping against a skyline that is not where it is drawn.
+final class TerrainProfileTests: XCTestCase {
+
+    /// Exactly periodic over a full turn: all four frequencies are integers, so
+    /// there can be no seam at due north.
+    func testProfileIsPeriodicOverAFullTurn() {
+        for az in stride(from: 0.0, through: 359.0, by: 1.0) {
+            XCTAssertEqual(
+                TerrainProfile.skylineAltitudeDegrees(azimuthDegrees: az),
+                TerrainProfile.skylineAltitudeDegrees(azimuthDegrees: az + 360.0),
+                accuracy: 1e-9
+            )
+        }
+        XCTAssertEqual(
+            TerrainProfile.skylineAltitudeDegrees(azimuthDegrees: 0),
+            TerrainProfile.skylineAltitudeDegrees(azimuthDegrees: 360),
+            accuracy: 1e-12,
+            "a discontinuity at azimuth 0 would draw a visible seam at north"
+        )
+    }
+
+    /// Continuous, and gentle: no step anywhere, and never outside the
+    /// amplitude budget of rolling hills.
+    func testProfileIsContinuousAndStaysWithinItsAmplitude() {
+        let limit = TerrainProfile.maxAmplitude
+        XCTAssertEqual(limit, 2.15, accuracy: 1e-12)
+
+        var previous = TerrainProfile.skylineAltitudeDegrees(azimuthDegrees: 0)
+        for step in 1...3600 {
+            let value = TerrainProfile.skylineAltitudeDegrees(azimuthDegrees: Double(step) * 0.1)
+            XCTAssertLessThanOrEqual(abs(value), limit + 1e-9)
+            XCTAssertLessThan(abs(value - previous), 0.05,
+                              "the skyline must not step; it is a sum of smooth sinusoids")
+            previous = value
+        }
+    }
+
+    /// Mean skyline sits at altitude 0 — every term is a zero-mean sinusoid, so
+    /// no constant offset is needed, and this is what keeps the horizon where a
+    /// user expects it.
+    func testMeanSkylineIsAtAltitudeZero() {
+        var sum = 0.0
+        let samples = 3600
+        for i in 0..<samples {
+            sum += TerrainProfile.skylineAltitudeDegrees(azimuthDegrees: Double(i) * 360.0 / Double(samples))
+        }
+        XCTAssertEqual(sum / Double(samples), 0.0, accuracy: 1e-9)
+    }
+
+    /// Fixed azimuths, pinned to ten decimal places. If the Metal copy is
+    /// edited without mirroring it here (or vice versa), this is the tripwire.
+    func testProfileMatchesExpectedValuesAtFixedAzimuths() {
+        let expected: [(Double, Double)] = [
+            (0.0,   1.1180474163),
+            (45.0,  0.3282378629),
+            (90.0,  0.6070187494),
+            (135.0, 0.0652278258),
+            (180.0, -0.0134415922),
+            (225.0, -0.7971152171),
+            (270.0, -1.7116245735),
+            (315.0, 0.4036495284),
+        ]
+        for (azimuth, value) in expected {
+            XCTAssertEqual(
+                TerrainProfile.skylineAltitudeDegrees(azimuthDegrees: azimuth),
+                value,
+                accuracy: 1e-9,
+                "terrain profile changed at azimuth \(azimuth) — mirror the edit into Shaders.metal"
+            )
+        }
+    }
+
+    /// The occlusion rule in one test: visible above the skyline, hidden inside
+    /// the band, visible again below it, because you are looking through the
+    /// Earth.
+    func testOnlyTheBandOccludes() {
+        for azimuth in stride(from: 0.0, to: 360.0, by: 7.0) {
+            let skyline = TerrainProfile.skylineAltitudeDegrees(azimuthDegrees: azimuth)
+            let thickness = TerrainProfile.bandThicknessDegrees
+
+            XCTAssertFalse(
+                TerrainProfile.isOccluded(altitudeDegrees: skyline + 5.0, azimuthDegrees: azimuth),
+                "an object well above the skyline must be visible")
+            XCTAssertTrue(
+                TerrainProfile.isOccluded(altitudeDegrees: skyline - thickness * 0.5, azimuthDegrees: azimuth),
+                "an object inside the terrain band must be hidden")
+            XCTAssertFalse(
+                TerrainProfile.isOccluded(altitudeDegrees: skyline - thickness - 5.0, azimuthDegrees: azimuth),
+                "an object below the band must be visible again")
+        }
+    }
+
+    /// Dimming is 1 above the skyline, eases smoothly in below the band, and
+    /// bottoms out at the chosen factor — never zero, because the point of the
+    /// feature is that the hidden sky stays rich.
+    func testDimmingEasesInBelowTheBandAndNeverReachesZero() {
+        let azimuth = 123.0
+        let skyline = TerrainProfile.skylineAltitudeDegrees(azimuthDegrees: azimuth)
+        let bottom = skyline - TerrainProfile.bandThicknessDegrees
+
+        XCTAssertEqual(TerrainProfile.dimming(altitudeDegrees: skyline + 10, azimuthDegrees: azimuth),
+                       1.0, accuracy: 1e-12)
+        XCTAssertEqual(TerrainProfile.dimming(altitudeDegrees: bottom, azimuthDegrees: azimuth),
+                       1.0, accuracy: 1e-9, "the dimming must start at the band's bottom edge")
+        XCTAssertEqual(
+            TerrainProfile.dimming(altitudeDegrees: bottom - TerrainProfile.dimmingEaseDegrees, azimuthDegrees: azimuth),
+            TerrainProfile.belowHorizonDimming, accuracy: 1e-9)
+        XCTAssertEqual(TerrainProfile.dimming(altitudeDegrees: -85, azimuthDegrees: azimuth),
+                       TerrainProfile.belowHorizonDimming, accuracy: 1e-9)
+
+        // Monotonic and continuous through the ease-in.
+        var previous = 1.0
+        for i in 0...200 {
+            let alt = bottom - Double(i) * 0.05
+            let value = TerrainProfile.dimming(altitudeDegrees: alt, azimuthDegrees: azimuth)
+            XCTAssertLessThanOrEqual(value, previous + 1e-12)
+            XCTAssertGreaterThanOrEqual(value, TerrainProfile.belowHorizonDimming - 1e-12)
+            previous = value
+        }
+        XCTAssertGreaterThan(TerrainProfile.belowHorizonDimming, 0.4,
+                             "sub-horizon detail must stay clearly legible")
+    }
+}
+
 final class CardinalPointTests: XCTestCase {
 
     /// The compass rose must agree with the azimuth convention the rest of the

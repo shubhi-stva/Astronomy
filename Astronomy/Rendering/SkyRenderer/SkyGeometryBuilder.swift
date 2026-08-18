@@ -43,11 +43,11 @@ struct SkyGeometryBuilder {
     private var glowVertices: [PointVertex] = []
     private var coreVertices: [PointVertex] = []
 
-    /// "See-through Earth": nothing is culled for being below the horizon any
-    /// more. An object is hidden **only** when it falls inside the opaque
-    /// terrain band at its own azimuth (see `TerrainProfile`); everything
-    /// underneath keeps rendering in its true position, dimmed to match the
-    /// dimmed background the shader paints there.
+    // "See-through Earth": nothing is culled for being below the horizon any
+    // more. An object is hidden *only* when it falls inside the opaque terrain
+    // band at its own azimuth (see `TerrainProfile`); everything underneath
+    // keeps rendering in its true position, dimmed to match the dimmed
+    // background the shader paints there.
 
     init(frameData: SkyFrameData) {
         self.frameData = frameData
@@ -121,8 +121,8 @@ struct SkyGeometryBuilder {
                     priority: .cardinal,
                     style: .cardinal,
                     strength: strength,
-                    // Sits just above the horizon line rather than below it,
-                    // where it would fall into the ground region.
+                    // Nudged clear of the skyline so the glyph sits on the sky
+                    // side of the silhouette rather than inside the black band.
                     verticalOffsetPoints: -12
                 )
             )
@@ -590,8 +590,8 @@ struct SkyGeometryBuilder {
         let fov = frameData.cameraFieldOfViewDegrees
         let viewportWidth = Double(frameData.viewportSize.width)
 
-        // Screen position of the Sun, ignoring the horizon cull, so the Moon's
-        // bright limb still points the right way after sunset.
+        // Screen position of the Sun, ignoring terrain occlusion, so the
+        // Moon's bright limb still points the right way after sunset.
         let sunScreen: SIMD2<Double>? = frameData.sunEquatorial.flatMap { eq in
             let horizontal = CoordinateTransformService.horizontal(
                 from: eq, observer: frameData.observerLocation, julianDay: frameData.julianDay
