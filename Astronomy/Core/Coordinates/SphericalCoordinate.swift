@@ -32,7 +32,11 @@ struct GeographicLocation: Hashable, Codable {
     var latitudeDegrees: Double
     var longitudeDegrees: Double
 
-    static let newYork = GeographicLocation(latitudeDegrees: 40.7128, longitudeDegrees: -74.0060)
+    /// Neutral starting point used only until a real location is known, so the
+    /// sky can render on the very first frame. Deliberately *not* a real city:
+    /// presenting a specific place the user isn't in would be misleading. The
+    /// UI labels this state explicitly (see `LocationService.Source.fallback`).
+    static let fallbackObserver = GeographicLocation(latitudeDegrees: 0, longitudeDegrees: 0)
 }
 
 enum Angle {

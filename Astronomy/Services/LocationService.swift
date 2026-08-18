@@ -2,9 +2,13 @@
 //  LocationService.swift
 //  Astronomy
 //
-//  Wraps CoreLocation for an optional "use my location" flow, but the app
-//  always supports (and defaults to, on first launch) a manual lat/lon
-//  override — CoreLocation authorization is not required to use the app.
+//  Resolves the observer's position for the astronomy pipeline.
+//
+//  On launch the service asks CoreLocation for the Mac's current location
+//  (a single fix, not a continuous stream — the observer doesn't move fast
+//  enough to matter for a planetarium). Until that resolves, or if the user
+//  denies permission, the app falls back to a clearly-labelled default
+//  location and manual lat/lon entry remains available at all times.
 //
 
 import Foundation
@@ -15,19 +19,35 @@ import Observation
 @MainActor
 final class LocationService: NSObject, CLLocationManagerDelegate {
 
-    /// The location currently used for astronomy calculations. Defaults to
-    /// New York City until the user sets something else (manually or via
-    /// CoreLocation).
-    private(set) var currentLocation: GeographicLocation = .newYork
+    /// How the value in `currentLocation` was arrived at. The UI uses this to
+    /// avoid presenting the fallback as though it were the user's real place.
+    enum Source: Equatable {
+        /// No real fix yet — showing the default starting point.
+        case fallback
+        /// Waiting on CoreLocation (permission prompt or first fix).
+        case resolving
+        /// A real fix from CoreLocation.
+        case system
+        /// The user typed coordinates.
+        case manual
+        /// CoreLocation is unavailable: denied, restricted, or errored.
+        case unavailable(reason: String)
+    }
 
-    /// True while a manual override is active — CoreLocation updates, if
-    /// any arrive later, will not silently overwrite a manual choice.
-    private(set) var isManualOverride = false
+    /// The location used for all astronomy calculations. Starts at a neutral
+    /// default so the sky can render immediately on launch; replaced as soon
+    /// as a real fix arrives.
+    private(set) var currentLocation: GeographicLocation = .fallbackObserver
 
-    /// Human-readable place name for `currentLocation`, resolved
-    /// asynchronously by reverse geocoding. `nil` until (or unless) it
-    /// resolves — the UI falls back to formatted coordinates, so geocoding
-    /// never blocks anything.
+    private(set) var source: Source = .fallback
+
+    /// True once the user has typed coordinates — a late-arriving CoreLocation
+    /// fix must not silently overwrite a deliberate manual choice.
+    var isManualOverride: Bool { source == .manual }
+
+    /// Human-readable place name, resolved asynchronously by reverse
+    /// geocoding. `nil` until (or unless) it resolves — the UI falls back to
+    /// formatted coordinates, so geocoding never blocks anything.
     private(set) var placeName: String?
 
     private let manager = CLLocationManager()
@@ -37,18 +57,53 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
     override init() {
         super.init()
         manager.delegate = self
-        resolvePlaceName()
+        // Kilometre accuracy is far finer than a planetarium needs (a degree
+        // of latitude is ~111 km) and avoids spinning up GPS-grade location.
+        manager.desiredAccuracy = kCLLocationAccuracyKilometer
+        startAutomaticLocation()
     }
 
     deinit {
         geocodeTask?.cancel()
     }
 
+    // MARK: - Automatic location
+
+    /// Begins automatic location resolution. Called once at launch, and again
+    /// if the user explicitly asks to return to system location.
+    func startAutomaticLocation() {
+        switch manager.authorizationStatus {
+        case .notDetermined:
+            source = .resolving
+            // The delegate callback below issues the fix request once the user
+            // answers the prompt.
+            manager.requestWhenInUseAuthorization()
+        case .authorized, .authorizedAlways:
+            source = .resolving
+            manager.requestLocation()
+        case .denied:
+            source = .unavailable(reason: "Location permission denied")
+        case .restricted:
+            source = .unavailable(reason: "Location access restricted")
+        @unknown default:
+            source = .unavailable(reason: "Location unavailable")
+        }
+    }
+
+    /// Explicit "use my location again" action, clearing any manual override.
+    func requestSystemLocation() {
+        startAutomaticLocation()
+    }
+
+    // MARK: - Manual override
+
     func setManualLocation(latitudeDegrees: Double, longitudeDegrees: Double) {
         currentLocation = GeographicLocation(latitudeDegrees: latitudeDegrees, longitudeDegrees: longitudeDegrees)
-        isManualOverride = true
+        source = .manual
         resolvePlaceName()
     }
+
+    // MARK: - Reverse geocoding
 
     /// Kicks off (or restarts) reverse geocoding for the current location.
     /// Failures are silent: a missing network or a rate-limited geocoder just
@@ -68,8 +123,9 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         }
     }
 
-    /// Prefers "City, Region", falling back through the coarser fields so
-    /// remote/ocean coordinates still get something meaningful (or nothing).
+    /// Prefers "City, ST" (abbreviated region where CoreLocation supplies one,
+    /// as it does for US states), falling back through coarser fields so
+    /// remote/ocean coordinates still get something meaningful.
     static func displayName(for placemark: CLPlacemark) -> String? {
         if let locality = placemark.locality {
             if let region = placemark.administrativeArea, region != locality {
@@ -80,10 +136,27 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         return placemark.administrativeArea ?? placemark.country ?? placemark.name
     }
 
-    func requestSystemLocation() {
-        isManualOverride = false
-        manager.requestWhenInUseAuthorization()
-        manager.requestLocation()
+    // MARK: - CLLocationManagerDelegate
+
+    nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        let status = manager.authorizationStatus
+        Task { @MainActor in
+            // A manual choice outranks anything CoreLocation has to say.
+            guard !self.isManualOverride else { return }
+            switch status {
+            case .authorized, .authorizedAlways:
+                self.source = .resolving
+                manager.requestLocation()
+            case .denied:
+                self.source = .unavailable(reason: "Location permission denied")
+            case .restricted:
+                self.source = .unavailable(reason: "Location access restricted")
+            case .notDetermined:
+                break // Still waiting on the user to answer the prompt.
+            @unknown default:
+                self.source = .unavailable(reason: "Location unavailable")
+            }
+        }
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
@@ -94,12 +167,17 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
                 latitudeDegrees: coordinate.latitude,
                 longitudeDegrees: coordinate.longitude
             )
+            self.source = .system
             self.resolvePlaceName()
         }
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
-        // Silently keep the current (manual or default) location — CoreLocation
-        // failing is not fatal since manual entry is always available.
+        Task { @MainActor in
+            guard !self.isManualOverride else { return }
+            // Not fatal: keep the current location and let the user enter one
+            // manually. Surfaced in the UI rather than swallowed silently.
+            self.source = .unavailable(reason: "Couldn't determine location")
+        }
     }
 }

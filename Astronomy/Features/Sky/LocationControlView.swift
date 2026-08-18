@@ -39,6 +39,12 @@ struct LocationControlView: View {
                     Divider().overlay(SkyPalette.panelStroke)
 
                     VStack(alignment: .leading, spacing: 8) {
+                        if let statusNote {
+                            Text(statusNote)
+                                .font(.caption2)
+                                .foregroundStyle(SkyPalette.chromeSecondaryText)
+                        }
+
                         labeledField("Latitude", text: $latitudeText)
                         labeledField("Longitude", text: $longitudeText)
 
@@ -68,13 +74,33 @@ struct LocationControlView: View {
     }
 
     /// Reverse-geocoded place name once it resolves; formatted coordinates
-    /// until then (and permanently, if geocoding fails or is offline).
+    /// until then (and permanently, if geocoding fails or is offline). States
+    /// where we don't actually know where the user is say so, rather than
+    /// showing a placeholder that reads like a real position.
     private var locationSummary: String {
-        if let place = viewModel.location.placeName, !place.isEmpty {
-            return place
+        switch viewModel.location.source {
+        case .fallback:
+            return "Set location"
+        case .resolving:
+            return "Locating…"
+        case .unavailable:
+            return "Set location"
+        case .system, .manual:
+            if let place = viewModel.location.placeName, !place.isEmpty {
+                return place
+            }
+            let loc = viewModel.location.currentLocation
+            return String(format: "%.2f, %.2f", loc.latitudeDegrees, loc.longitudeDegrees)
         }
-        let loc = viewModel.location.currentLocation
-        return String(format: "%.2f, %.2f", loc.latitudeDegrees, loc.longitudeDegrees)
+    }
+
+    /// Explains why automatic location isn't in use, shown only in the
+    /// expanded form so the collapsed control stays minimal.
+    private var statusNote: String? {
+        if case .unavailable(let reason) = viewModel.location.source {
+            return reason
+        }
+        return nil
     }
 
     private func labeledField(_ label: String, text: Binding<String>) -> some View {

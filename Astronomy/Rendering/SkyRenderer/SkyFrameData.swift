@@ -52,7 +52,7 @@ struct SkyFrameData {
         solarSystemObjects: [],
         constellationLines: [],
         starsByID: [:],
-        observerLocation: .newYork,
+        observerLocation: .fallbackObserver,
         julianDay: JulianDate.j2000,
         cameraCenter: HorizontalCoordinate(altitudeDegrees: 45, azimuthDegrees: 180),
         cameraFieldOfViewDegrees: 90,
