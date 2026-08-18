@@ -168,6 +168,20 @@ comment block there for the full derivation.
 - **Calibration points**: a pristine 21.9 mag/arcsec² sky yields the textbook
   naked-eye limit of 6.5; a midday 3.0 mag/arcsec² sky yields −3.9, so Venus
   (−4.2) survives daylight and essentially nothing else does.
+- **Display override (important)**: the renderer does **not** apply the
+  physical limit literally. Doing so empties the daytime sky (only the Sun,
+  Moon and Venus survive), which is useless for a planetarium whose job is
+  answering "what is up there right now". The drawn limit is therefore
+  floored at magnitude 5.6 (`SkyBrightness.daylightDisplayFloor`) so the star
+  field remains visible through daylight — the standard see-through
+  planetarium convention — and a bright sky instead costs *contrast*
+  (`starContrast`, easing from 1.0 in full dark to 0.72 under a high Sun).
+  At night the physical limit rises above the floor on its own, so dark skies
+  still gain the faintest stars naturally. **This affects only which stars
+  are drawn and how strongly, never where they are**: positions always come
+  from real catalogue J2000 RA/Dec run through the real observer/time
+  transform, so a star drawn at noon sits at the exact altitude and azimuth
+  it genuinely occupies behind the daylight.
 - **Limitations**: the anchors are chosen to look right, not measured; there
   is no airmass/extinction term for objects low in the sky, no Moon
   contribution to sky brightness, no light-pollution (Bortle) parameter, and

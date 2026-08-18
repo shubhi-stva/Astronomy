@@ -85,9 +85,10 @@ struct SkyGeometryBuilder {
     private mutating func buildStars() {
         let fov = frameData.cameraFieldOfViewDegrees
         let sunAltitude = frameData.sunAltitudeDegrees
-        // In daylight this collapses to about -3.9, so the loop below rejects
-        // the entire catalogue on an integer comparison and no trigonometry
-        // runs at all — the daylight sky is genuinely starless *and* free.
+        // Floored in daylight (see `SkyBrightness.displayLimitingMagnitude`)
+        // so the field stays visible through a bright sky, the way a
+        // planetarium needs it to be. Positions are unaffected — only how
+        // many stars are drawn, and how strongly.
         let magnitudeLimit = StarAppearance.effectiveLimitingMagnitude(
             fieldOfViewDegrees: fov,
             sunAltitudeDegrees: sunAltitude

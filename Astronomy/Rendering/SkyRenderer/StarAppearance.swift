@@ -76,18 +76,20 @@ enum StarAppearance {
     }
 
     /// The magnitude cutoff actually in force: the more restrictive of the
-    /// aesthetic field-of-view limit and the physical sky-brightness limit
-    /// (`SkyBrightness`). In daylight the sky limit dominates and drops to
-    /// about -3.9, so the star field simply is not there; by astronomical
-    /// night the sky limit has risen past 6 and the FOV limit takes over
-    /// again, exactly as before this existed.
+    /// aesthetic field-of-view limit and the sky-brightness *display* limit.
+    ///
+    /// The display limit is floored (see `SkyBrightness.displayLimitingMagnitude`)
+    /// so the star field is still there in daylight — a planetarium has to
+    /// show the sky through the daylight to be useful. At night the physical
+    /// limit rises above that floor on its own, so dark skies still gain the
+    /// faintest stars naturally and the FOV limit takes over again.
     static func effectiveLimitingMagnitude(
         fieldOfViewDegrees fov: Double,
         sunAltitudeDegrees sunAltitude: Double
     ) -> Double {
         min(
             limitingMagnitude(fieldOfViewDegrees: fov),
-            SkyBrightness.limitingMagnitude(sunAltitudeDegrees: sunAltitude)
+            SkyBrightness.displayLimitingMagnitude(sunAltitudeDegrees: sunAltitude)
         )
     }
 
@@ -108,11 +110,14 @@ enum StarAppearance {
             fieldOfViewDegrees: fov,
             sunAltitudeDegrees: sunAltitude
         )
+        // A bright sky lowers contrast rather than removing stars, so the
+        // field stays legible at noon while still reading as daylight.
+        let contrast = SkyBrightness.starContrast(sunAltitudeDegrees: sunAltitude)
         let fadeWidth = 1.1
-        if magnitude <= limit - fadeWidth { return 1.0 }
+        if magnitude <= limit - fadeWidth { return contrast }
         if magnitude >= limit { return 0.0 }
         let t = (limit - magnitude) / fadeWidth
-        return t * t * (3 - 2 * t)
+        return t * t * (3 - 2 * t) * contrast
     }
 
     // MARK: - Size

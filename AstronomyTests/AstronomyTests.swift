@@ -224,12 +224,56 @@ final class SkyBrightnessTests: XCTestCase {
         )
         XCTAssertEqual(night, StarAppearance.limitingMagnitude(fieldOfViewDegrees: 150), accuracy: 1e-9)
 
-        // Same narrow field at midday: the sky limit binds instead.
+        // Same narrow field at midday: the sky limit binds instead — but it is
+        // the *display* limit (floored), not the physical one, so the daytime
+        // sky still shows a field of stars.
         let day = StarAppearance.effectiveLimitingMagnitude(
             fieldOfViewDegrees: 3, sunAltitudeDegrees: 45
         )
-        XCTAssertEqual(day, SkyBrightness.limitingMagnitude(sunAltitudeDegrees: 45), accuracy: 1e-9)
-        XCTAssertLessThan(day, night)
+        XCTAssertEqual(day, SkyBrightness.displayLimitingMagnitude(sunAltitudeDegrees: 45), accuracy: 1e-9)
+        XCTAssertEqual(day, SkyBrightness.daylightDisplayFloor, accuracy: 1e-9)
+        XCTAssertGreaterThan(
+            day, 4.0,
+            "a planetarium must show the sky through daylight, not an empty screen"
+        )
+    }
+
+    func testDisplayLimitNeverEmptiesTheDaytimeSky() throws {
+        // Whatever the Sun is doing, the renderer keeps a usable field.
+        for alt in stride(from: 90.0, through: -40.0, by: -5.0) {
+            XCTAssertGreaterThanOrEqual(
+                SkyBrightness.displayLimitingMagnitude(sunAltitudeDegrees: alt),
+                SkyBrightness.daylightDisplayFloor - 1e-9,
+                "display limit dipped below the floor at Sun altitude \(alt)"
+            )
+        }
+        // At night the physical limit rises past the floor on its own, so a
+        // dark sky still gains the faintest stars rather than being clamped.
+        XCTAssertGreaterThan(
+            SkyBrightness.displayLimitingMagnitude(sunAltitudeDegrees: -30),
+            SkyBrightness.daylightDisplayFloor
+        )
+    }
+
+    func testStarContrastEasesContinuouslyAndNeverVanishes() throws {
+        let day = SkyBrightness.starContrast(sunAltitudeDegrees: 45)
+        let dusk = SkyBrightness.starContrast(sunAltitudeDegrees: -6)
+        let night = SkyBrightness.starContrast(sunAltitudeDegrees: -20)
+
+        // Monotonic: darker sky -> higher contrast.
+        XCTAssertLessThan(day, dusk)
+        XCTAssertLessThan(dusk, night)
+        // Never fully transparent, and never above full strength.
+        XCTAssertGreaterThanOrEqual(day, SkyBrightness.daylightContrastFloor - 1e-9)
+        XCTAssertEqual(night, 1.0, accuracy: 0.02)
+
+        // No step changes anywhere across the twilight range.
+        var previous = SkyBrightness.starContrast(sunAltitudeDegrees: 60)
+        for alt in stride(from: 60.0, through: -30.0, by: -0.5) {
+            let value = SkyBrightness.starContrast(sunAltitudeDegrees: alt)
+            XCTAssertLessThan(abs(value - previous), 0.02, "contrast stepped at \(alt)")
+            previous = value
+        }
     }
 
     func testVisibilityFadeIsMagnitudeDependentNotAUniformDimmer() throws {
@@ -239,27 +283,41 @@ final class SkyBrightnessTests: XCTestCase {
         let bright = StarAppearance.visibility(
             magnitude: -2.2, fieldOfViewDegrees: 60, sunAltitudeDegrees: sunAltitude
         )
+        // Chosen to straddle the fade band: at this field of view the cutoff
+        // is ~5.16 and the fade spans the magnitude below it, so 4.6 is
+        // partway through the fade and 5.3 is past the cutoff entirely.
         let middling = StarAppearance.visibility(
-            magnitude: 2.0, fieldOfViewDegrees: 60, sunAltitudeDegrees: sunAltitude
+            magnitude: 4.6, fieldOfViewDegrees: 60, sunAltitudeDegrees: sunAltitude
         )
         let faint = StarAppearance.visibility(
-            magnitude: 5.0, fieldOfViewDegrees: 60, sunAltitudeDegrees: sunAltitude
+            magnitude: 5.3, fieldOfViewDegrees: 60, sunAltitudeDegrees: sunAltitude
         )
-        XCTAssertEqual(bright, 1.0, accuracy: 1e-9)
+        // Bright objects render at the full contrast the sky allows; fainter
+        // ones fade out progressively toward the cutoff.
+        let duskContrast = SkyBrightness.starContrast(sunAltitudeDegrees: sunAltitude)
+        XCTAssertEqual(bright, duskContrast, accuracy: 1e-9)
         XCTAssertGreaterThan(bright, middling)
         XCTAssertGreaterThanOrEqual(middling, faint)
         XCTAssertEqual(faint, 0.0, accuracy: 1e-9)
 
-        // In full daylight nothing star-like survives, but Venus does.
-        XCTAssertEqual(
-            StarAppearance.visibility(magnitude: 2.0, fieldOfViewDegrees: 60, sunAltitudeDegrees: 45),
-            0.0, accuracy: 1e-9
+        // In full daylight the field is still drawn — that is the whole point
+        // of a see-through planetarium view — just at reduced contrast.
+        let daylightStar = StarAppearance.visibility(
+            magnitude: 2.0, fieldOfViewDegrees: 60, sunAltitudeDegrees: 45
         )
-        // Venus survives, though only partly — it genuinely is a hard object
-        // to pick out of a midday sky.
-        XCTAssertGreaterThan(
+        XCTAssertGreaterThan(daylightStar, 0.5, "stars must remain visible in daylight")
+        XCTAssertLessThan(daylightStar, 1.0, "but a bright sky should still cost contrast")
+
+        // Venus, far brighter, is at least as visible as an ordinary star.
+        XCTAssertGreaterThanOrEqual(
             StarAppearance.visibility(magnitude: -4.2, fieldOfViewDegrees: 60, sunAltitudeDegrees: 45),
-            0.2
+            daylightStar
+        )
+
+        // The night sky is strictly higher contrast than the day sky.
+        XCTAssertGreaterThan(
+            StarAppearance.visibility(magnitude: 2.0, fieldOfViewDegrees: 60, sunAltitudeDegrees: -20),
+            daylightStar
         )
     }
 }

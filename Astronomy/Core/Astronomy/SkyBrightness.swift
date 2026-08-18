@@ -100,9 +100,61 @@ enum SkyBrightness {
     }
 
     /// Convenience: Sun altitude straight through to a limiting magnitude.
+    ///
+    /// This is the *physical* answer — what an eye could actually pull out of
+    /// that background. It is what `displayLimitingMagnitude` is derived from,
+    /// and it is deliberately kept separate so the honest number stays
+    /// available (and testable) even though the renderer shows more.
     static func limitingMagnitude(sunAltitudeDegrees alt: Double) -> Double {
         nakedEyeLimitingMagnitude(
             magPerSquareArcsecond: zenithMagnitudesPerSquareArcsecond(sunAltitudeDegrees: alt)
         )
+    }
+
+    // MARK: - Display model (a product choice, not physics)
+
+    /// Faintest magnitude the renderer will draw, whatever the Sun is doing.
+    ///
+    /// A planetarium is a tool for answering "what is up there right now",
+    /// which means it has to show the sky *through* the daylight — the same
+    /// see-through convention every planetarium app uses. Physically the
+    /// daytime limit is about -3.9 (only the Sun, Moon and Venus), and
+    /// rendering that literally leaves a beautiful but useless empty blue
+    /// screen.
+    ///
+    /// So the display limit is floored here. Note this changes only how many
+    /// stars are drawn and how strongly — never *where* they are. Positions
+    /// stay fully physical: real catalogue RA/Dec run through the real
+    /// observer/time transform, so a star shown at noon is at the exact
+    /// altitude and azimuth it genuinely occupies behind the daylight.
+    static let daylightDisplayFloor = 5.6
+
+    /// The limit actually used for rendering: the physical limit at night
+    /// (which rises above the floor on its own, so dark skies still gain the
+    /// faintest stars naturally), and the floor whenever daylight would
+    /// otherwise empty the sky.
+    static func displayLimitingMagnitude(sunAltitudeDegrees alt: Double) -> Double {
+        max(daylightDisplayFloor, limitingMagnitude(sunAltitudeDegrees: alt))
+    }
+
+    /// Opacity multiplier applied to stars as the sky background brightens.
+    ///
+    /// Stars stay visible in daylight, but a bright sky legitimately lowers
+    /// their contrast, so drawing them at full night-time intensity against
+    /// pale blue looks wrong. This keeps them clearly readable while letting
+    /// the sky itself carry the sense of daylight. Ranges from 1.0 in a fully
+    /// dark sky to `daylightContrastFloor` under a high Sun.
+    static let daylightContrastFloor = 0.72
+
+    static func starContrast(sunAltitudeDegrees alt: Double) -> Double {
+        // Track the same brightness curve the colours use, normalised across
+        // the range that actually matters (full daylight -> astronomical
+        // night), so contrast eases continuously as the sky darkens rather
+        // than switching at a threshold.
+        let mu = zenithMagnitudesPerSquareArcsecond(sunAltitudeDegrees: alt)
+        let dayMu = 3.0, nightMu = 21.4
+        let t = min(1.0, max(0.0, (mu - dayMu) / (nightMu - dayMu)))
+        let eased = t * t * (3 - 2 * t)
+        return daylightContrastFloor + (1.0 - daylightContrastFloor) * eased
     }
 }
