@@ -20,7 +20,11 @@
 import XCTest
 @testable import Astronomy
 
-@MainActor
+/// Deliberately *not* `@MainActor`. A main-actor-isolated class released
+/// inside a `@MainActor` XCTestCase takes the isolated-deinit path and aborts
+/// the test host in libmalloc — which is the real shape of this project's
+/// "tests crash the host" folklore. Everything measured here is nonisolated,
+/// so the plain default is also the correct one.
 final class RenderPerformanceTests: XCTestCase {
 
     private func probe(_ m: String) { fputs("PROBE " + m + "\n", stderr); fflush(stderr) }
@@ -204,6 +208,61 @@ final class RenderPerformanceTests: XCTestCase {
         //   xcrun xcresulttool export attachments --path <bundle> --output-path <dir>
         let attachment = XCTAttachment(string: text)
         attachment.name = "frame-stage-timings"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    /// The other half of the per-second CPU bill: the 2.5 Hz SGP4 pass.
+    ///
+    /// It runs on a background actor and is spread across cores, so it never
+    /// appears in a frame's own stage timings — but it is the largest single
+    /// block of arithmetic the app performs, it happens two and a half times a
+    /// second, and if it saturates the machine the main thread feels it. This
+    /// measures one full single-threaded pass over the real bundled catalogue,
+    /// which is the number the tracker's parallelism has to divide down.
+    func testSGP4PropagationThroughputOverTheRealCatalogue() throws {
+        guard let url = Bundle.main.url(forResource: "satellites", withExtension: "txt"),
+              let text = try? String(contentsOf: url, encoding: .utf8) else {
+            throw XCTSkip("satellite catalogue unavailable in this bundle")
+        }
+        let elements = TwoLineElement.parseCatalog(text)
+        let satellites = elements.compactMap(Satellite.init(tle:))
+        try XCTSkipIf(satellites.isEmpty, "no satellites parsed")
+
+        // Warm: first call per satellite does the deep initialisation.
+        for satellite in satellites { _ = satellite.propagate(julianDay: Self.julianDay) }
+
+        var passes: [Double] = []
+        for pass in 0..<3 {
+            let start = DispatchTime.now().uptimeNanoseconds
+            var kept = 0
+            for satellite in satellites {
+                if satellite.propagate(julianDay: Self.julianDay + Double(pass) * 1e-4) != nil {
+                    kept += 1
+                }
+            }
+            passes.append(Double(DispatchTime.now().uptimeNanoseconds - start) * 1e-6)
+            XCTAssertGreaterThan(kept, 0)
+        }
+
+        var text2 = ["", "=== SGP4 single-threaded pass over \(satellites.count) satellites ==="]
+        #if DEBUG
+        text2.append("build configuration: DEBUG")
+        #else
+        text2.append("build configuration: RELEASE")
+        #endif
+        for (i, ms) in passes.enumerated() {
+            text2.append(String(format: "  pass %d: %8.2f ms  (%.2f us/satellite)",
+                                i, ms, ms * 1000 / Double(satellites.count)))
+        }
+        text2.append(String(
+            format: "  tracker runs this every %.2f s, spread over %d cores",
+            SatelliteTracker.tickInterval, ProcessInfo.processInfo.activeProcessorCount
+        ))
+        let joined = text2.joined(separator: "\n")
+        print(joined)
+        let attachment = XCTAttachment(string: joined)
+        attachment.name = "sgp4-throughput"
         attachment.lifetime = .keepAlways
         add(attachment)
     }

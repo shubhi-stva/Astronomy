@@ -70,7 +70,14 @@ enum OrbitalRegime: String, Codable, Hashable, Sendable {
 /// is a `final class` rather than a struct: the tracker mutates one satellite's
 /// propagator in place on each tick, and copying an 80-field record per
 /// satellite per tick would be pure waste.
-final class Satellite: @unchecked Sendable {
+///
+/// `nonisolated` because the target's default isolation is `MainActor`, and
+/// this type is the opposite of main-actor work: sixteen thousand of them are
+/// created, mutated and released on `SatelliteTracker`'s executor and its task
+/// group. Left implicit, every one of them would carry a main-actor-isolated
+/// deinit, so releasing the catalogue off the main thread would hop sixteen
+/// thousand times through the concurrency runtime.
+nonisolated final class Satellite: @unchecked Sendable {
 
     let catalogNumber: Int
     let name: String
