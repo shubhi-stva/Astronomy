@@ -753,18 +753,17 @@ struct SkyGeometryBuilder {
         // cost from "every satellite in orbit" into "the few hundred that could
         // possibly be on screen". Falls back to the full range if a snapshot
         // arrives without an ordering (a hand-built one in a test).
-        let candidates: [Int32]
-        if snapshot.altitudeOrder.count == snapshot.samples.count {
-            let band = snapshot.altitudeOrderRange(
-                centre: cameraAltitude, halfWidth: altitudeBandDegrees
-            )
-            candidates = Array(snapshot.altitudeOrder[band])
-        } else {
-            candidates = Array(0..<Int32(snapshot.samples.count))
-        }
+        // A slice, not a copy. `Array(...)` here allocated a fresh buffer of
+        // several thousand elements on the main thread every frame, which is
+        // exactly the kind of per-frame allocation that shows up as stutter.
+        let ordered = snapshot.altitudeOrder
+        let hasOrdering = ordered.count == snapshot.samples.count
+        let band = hasOrdering
+            ? snapshot.altitudeOrderRange(centre: cameraAltitude, halfWidth: altitudeBandDegrees)
+            : 0..<snapshot.samples.count
 
-        for sampleIndex in candidates {
-            let sample = snapshot.samples[Int(sampleIndex)]
+        for position in band {
+            let sample = snapshot.samples[hasOrdering ? Int(ordered[position]) : position]
             // ACCURACY GATE. An SGP4 propagation more than a few days from its
             // element-set epoch is not a position, it is a guess along an
             // orbital plane. The time machine can put the clock a month out

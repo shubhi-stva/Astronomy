@@ -105,7 +105,15 @@ final class SkyViewModel {
                     sunEquatorial: inputs.sunEquatorial,
                     sunDistanceKilometres: inputs.sunDistanceKilometres
                 )
-                await self.publish(snapshot: snapshot)
+                // Counted here, off the main actor. It is a scan of sixteen
+                // thousand samples and has no business running on the thread
+                // that draws frames.
+                let visible = snapshot.samples.reduce(into: 0) { count, sample in
+                    if sample.illumination.isSunlit && sample.altitudeDegreesAtSnapshot > 0 {
+                        count += 1
+                    }
+                }
+                await self.publish(snapshot: snapshot, visibleCount: visible)
 
                 if !didAttemptRefresh {
                     didAttemptRefresh = true
@@ -147,11 +155,9 @@ final class SkyViewModel {
     /// Publishes a finished snapshot. The visible-count reduction runs here
     /// because it is a scan of 16,000 samples and has no business on the
     /// render path.
-    private func publish(snapshot: SatelliteSnapshot) {
+    private func publish(snapshot: SatelliteSnapshot, visibleCount: Int) {
         satelliteSnapshot = snapshot
-        visibleSatelliteCount = snapshot.samples.reduce(into: 0) { count, sample in
-            if sample.illumination.isSunlit && sample.altitudeDegreesAtSnapshot > 0 { count += 1 }
-        }
+        visibleSatelliteCount = visibleCount
         if snapshot.propagationDuration > 0 {
             lastSatellitePropagationSeconds = snapshot.propagationDuration
         }

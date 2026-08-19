@@ -29,22 +29,20 @@ import SwiftUI
 struct TimeBarView: View {
     @Bindable var viewModel: SkyViewModel
 
-    /// The system time zone's abbreviation *at the displayed instant*, so the
-    /// label follows daylight-saving transitions rather than assuming a fixed
-    /// offset. Falls back to the identifier if no abbreviation is available.
-    private var timeZoneAbbreviation: String {
-        let zone = TimeZone.current
-        let date = viewModel.time.currentDate
-        return zone.abbreviation(for: date) ?? zone.identifier
-    }
-
     private var isLive: Bool { viewModel.time.isFollowingRealTime }
 
     var body: some View {
         GlassPanel {
             VStack(spacing: 8) {
                 HStack(spacing: 12) {
-                    clock
+                    // Isolated deliberately. The clock text changes once a
+                    // second; the controls beside it do not. Reading
+                    // `currentDate` in *this* body would make the whole bar --
+                    // two Menus and a DatePicker, which are not cheap to build
+                    // -- rebuild every second, which is felt as a periodic
+                    // hitch while panning. Reading it one level down confines
+                    // the rebuild to the text.
+                    TimeClockReadout(time: viewModel.time)
                     Divider().frame(height: 18).overlay(SkyPalette.panelStroke)
                     TimeStepControl(time: viewModel.time)
                     Divider().frame(height: 18).overlay(SkyPalette.panelStroke)
@@ -63,38 +61,6 @@ struct TimeBarView: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: isLive)
-    }
-
-    // MARK: - Clock
-
-    private var clock: some View {
-        HStack(spacing: 10) {
-            Image(systemName: isLive ? "clock" : "clock.badge.exclamationmark")
-                .foregroundStyle(isLive ? SkyPalette.accentBlue : SkyPalette.warningAmber)
-
-            Text(viewModel.time.currentDate, format: .dateTime.year().month().day().hour().minute().second())
-                .font(.callout.monospacedDigit())
-                .foregroundStyle(isLive ? SkyPalette.chromeText : SkyPalette.warningAmber)
-
-            // Abbreviation for the system's current time zone, resolved
-            // per-instant so daylight saving is reflected automatically
-            // (e.g. PDT in August, PST in December) with nothing hard-coded.
-            Text(timeZoneAbbreviation)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(SkyPalette.chromeSecondaryText)
-
-            if !isLive {
-                Text("OFF REAL TIME")
-                    .font(.system(size: 9, weight: .semibold))
-                    .tracking(0.8)
-                    .foregroundStyle(SkyPalette.warningAmber)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 3)
-                    .background(Capsule().fill(SkyPalette.warningAmber.opacity(0.16)))
-                    .overlay(Capsule().strokeBorder(SkyPalette.warningAmber.opacity(0.35), lineWidth: 1))
-                    .transition(.opacity)
-            }
-        }
     }
 
     private var nowButton: some View {
@@ -272,6 +238,56 @@ private struct TimeJumpControl: View {
                 }
             }
             .padding(14)
+        }
+    }
+}
+
+// MARK: - Clock readout
+
+/// The live clock text, isolated so that its once-a-second update invalidates
+/// only itself.
+///
+/// This is the same lesson as the label overlay: with `@Observable` a view
+/// depends on exactly the properties it reads, so reading a value that changes
+/// every second from a body that also builds menus and a date picker makes all
+/// of that rebuild every second. Splitting the frequently-changing read into
+/// its own small view is what keeps the rest of the bar static.
+private struct TimeClockReadout: View {
+    let time: TimeController
+
+    private var isLive: Bool { time.isFollowingRealTime }
+
+    /// The system time zone's abbreviation *at the displayed instant*, so the
+    /// label follows daylight-saving transitions rather than assuming a fixed
+    /// offset. Falls back to the identifier if no abbreviation is available.
+    private var timeZoneAbbreviation: String {
+        let zone = TimeZone.current
+        return zone.abbreviation(for: time.currentDate) ?? zone.identifier
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: isLive ? "clock" : "clock.badge.exclamationmark")
+                .foregroundStyle(isLive ? SkyPalette.accentBlue : SkyPalette.warningAmber)
+
+            Text(time.currentDate, format: .dateTime.year().month().day().hour().minute().second())
+                .font(.callout.monospacedDigit())
+                .foregroundStyle(isLive ? SkyPalette.chromeText : SkyPalette.warningAmber)
+
+            Text(timeZoneAbbreviation)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(SkyPalette.chromeSecondaryText)
+
+            if !isLive {
+                Text("OFF REAL TIME")
+                    .font(.system(size: 9, weight: .semibold))
+                    .tracking(0.8)
+                    .foregroundStyle(SkyPalette.warningAmber)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(SkyPalette.warningAmber.opacity(0.16)))
+                    .overlay(Capsule().strokeBorder(SkyPalette.warningAmber.opacity(0.35), lineWidth: 1))
+            }
         }
     }
 }
