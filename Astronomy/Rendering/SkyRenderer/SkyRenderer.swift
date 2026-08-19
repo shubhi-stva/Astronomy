@@ -18,6 +18,7 @@
 
 import Foundation
 import MetalKit
+import os
 import simd
 
 @MainActor
@@ -48,6 +49,28 @@ final class SkyRenderer: NSObject, MTKViewDelegate {
     /// Last frame's projected objects, kept for hit-testing on click.
     private(set) var lastProjectedObjects: [ProjectedObject] = []
     private(set) var lastViewportSize: CGSize = .zero
+
+    /// Reusable vertex storage. `device.makeBuffer(bytes:)` allocates a fresh
+    /// Metal buffer *every frame*, which is a per-frame trip through the
+    /// allocator and the VM system on the thread with the tightest deadline in
+    /// the app. These grow to the high-water mark and are then reused.
+    ///
+    /// Three of each, cycled per frame: a buffer handed to the GPU is not
+    /// necessarily finished with when the next frame starts encoding, and
+    /// overwriting it would tear the geometry. Three is the depth MetalKit's
+    /// own triple buffering already implies.
+    private var lineBuffers = RingVertexBuffer(slotCount: 3)
+    private var pointBuffers = RingVertexBuffer(slotCount: 3)
+
+    /// Per-stage frame timings. Always collected (the cost is a pair of clock
+    /// reads per stage) and always emitted as signposts for Instruments; the
+    /// periodic log is opt-in via the ASTRONOMY_FRAME_STATS environment
+    /// variable.
+    let profiler = RenderProfiler()
+    private static let logger = Logger(subsystem: "Astronomy", category: "render")
+    private static let logsFrameStatistics =
+        ProcessInfo.processInfo.environment["ASTRONOMY_FRAME_STATS"] == "1"
+    private var framesSinceLastStatisticsLog = 0
 
     private let labelEngine = LabelLayoutEngine()
     private var lastLabelPublish: CFTimeInterval = 0
@@ -167,7 +190,15 @@ final class SkyRenderer: NSObject, MTKViewDelegate {
     }
 
     private func renderFrame(in view: MTKView) {
+        let frameStart = DispatchTime.now().uptimeNanoseconds
+
+        let frameDataStart = frameStart
         guard let frameData = frameDataProvider?(), frameData.viewportSize.width > 0 else { return }
+        profiler.record(
+            .frameData,
+            seconds: Double(DispatchTime.now().uptimeNanoseconds - frameDataStart) * 1e-9
+        )
+
         guard let drawable = view.currentDrawable,
               let descriptor = view.currentRenderPassDescriptor,
               let commandBuffer = commandQueue.makeCommandBuffer() else { return }
@@ -175,9 +206,21 @@ final class SkyRenderer: NSObject, MTKViewDelegate {
         lastViewportSize = frameData.viewportSize
 
         var build = SkyGeometryBuilder(frameData: frameData)
+        build.profiler = profiler
         build.run()
         lastProjectedObjects = build.projectedObjects
 
+        // Vertex storage is acquired before the encoder so the upload cost is
+        // measured on its own rather than hidden inside encoding.
+        let uploadStart = DispatchTime.now().uptimeNanoseconds
+        let lineBuffer = lineBuffers.buffer(for: build.lineVertices, device: device)
+        let pointBuffer = pointBuffers.buffer(for: build.pointVertices, device: device)
+        profiler.record(
+            .bufferUpload,
+            seconds: Double(DispatchTime.now().uptimeNanoseconds - uploadStart) * 1e-9
+        )
+
+        let encodeStart = DispatchTime.now().uptimeNanoseconds
         guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else { return }
 
         // 1. Background.
@@ -190,30 +233,46 @@ final class SkyRenderer: NSObject, MTKViewDelegate {
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
 
         // 2. Constellation lines.
-        if !build.lineVertices.isEmpty {
+        if let lineBuffer, !build.lineVertices.isEmpty {
             encoder.setRenderPipelineState(linePipelineState)
-            let length = MemoryLayout<LineVertex>.stride * build.lineVertices.count
-            if let buffer = device.makeBuffer(bytes: build.lineVertices, length: length, options: .storageModeShared) {
-                encoder.setVertexBuffer(buffer, offset: 0, index: 0)
-                encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: build.lineVertices.count)
-            }
+            encoder.setVertexBuffer(lineBuffer, offset: 0, index: 0)
+            encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: build.lineVertices.count)
         }
 
         // 3. Point sprites (glow haloes first, then cores — see the builder).
-        if !build.pointVertices.isEmpty {
+        if let pointBuffer, !build.pointVertices.isEmpty {
             encoder.setRenderPipelineState(pointPipelineState)
-            let length = MemoryLayout<PointVertex>.stride * build.pointVertices.count
-            if let buffer = device.makeBuffer(bytes: build.pointVertices, length: length, options: .storageModeShared) {
-                encoder.setVertexBuffer(buffer, offset: 0, index: 0)
-                encoder.drawPrimitives(type: .point, vertexStart: 0, vertexCount: build.pointVertices.count)
-            }
+            encoder.setVertexBuffer(pointBuffer, offset: 0, index: 0)
+            encoder.drawPrimitives(type: .point, vertexStart: 0, vertexCount: build.pointVertices.count)
         }
 
         encoder.endEncoding()
         commandBuffer.present(drawable)
         commandBuffer.commit()
+        profiler.record(
+            .encode,
+            seconds: Double(DispatchTime.now().uptimeNanoseconds - encodeStart) * 1e-9
+        )
 
         publishLabelsIfNeeded(candidates: build.labelCandidates, viewportSize: frameData.viewportSize)
+
+        profiler.record(
+            .frameTotal,
+            seconds: Double(DispatchTime.now().uptimeNanoseconds - frameStart) * 1e-9
+        )
+        logFrameStatisticsIfRequested()
+    }
+
+    /// Dumps the rolling per-stage table roughly every ten seconds when
+    /// ASTRONOMY_FRAME_STATS=1 is set. Off by default: the signposts are the
+    /// primary channel, and an app that logs every frame is an app that is
+    /// slower for having been measured.
+    private func logFrameStatisticsIfRequested() {
+        guard Self.logsFrameStatistics else { return }
+        framesSinceLastStatisticsLog += 1
+        guard framesSinceLastStatisticsLog >= 600 else { return }
+        framesSinceLastStatisticsLog = 0
+        Self.logger.info("\(self.profiler.formattedReport(title: "frame stages"), privacy: .public)")
     }
 
     private func publishLabelsIfNeeded(candidates: [SkyLabelCandidate], viewportSize: CGSize) {
@@ -222,7 +281,9 @@ final class SkyRenderer: NSObject, MTKViewDelegate {
         guard now - lastLabelPublish >= Self.labelPublishInterval else { return }
         lastLabelPublish = now
 
-        let labels = labelEngine.layout(candidates: candidates, viewportSize: viewportSize)
+        let labels = profiler.measure(.labelLayout) {
+            labelEngine.layout(candidates: candidates, viewportSize: viewportSize)
+        }
         guard labels != lastPublishedLabels else { return }
         lastPublishedLabels = labels
         labelSink(labels)
