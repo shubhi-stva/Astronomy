@@ -267,3 +267,137 @@ final class RenderPerformanceTests: XCTestCase {
         add(attachment)
     }
 }
+
+/// The fused projector must be the *same* transform as the chain it replaced,
+/// not a faster approximation of it. This checks it against the original
+/// composition — precess, equatorial->horizontal, stereographic project —
+/// over a grid covering the whole sky, both poles, the RA seam, and a range of
+/// observer latitudes, camera orientations and fields of view.
+final class SkyProjectorEquivalenceTests: XCTestCase {
+
+    private func frame(
+        latitude: Double, longitude: Double, julianDay: Double,
+        center: HorizontalCoordinate, fov: Double, viewport: CGSize
+    ) -> SkyFrameData {
+        var f = SkyFrameData.empty
+        f.observerLocation = GeographicLocation(latitudeDegrees: latitude, longitudeDegrees: longitude)
+        f.julianDay = julianDay
+        f.cameraCenter = center
+        f.cameraFieldOfViewDegrees = fov
+        f.viewportSize = viewport
+        return f
+    }
+
+    func testHorizontalDirectionMatchesTheOriginalChain() throws {
+        let cases: [(Double, Double, Double)] = [
+            (37.77, -122.42, 2_461_055.7),
+            (-33.87, 151.21, 2_460_000.123),
+            (89.9, 0.0, 2_451_545.0),
+            (-89.9, 179.9, 2_470_000.5),
+            (0.0, 0.0, 2_455_000.25),
+        ]
+        var checked = 0
+        for (lat, lon, jd) in cases {
+            let f = frame(
+                latitude: lat, longitude: lon, julianDay: jd,
+                center: HorizontalCoordinate(altitudeDegrees: 30, azimuthDegrees: 100),
+                fov: 90, viewport: CGSize(width: 1000, height: 700)
+            )
+            let matrix = Precession.rotationMatrix(julianDay: jd)
+            let projector = SkyProjector(frameData: f, precessionMatrix: matrix)
+
+            for raStep in 0..<24 {
+                for decStep in 0...18 {
+                    let equatorial = EquatorialCoordinate(
+                        rightAscensionDegrees: Double(raStep) * 15.0 + 0.37,
+                        declinationDegrees: -90.0 + Double(decStep) * 10.0
+                    )
+                    // Original chain.
+                    let ofDate = Precession.precess(equatorial, matrix: matrix)
+                    let expected = CoordinateTransformService.horizontal(
+                        from: ofDate, observer: f.observerLocation, julianDay: jd
+                    )
+                    let actual = projector.horizontal(
+                        direction: projector.direction(j2000: equatorial)
+                    )
+                    XCTAssertEqual(
+                        actual.altitudeDegrees, expected.altitudeDegrees, accuracy: 1e-9,
+                        "altitude at ra \(equatorial.rightAscensionDegrees) dec \(equatorial.declinationDegrees) lat \(lat)"
+                    )
+                    // Azimuth is meaningless at the zenith and wraps at 360.
+                    if abs(expected.altitudeDegrees) < 89.99 {
+                        var delta = actual.azimuthDegrees - expected.azimuthDegrees
+                        if delta > 180 { delta -= 360 }
+                        if delta < -180 { delta += 360 }
+                        XCTAssertEqual(delta, 0, accuracy: 1e-8, "azimuth at dec \(equatorial.declinationDegrees)")
+                    }
+                    checked += 1
+                }
+            }
+        }
+        XCTAssertGreaterThan(checked, 2000)
+    }
+
+    func testProjectedNDCMatchesTheOriginalChain() throws {
+        let centers = [
+            HorizontalCoordinate(altitudeDegrees: 0, azimuthDegrees: 0),
+            HorizontalCoordinate(altitudeDegrees: 45, azimuthDegrees: 180),
+            HorizontalCoordinate(altitudeDegrees: 89.5, azimuthDegrees: 270),
+            HorizontalCoordinate(altitudeDegrees: -60, azimuthDegrees: 33),
+        ]
+        let viewports = [CGSize(width: 1512, height: 900), CGSize(width: 800, height: 800)]
+        var agreed = 0
+        var projected = 0
+
+        for center in centers {
+            for fov in [150.0, 90.0, 30.0, 3.0] {
+                for viewport in viewports {
+                    let jd = 2_461_055.7
+                    let f = frame(
+                        latitude: 37.77, longitude: -122.42, julianDay: jd,
+                        center: center, fov: fov, viewport: viewport
+                    )
+                    let matrix = Precession.rotationMatrix(julianDay: jd)
+                    let projector = SkyProjector(frameData: f, precessionMatrix: matrix)
+
+                    for raStep in 0..<36 {
+                        for decStep in 0...18 {
+                            let equatorial = EquatorialCoordinate(
+                                rightAscensionDegrees: Double(raStep) * 10.0,
+                                declinationDegrees: -90.0 + Double(decStep) * 10.0
+                            )
+                            let ofDate = Precession.precess(equatorial, matrix: matrix)
+                            let horizontal = CoordinateTransformService.horizontal(
+                                from: ofDate, observer: f.observerLocation, julianDay: jd
+                            )
+                            let expected = CoordinateTransformService.stereographicProject(
+                                horizontal: horizontal, center: center, fieldOfViewDegrees: fov
+                            ).map { CoordinateTransformService.aspectCorrected($0, viewportSize: viewport) }
+
+                            let actual = projector.project(
+                                direction: projector.direction(j2000: equatorial)
+                            )
+
+                            switch (expected, actual) {
+                            case (nil, nil):
+                                agreed += 1
+                            case let (e?, a?):
+                                XCTAssertEqual(a.x, e.x, accuracy: 1e-7)
+                                XCTAssertEqual(a.y, e.y, accuracy: 1e-7)
+                                agreed += 1
+                                projected += 1
+                            default:
+                                XCTFail("disagreed on whether the point projects at all: "
+                                        + "ra \(equatorial.rightAscensionDegrees) "
+                                        + "dec \(equatorial.declinationDegrees) fov \(fov)")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        XCTAssertGreaterThan(agreed, 10_000)
+        XCTAssertGreaterThan(projected, 1_000)
+    }
+}
+

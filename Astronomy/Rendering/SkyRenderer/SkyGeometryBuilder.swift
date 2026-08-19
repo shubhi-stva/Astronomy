@@ -56,9 +56,17 @@ struct SkyGeometryBuilder {
     /// already 0.36 degrees apart. See `Precession`.
     private let precessionMatrix: simd_double3x3
 
+    /// Everything about the projection that does not depend on the object:
+    /// the fused J2000 -> horizontal rotation, the camera basis, the field-of-
+    /// view scale and the aspect correction. Built once per frame; see
+    /// `SkyProjector` for why that matters.
+    private let projector: SkyProjector
+
     init(frameData: SkyFrameData) {
         self.frameData = frameData
-        self.precessionMatrix = Precession.rotationMatrix(julianDay: frameData.julianDay)
+        let precessionMatrix = Precession.rotationMatrix(julianDay: frameData.julianDay)
+        self.precessionMatrix = precessionMatrix
+        self.projector = SkyProjector(frameData: frameData, precessionMatrix: precessionMatrix)
     }
 
     /// Optional per-stage timing. Nil in the ordinary path so the stage
@@ -173,15 +181,10 @@ struct SkyGeometryBuilder {
     /// Projects an equatorial coordinate to viewport NDC, or nil if it falls
     /// outside the projection's valid region.
     private func project(_ equatorial: EquatorialCoordinate, precess: Bool = true) -> SIMD2<Double>? {
-        projectShaded(equatorial, precess: precess)?.ndc
+        projector.project(direction: direction(of: equatorial, precess: precess))
     }
 
-    /// Projection, the terrain brightness multiplier, and the altitude, for one
-    /// catalogue direction.
-    ///
-    /// One call does all three because they need the same horizontal
-    /// coordinate, and recomputing the transform separately would multiply the
-    /// cost of the hottest loop in the frame.
+    /// Horizontal-frame unit vector for a catalogue position.
     ///
     /// `precess` selects the reference frame of the input. Catalogue positions
     /// (stars, deep-sky objects, constellation centres) are J2000 mean places
@@ -191,19 +194,24 @@ struct SkyGeometryBuilder {
     /// already produce positions referred to the equinox of date, and
     /// `PlanetPosition` applies the same rotation itself before returning.
     /// Precessing them again would double-count it.
+    @inline(__always)
+    private func direction(of equatorial: EquatorialCoordinate, precess: Bool = true) -> SIMD3<Double> {
+        precess ? projector.direction(j2000: equatorial) : projector.direction(ofDate: equatorial)
+    }
+
+    /// Projection, the terrain brightness multiplier, and the altitude, for one
+    /// catalogue direction.
+    ///
+    /// The alt/az pair the last two need is *not* on the projection path any
+    /// more (see `SkyProjector`), so it is computed here, after the projection
+    /// has already succeeded, and only for the objects that need it.
     private func projectShaded(
         _ equatorial: EquatorialCoordinate,
         precess: Bool = true
     ) -> (ndc: SIMD2<Double>, dimming: Double, altitudeDegrees: Double)? {
-        let ofDate = precess
-            ? Precession.precess(equatorial, matrix: precessionMatrix)
-            : equatorial
-        let horizontal = CoordinateTransformService.horizontal(
-            from: ofDate,
-            observer: frameData.observerLocation,
-            julianDay: frameData.julianDay
-        )
-        guard let ndc = project(horizontal: horizontal) else { return nil }
+        let d = direction(of: equatorial, precess: precess)
+        guard let ndc = projector.project(direction: d) else { return nil }
+        let horizontal = projector.horizontal(direction: d)
         return (
             ndc,
             TerrainProfile.dimming(
@@ -214,16 +222,21 @@ struct SkyGeometryBuilder {
         )
     }
 
+    /// Terrain brightness multiplier for a horizontal-frame direction.
+    @inline(__always)
+    private func dimming(direction d: SIMD3<Double>) -> Double {
+        let horizontal = projector.horizontal(direction: d)
+        return TerrainProfile.dimming(
+            altitudeDegrees: horizontal.altitudeDegrees,
+            azimuthDegrees: horizontal.azimuthDegrees
+        )
+    }
+
     /// Pure projection. Terrain no longer rejects anything — the dunes are
     /// translucent, so visibility is a multiplier (`TerrainProfile.dimming`),
     /// never a cull.
     private func project(horizontal: HorizontalCoordinate) -> SIMD2<Double>? {
-        guard let ndc = CoordinateTransformService.stereographicProject(
-            horizontal: horizontal,
-            center: frameData.cameraCenter,
-            fieldOfViewDegrees: frameData.cameraFieldOfViewDegrees
-        ) else { return nil }
-        return CoordinateTransformService.aspectCorrected(ndc, viewportSize: frameData.viewportSize)
+        projector.project(horizontal: horizontal)
     }
 
     /// Generous off-screen margin: sprites and labels whose centre is just
@@ -293,9 +306,22 @@ struct SkyGeometryBuilder {
             // it falls in.
             if !subHorizonSkyDiffers && star.magnitude >= aboveHorizonLimit { break }
 
-            guard let shaded = projectShaded(star.equatorial) else { continue }
-            let ndc = shaded.ndc
+            // Projection first, alt/az only for what survives. The terrain
+            // dimming and the sub-horizon sky model both need alt/az, and both
+            // are irrelevant for a star that is not on screen — which, after a
+            // cull tuned to be conservative, is most of what arrives here.
+            let starDirection = projector.direction(j2000: star.equatorial)
+            guard let ndc = projector.project(direction: starDirection) else { continue }
             guard isOnScreen(ndc) else { continue }
+            let starHorizontal = projector.horizontal(direction: starDirection)
+            let shaded = (
+                ndc: ndc,
+                dimming: TerrainProfile.dimming(
+                    altitudeDegrees: starHorizontal.altitudeDegrees,
+                    azimuthDegrees: starHorizontal.azimuthDegrees
+                ),
+                altitudeDegrees: starHorizontal.altitudeDegrees
+            )
 
             // One Sun altitude drives both the magnitude limit and the
             // contrast, so the sub-horizon sky needs no parallel code path —
@@ -467,17 +493,21 @@ struct SkyGeometryBuilder {
         for segment in frameData.constellationLines {
             guard let s1 = frameData.starsByID[segment.starID1],
                   let s2 = frameData.starsByID[segment.starID2] else { continue }
-            guard let e1 = projectShaded(s1.equatorial), let e2 = projectShaded(s2.equatorial) else { continue }
-            let ndc1 = e1.ndc, ndc2 = e2.ndc
+            let d1 = projector.direction(j2000: s1.equatorial)
+            let d2 = projector.direction(j2000: s2.equatorial)
+            guard let ndc1 = projector.project(direction: d1),
+                  let ndc2 = projector.project(direction: d2) else { continue }
             // Skip segments that wrap unreasonably far across the screen
             // (projection seam) or that are entirely off-screen.
             if simd_distance(ndc1, ndc2) > 1.5 { continue }
             if !isOnScreen(ndc1, margin: 1.0) && !isOnScreen(ndc2, margin: 1.0) { continue }
             // Dim per endpoint, so a figure straddling the skyline fades along
-            // the segment instead of stepping at the crossing.
+            // the segment instead of stepping at the crossing. Computed here,
+            // after the rejections above, because it needs alt/az and most
+            // segments never get this far.
             var c1 = color, c2 = color
-            c1.w *= Float(e1.dimming)
-            c2.w *= Float(e2.dimming)
+            c1.w *= Float(dimming(direction: d1))
+            c2.w *= Float(dimming(direction: d2))
             lineVertices.append(LineVertex(positionNDC: SIMD2(Float(ndc1.x), Float(ndc1.y)), color: c1))
             lineVertices.append(LineVertex(positionNDC: SIMD2(Float(ndc2.x), Float(ndc2.y)), color: c2))
         }
