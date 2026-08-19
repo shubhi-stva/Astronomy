@@ -123,6 +123,13 @@ final class LabelLayoutEngine {
             return []
         }
 
+        // Real elapsed time between layouts, so the fade rate is independent of
+        // frame rate. Clamped: the first frame has no predecessor, and a
+        // backgrounded app would otherwise resume with one enormous step.
+        let now = ProcessInfo.processInfo.systemUptime
+        let elapsed = lastLayoutTime > 0 ? min(0.1, now - lastLayoutTime) : 0
+        lastLayoutTime = now
+
         let usable = candidates.filter { candidate in
             candidate.strength > Self.minimumOpacity
                 && abs(candidate.ndc.x) <= 1.05
@@ -166,17 +173,73 @@ final class LabelLayoutEngine {
                     position: point,
                     priority: candidate.priority,
                     style: candidate.style,
-                    opacity: min(1.0, candidate.strength)
+                    opacity: smoothedOpacity(
+                        id: candidate.id,
+                        target: min(1.0, candidate.strength),
+                        elapsed: elapsed
+                    )
                 )
             )
+        }
+
+        // Labels that were on screen and no longer place at all fade out from
+        // wherever they had got to, rather than vanishing.
+        for (id, value) in displayedOpacity where !placedIDs.contains(id) {
+            let faded = Self.approach(value, target: 0, elapsed: elapsed)
+            if faded <= Self.minimumOpacity {
+                displayedOpacity[id] = nil
+            } else {
+                displayedOpacity[id] = faded
+            }
         }
 
         previouslyPlaced = placedIDs
         return placed
     }
 
+    // MARK: - Fading
+
+    /// Per-label opacity as actually drawn, ramped toward the target.
+    ///
+    /// The fade lives here, in the data, rather than in a SwiftUI
+    /// `.animation(_:value:)` on the overlay — and that placement is the whole
+    /// point. A label's target opacity now varies continuously as it moves
+    /// (terrain dimming depends on where it is), so an implicit animation keyed
+    /// on opacity was permanently in flight, and an in-flight animation drags
+    /// the label's *position* along with it. The result was labels trailing the
+    /// sky by roughly the animation's duration while panning.
+    ///
+    /// Ramping the number here instead means the view is purely a function of
+    /// its inputs: SwiftUI animates nothing, position is always exactly where
+    /// this frame says it is, and fades stay smooth because the value itself
+    /// moves smoothly.
+    private var displayedOpacity: [String: Double] = [:]
+    private var lastLayoutTime: CFTimeInterval = 0
+
+    /// Seconds for a label to travel the full 0...1 opacity range.
+    private static let fadeDurationSeconds: Double = 0.28
+
+    private func smoothedOpacity(id: String, target: Double, elapsed: Double) -> Double {
+        let current = displayedOpacity[id] ?? 0
+        let next = Self.approach(current, target: target, elapsed: elapsed)
+        displayedOpacity[id] = next
+        return next
+    }
+
+    /// Moves `value` toward `target` at a constant rate. Linear rather than
+    /// eased: an ease needs a notion of when the transition *started*, and
+    /// these transitions are continually retargeted as the sky moves.
+    private static func approach(_ value: Double, target: Double, elapsed: Double) -> Double {
+        guard elapsed > 0 else { return value }
+        let step = elapsed / fadeDurationSeconds
+        if target > value { return min(target, value + step) }
+        return max(target, value - step)
+    }
+
     func reset() {
         previouslyPlaced = []
+        displayedOpacity = [:]
+        lastLayoutTime = 0
     }
 
     /// Converts viewport NDC (+Y up) to SwiftUI view points (+Y down).

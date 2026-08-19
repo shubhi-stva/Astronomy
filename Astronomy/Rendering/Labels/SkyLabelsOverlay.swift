@@ -23,15 +23,19 @@ struct SkyLabelsOverlay: View {
                     .foregroundStyle(color(for: label.style))
                     .shadow(color: .black.opacity(0.6), radius: 3)
                     .fixedSize()
-                    // Opacity is the *only* animated property. It is applied —
-                    // and its animation scoped — beneath `.position`, so the
-                    // fade cannot leak into the placement below.
+                    // NOTHING here is animated by SwiftUI, deliberately. The
+                    // view is a pure function of the frame it was handed, so a
+                    // label is always exactly where this frame says it is.
+                    //
+                    // The fade is not lost — it moved into `LabelLayoutEngine`,
+                    // which ramps each label's opacity over time and hands the
+                    // ramped value down. That is the only way to keep it: a
+                    // label's opacity varies continuously as it moves (terrain
+                    // dimming depends on position), so an implicit animation
+                    // keyed on opacity was permanently in flight, and an
+                    // in-flight animation carries the position change with it.
+                    // That is what made labels trail the sky while panning.
                     .opacity(label.opacity)
-                    .animation(.easeInOut(duration: 0.28), value: label.opacity)
-                    // Position is set outside that scope and must never be
-                    // animated: the label has to sit on its object in the same
-                    // frame the object moves. Anything easing here reads as the
-                    // labels sliding along behind the sky while you pan.
                     .position(x: label.position.x, y: label.position.y)
             }
         }
