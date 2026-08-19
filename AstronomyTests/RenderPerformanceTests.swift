@@ -212,6 +212,50 @@ final class RenderPerformanceTests: XCTestCase {
         add(attachment)
     }
 
+    /// Building the frame snapshot must not copy the catalogues.
+    ///
+    /// `SkyFrameData` carries the 83,479-star array, the star-ID dictionary,
+    /// the deep-sky and constellation arrays and a 16,000-sample satellite
+    /// snapshot, and one is constructed per frame. If any of that were
+    /// deep-copied it would dominate everything else measured here. Swift
+    /// arrays are copy-on-write and nothing mutates them, so each field is a
+    /// retain — this pins that down as a number rather than an argument.
+    func testFrameSnapshotConstructionDoesNotCopyTheCatalogues() throws {
+        try XCTSkipIf(Self.stars.isEmpty, "star catalogue unavailable in this bundle")
+
+        let iterations = 10_000
+        _ = Self.frameData(fieldOfViewDegrees: 90)   // warm the shared fixtures
+
+        let start = DispatchTime.now().uptimeNanoseconds
+        var checksum = 0.0
+        for _ in 0..<iterations {
+            let frame = Self.frameData(fieldOfViewDegrees: 90)
+            checksum += frame.cameraFieldOfViewDegrees
+        }
+        let microsecondsEach =
+            Double(DispatchTime.now().uptimeNanoseconds - start) * 1e-3 / Double(iterations)
+
+        XCTAssertGreaterThan(checksum, 0)
+        // A single memcpy of the star array alone would be milliseconds. This
+        // bound is loose enough to survive a slow machine and tight enough to
+        // fail instantly if a copy ever creeps in. Note the fixture also
+        // recomputes the solar-system ephemeris on every call, which the real
+        // view model does not.
+        XCTAssertLessThan(
+            microsecondsEach, 500.0,
+            "frame snapshot construction costs \(microsecondsEach) us -- something is copying"
+        )
+
+        let line = String(
+            format: "\n=== SkyFrameData construction: %.2f us per frame ===", microsecondsEach
+        )
+        print(line)
+        let attachment = XCTAttachment(string: line)
+        attachment.name = "frame-snapshot-construction"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
     /// The other half of the per-second CPU bill: the 2.5 Hz SGP4 pass.
     ///
     /// It runs on a background actor and is spread across cores, so it never
