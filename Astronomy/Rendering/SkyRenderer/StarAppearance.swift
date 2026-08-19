@@ -72,15 +72,18 @@ enum StarAppearance {
     /// catalogue — so pinching all the way in genuinely reaches the bottom of
     /// the data rather than stopping short of it. (It used to be 7.0, which
     /// was a promise the old magnitude-6 catalogue could not keep.) The wide
-    /// end stays deliberately shallow: with 83,000 stars available, drawing
-    /// them all across a 150-degree field would bury the constellations in
-    /// noise, which is the opposite of legible.
+    /// end was 5.4, chosen to keep constellations legible. That was too
+    /// cautious: it left a wide field looking sparse next to a real dark sky,
+    /// where the faint field is dense and is most of what makes the view feel
+    /// deep. 6.5 is about three times as many stars at 150 degrees, and the
+    /// size curve is steep enough (see `pointSize`) that the constellation
+    /// stars still dominate the faint dust around them.
     ///
-    /// Roughly: 5.4 at 150 deg, 5.9 at 90 deg, 6.2 at 60 deg, 6.9 at 30 deg,
-    /// 7.9 at 10 deg, 9.0 at 3 deg.
+    /// Roughly: 6.5 at 150 deg, 6.8 at 90 deg, 7.1 at 60 deg, 7.5 at 30 deg,
+    /// 8.2 at 10 deg, 9.0 at 3 deg.
     static func limitingMagnitude(fieldOfViewDegrees fov: Double) -> Double {
         let wideFOV = 150.0, narrowFOV = 3.0
-        let wideLimit = 5.4, narrowLimit = 9.0
+        let wideLimit = 6.5, narrowLimit = 9.0
         let clamped = min(wideFOV, max(narrowFOV, fov))
         let t = (log(clamped) - log(narrowFOV)) / (log(wideFOV) - log(narrowFOV))
         return narrowLimit + (wideLimit - narrowLimit) * t

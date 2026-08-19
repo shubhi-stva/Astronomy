@@ -205,9 +205,16 @@ static inline float3 twilightZenithColor(float a) {
     const float3 cSunset = float3(0.115, 0.190, 0.400);  //   0 deg
     const float3 cDusk   = float3(0.085, 0.135, 0.300);  // -0.833 deg
     const float3 cCivil  = float3(0.045, 0.075, 0.185);  //  -6 deg
-    const float3 cNaut   = float3(0.020, 0.036, 0.095);  // -12 deg
-    const float3 cAstro  = float3(0.011, 0.018, 0.048);  // -18 deg
-    const float3 cNight  = float3(0.006, 0.010, 0.028);  // -25 deg and below
+    const float3 cNaut   = float3(0.024, 0.046, 0.112);  // -12 deg
+    // Night anchors taken from the reference by measurement rather than by
+    // eye: sampling the median sky colour of the reference screenshot gives
+    // about (0.008, 0.020, 0.047) high in the frame, rising to (0.012, 0.031,
+    // 0.067) near the horizon. The previous values were roughly half that and
+    // much less blue, which read as near-black rather than as a night sky.
+    // A real dark sky is not black — airglow, zodiacal light and scattered
+    // starlight all keep it a deep navy — so this is truer as well as nicer.
+    const float3 cAstro  = float3(0.014, 0.031, 0.068);  // -18 deg
+    const float3 cNight  = float3(0.008, 0.020, 0.047);  // -25 deg and below
 
     if (a <= -25.0)  { return cNight; }
     if (a <= -18.0)  { return rampSegment(a, -25.0, -18.0, cNight, cAstro); }

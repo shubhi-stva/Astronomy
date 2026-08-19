@@ -288,15 +288,15 @@ final class SkyBrightnessTests: XCTestCase {
         let bright = StarAppearance.visibility(
             magnitude: -2.2, fieldOfViewDegrees: 60, sunAltitudeDegrees: sunAltitude
         )
-        // Chosen to straddle the fade band: at this field of view the cutoff
-        // is ~6.24 (the FOV limit binds, the twilight display limit is ~6.68)
-        // and the fade spans the magnitude below it, so 5.8 is partway through
-        // the fade and 6.5 is past the cutoff entirely.
+        // Chosen to straddle the fade band: at this field of view the twilight
+        // display limit (~6.68) binds rather than the FOV limit (~7.09), and
+        // the fade spans the magnitude below it, so 6.2 is partway through the
+        // fade and 7.0 is past the cutoff entirely.
         let middling = StarAppearance.visibility(
-            magnitude: 5.8, fieldOfViewDegrees: 60, sunAltitudeDegrees: sunAltitude
+            magnitude: 6.2, fieldOfViewDegrees: 60, sunAltitudeDegrees: sunAltitude
         )
         let faint = StarAppearance.visibility(
-            magnitude: 6.5, fieldOfViewDegrees: 60, sunAltitudeDegrees: sunAltitude
+            magnitude: 7.0, fieldOfViewDegrees: 60, sunAltitudeDegrees: sunAltitude
         )
         // Bright objects render at the full contrast the sky allows; fainter
         // ones fade out progressively toward the cutoff.
@@ -333,10 +333,10 @@ final class SkyBrightnessTests: XCTestCase {
         // Wide field stays legible; the narrow end reaches the bottom of the
         // bundled catalogue so pinching all the way in is not a promise the
         // data cannot keep.
-        XCTAssertEqual(StarAppearance.limitingMagnitude(fieldOfViewDegrees: 150), 5.4, accuracy: 1e-9)
+        XCTAssertEqual(StarAppearance.limitingMagnitude(fieldOfViewDegrees: 150), 6.5, accuracy: 1e-9)
         XCTAssertEqual(StarAppearance.limitingMagnitude(fieldOfViewDegrees: 3), 9.0, accuracy: 1e-9)
         // Clamped outside the interpolation range rather than extrapolating.
-        XCTAssertEqual(StarAppearance.limitingMagnitude(fieldOfViewDegrees: 200), 5.4, accuracy: 1e-9)
+        XCTAssertEqual(StarAppearance.limitingMagnitude(fieldOfViewDegrees: 200), 6.5, accuracy: 1e-9)
         XCTAssertEqual(StarAppearance.limitingMagnitude(fieldOfViewDegrees: 0.5), 9.0, accuracy: 1e-9)
 
         // Strictly deeper as you zoom, with no step big enough to see as a pop.
