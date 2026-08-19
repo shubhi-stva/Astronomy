@@ -48,7 +48,7 @@ struct SkyView: View {
                     viewModel.viewportSize = newSize
                 }
 
-                SkyLabelsOverlay(labels: viewModel.labels)
+                SkyLabelsLayer(viewModel: viewModel)
                     .allowsHitTesting(false)
 
                 VStack {
@@ -100,6 +100,29 @@ struct SkyView: View {
         }
         .preferredColorScheme(.dark)
         .background(SkyPalette.voidBackground)
+    }
+}
+
+/// Isolates the label overlay's dependency on `viewModel.labels`.
+///
+/// This exists for one reason, and it is a performance reason rather than a
+/// structural one. `labels` is republished every frame — up to 120 times a
+/// second — and with `@Observable` a view body depends on exactly the
+/// properties it *reads*. Reading `viewModel.labels` directly in `SkyView`'s
+/// body therefore made the entire screen depend on it: every label update
+/// invalidated and re-evaluated the Metal representable (running
+/// `updateNSView`), the search bar, the location and satellite controls, the
+/// time bar and the info panel. SwiftUI cannot sustain rebuilding all of that
+/// at display rate, so it coalesced the updates and the labels visibly lagged
+/// the sky by a fraction of a second while panning.
+///
+/// Reading `labels` down here confines the invalidation to this one small view.
+/// Nothing else on screen re-evaluates when a label moves.
+private struct SkyLabelsLayer: View {
+    let viewModel: SkyViewModel
+
+    var body: some View {
+        SkyLabelsOverlay(labels: viewModel.labels)
     }
 }
 
