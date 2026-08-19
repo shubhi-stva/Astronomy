@@ -317,7 +317,7 @@ constant float kTerrainEdgeSoftnessDeg = 0.25;
 /// How strongly accumulated coverage dims celestial objects. Mirrors the Swift
 /// constant; the shader dims the *background* by the same rule so sky and
 /// objects stay consistent.
-constant float kTerrainCoverageDimming = 0.72;
+constant float kTerrainCoverageDimming = 0.45;
 
 /// Undulation of one layer about its own base offset, in degrees.
 /// MIRRORS `TerrainProfile.layerUndulationDegrees`.

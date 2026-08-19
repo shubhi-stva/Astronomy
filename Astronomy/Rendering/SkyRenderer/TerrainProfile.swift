@@ -92,13 +92,15 @@ enum TerrainProfile {
     /// How strongly accumulated terrain coverage dims a celestial object.
     ///
     /// Objects are never rejected any more; their visibility is multiplied by
-    /// `1 - coverage * coverageDimmingFactor`. With the maximum coverage the
-    /// layer stack can produce (about 0.75) this bottoms out around 0.46 — very
-    /// close to the 0.55 the old separate below-horizon dimming used, which is
-    /// why the two systems could be collapsed into this single one. There is
-    /// now exactly one story: the further down you look, the more dune haze is
-    /// between you and the sky, and that is *all* that dims it.
-    static let coverageDimmingFactor = 0.72
+    /// `1 - coverage * coverageDimmingFactor`. There is exactly one story: the
+    /// further down you look, the more dune haze is between you and the sky,
+    /// and that is *all* that dims it.
+    ///
+    /// Lowered from 0.72 so the floor rises from about 0.46 to about 0.66. The
+    /// dunes are meant to *veil* the set sky, not swallow it — the whole point
+    /// of the see-through view is reading what is below the horizon, and stars
+    /// there were fading into the haze rather than showing through it.
+    static let coverageDimmingFactor = 0.45
 
     // MARK: - The profile itself
 

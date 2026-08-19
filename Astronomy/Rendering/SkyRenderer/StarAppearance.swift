@@ -148,8 +148,14 @@ enum StarAppearance {
         let clampedMag = max(-1.5, min(8.0, magnitude))
         // Normalised brightness relative to magnitude 6.5 (naked-eye limit).
         let relative = pow(10.0, -0.25 * (clampedMag - 6.5))
-        let size = 0.35 + 1.35 * pow(relative, 0.62)
-        return Float(max(0.8, min(13.0, size)))
+        // Lifted across the whole range so stars read as the brightest thing in
+        // the frame. They now have real competition: 16,000 satellite markers
+        // and a photographic Milky Way both sit in the same pixels, and at the
+        // old curve a third-magnitude star was smaller than a satellite cross.
+        // The exponent is unchanged, so the *hierarchy* between magnitudes is
+        // exactly as before — the whole curve is simply brighter.
+        let size = 0.55 + 1.95 * pow(relative, 0.62)
+        return Float(max(1.15, min(15.5, size)))
     }
 
     /// Diameter of the soft halo drawn behind a bright star.
@@ -163,7 +169,11 @@ enum StarAppearance {
     /// gentle ceiling.
     static func glowAlpha(forMagnitude magnitude: Double) -> Float {
         let excess = Float(max(0.0, glowMagnitudeThreshold - magnitude))
-        return min(0.42, 0.10 + excess * 0.075)
+        // Stronger bloom on the bright stars: the halo is most of what makes
+        // Sirius or Vega read as a *star* rather than a dot, and it is the
+        // cheapest way to separate them from a satellite marker of similar
+        // core size.
+        return min(0.58, 0.16 + excess * 0.105)
     }
 
     // MARK: - Solar system
@@ -265,7 +275,17 @@ enum StarAppearance {
         switch kind {
         case .sun: return max(14.0, byMagnitude)
         case .moon: return max(12.0, byMagnitude)
-        case .planet: return max(3.5, byMagnitude)
+        // A larger absolute floor than before (3.5), so a dim planet still
+        // reads as a planet at a wide field. Deliberately *not* scaled up from
+        // `byMagnitude`: the bright planets already inherit the lifted star
+        // curve, and inflating the floor further would let it intrude on the
+        // zoomed-in regime where the true angular size must dominate and scale
+        // linearly (see `testDiskGrowsLinearlyWithZoomOnceTheTrueSizeDominates`).
+        // Capped as well as floored. The floor's only job is wide-field
+        // visibility; letting the brightest planets carry a 15-point floor all
+        // the way in would blunt the smooth-max blend and stop the true angular
+        // size dominating cleanly at high zoom.
+        case .planet: return max(6.0, min(11.0, byMagnitude))
         case .star: return byMagnitude
         case .deepSky: return deepSkyMinimumSize
         case .satellite: return satelliteMarkerSize
