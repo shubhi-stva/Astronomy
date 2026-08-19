@@ -97,8 +97,11 @@ struct SkyLabel: Identifiable, Equatable {
     }
 }
 
-@MainActor
-final class LabelLayoutEngine {
+/// `nonisolated`: label layout is pure computation over value types, and it
+/// runs wherever the geometry it annotates is built — which is deliberately
+/// *not* the main actor. (The target's default isolation is `MainActor`, so
+/// this has to be spelled out.)
+nonisolated final class LabelLayoutEngine {
 
     /// Hard ceiling on SwiftUI label views, regardless of how much sky is on
     /// screen. Keeps the overlay cheap to diff.

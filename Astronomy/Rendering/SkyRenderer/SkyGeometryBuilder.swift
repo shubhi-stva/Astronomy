@@ -61,16 +61,48 @@ struct SkyGeometryBuilder {
         self.precessionMatrix = Precession.rotationMatrix(julianDay: frameData.julianDay)
     }
 
-    mutating func run() {
-        buildStars()
-        buildLines()
-        buildDeepSky()
-        buildSatellites()
-        buildSolarSystem()
-        buildConstellationLabels()
-        buildCardinalPoints()
+    /// Optional per-stage timing. Nil in the ordinary path so the stage
+    /// closures below are all statically known to be cheap; a profiler is
+    /// attached by the renderer and by the performance tests.
+    var profiler: RenderProfiler?
 
+    mutating func run() {
+        guard let profiler else {
+            buildStars()
+            buildLines()
+            buildDeepSky()
+            buildSatellites()
+            buildSolarSystem()
+            buildConstellationLabels()
+            buildCardinalPoints()
+            pointVertices = glowVertices + coreVertices
+            return
+        }
+
+        // Explicit timestamps rather than a closure per stage: the stage
+        // methods are `mutating`, and wrapping them in closures would mean
+        // handing an `inout self` to a generic function once per stage, per
+        // frame. Straight-line code here is both cheaper and easier to trust.
+        var mark = DispatchTime.now().uptimeNanoseconds
+        let start = mark
+        @inline(__always) func lap(_ stage: RenderStage) {
+            let now = DispatchTime.now().uptimeNanoseconds
+            profiler.record(stage, seconds: Double(now - mark) * 1e-9)
+            mark = now
+        }
+
+        buildStars();               lap(.stars)
+        buildLines();               lap(.lines)
+        buildDeepSky();             lap(.deepSky)
+        buildSatellites();          lap(.satellites)
+        buildSolarSystem();         lap(.solarSystem)
+        buildConstellationLabels(); lap(.constellationLabels)
+        buildCardinalPoints();      lap(.cardinalPoints)
         pointVertices = glowVertices + coreVertices
+        profiler.record(
+            .geometryTotal,
+            seconds: Double(DispatchTime.now().uptimeNanoseconds - start) * 1e-9
+        )
     }
 
     // MARK: - Compass points
