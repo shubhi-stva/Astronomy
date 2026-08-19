@@ -167,12 +167,21 @@ actor SatelliteTracker {
         samples.reserveCapacity(satellites.count)
         for chunk in chunks { samples.append(contentsOf: chunk) }
 
+        // Altitude ordering for the renderer's band search. Built here, on this
+        // actor, so the main thread never pays for it.
+        var altitudeOrder = [Int32](0..<Int32(samples.count))
+        altitudeOrder.sort {
+            samples[Int($0)].altitudeDegreesAtSnapshot
+                < samples[Int($1)].altitudeDegreesAtSnapshot
+        }
+
         let duration = start.duration(to: .now)
         return SatelliteSnapshot(
             julianDay: julianDay,
             samples: samples,
             propagationDuration: TimeInterval(duration.components.seconds)
-                + Double(duration.components.attoseconds) * 1e-18
+                + Double(duration.components.attoseconds) * 1e-18,
+            altitudeOrder: altitudeOrder
         )
     }
 

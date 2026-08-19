@@ -747,19 +747,32 @@ struct SkyGeometryBuilder {
             fieldOfViewDegrees: fov, isNotable: true
         )
 
-        for sample in snapshot.samples {
-            // ACCURACY GATE, before anything else. An SGP4 propagation more
-            // than a few days from its element-set epoch is not a position,
-            // it is a guess along an orbital plane. The time machine can put
-            // the clock a month out with one click, so this has to be a hard
-            // refusal rather than a caveat: see `SatelliteAccuracy`.
+        // Binary-search straight to the altitude band instead of walking all
+        // sixteen thousand samples. `altitudeOrder` is built once per
+        // propagation tick on a background actor; here it turns the per-frame
+        // cost from "every satellite in orbit" into "the few hundred that could
+        // possibly be on screen". Falls back to the full range if a snapshot
+        // arrives without an ordering (a hand-built one in a test).
+        let candidates: [Int32]
+        if snapshot.altitudeOrder.count == snapshot.samples.count {
+            let band = snapshot.altitudeOrderRange(
+                centre: cameraAltitude, halfWidth: altitudeBandDegrees
+            )
+            candidates = Array(snapshot.altitudeOrder[band])
+        } else {
+            candidates = Array(0..<Int32(snapshot.samples.count))
+        }
+
+        for sampleIndex in candidates {
+            let sample = snapshot.samples[Int(sampleIndex)]
+            // ACCURACY GATE. An SGP4 propagation more than a few days from its
+            // element-set epoch is not a position, it is a guess along an
+            // orbital plane. The time machine can put the clock a month out
+            // with one click, so this has to be a hard refusal rather than a
+            // caveat: see `SatelliteAccuracy`.
             guard SatelliteAccuracy.isReliable(
                 julianDay: julianDay, epochJulianDay: sample.epochJulianDay
             ) else { continue }
-
-            // Cheap geometric reject on a field already in the sample.
-            guard abs(sample.altitudeDegreesAtSnapshot - cameraAltitude) <= altitudeBandDegrees
-            else { continue }
 
             // Tier gate: a couple of comparisons on already-loaded fields,
             // rejecting most of what survives above before any trigonometry.

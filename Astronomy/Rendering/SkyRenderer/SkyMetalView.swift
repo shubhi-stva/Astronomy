@@ -38,10 +38,9 @@ struct SkyMetalView: NSViewRepresentable {
         view.clearColor = MTLClearColor(red: 0.008, green: 0.012, blue: 0.03, alpha: 1.0)
         view.enableSetNeedsDisplay = false
         view.isPaused = false
-        // Match the display's native refresh rate. Per-frame CPU work is a
-        // single pass over the ~5k-star catalog (a few trig ops each, well
-        // under a millisecond) plus a bounded label layout, so 60-120 Hz is
-        // comfortable and makes panning feel continuous rather than steppy.
+        // Provisional only. The real value is the display's own refresh rate,
+        // and the view sets it itself in `viewDidMoveToWindow` — it cannot be
+        // known here, because there is no window yet.
         view.preferredFramesPerSecond = 60
 
         if let device, let renderer = SkyRenderer(device: device) {
@@ -57,10 +56,6 @@ struct SkyMetalView: NSViewRepresentable {
 
     func updateNSView(_ nsView: InteractiveMTKView, context: Context) {
         configure(nsView, context: context)
-        // Track the window's actual refresh capability once we're on screen.
-        if let maxFPS = nsView.window?.screen?.maximumFramesPerSecond, maxFPS > 0 {
-            nsView.preferredFramesPerSecond = maxFPS
-        }
     }
 
     private func configure(_ view: InteractiveMTKView, context: Context) {
@@ -116,6 +111,51 @@ final class InteractiveMTKView: MTKView {
     static let trackpadPanSignY: CGFloat = 1
 
     override var acceptsFirstResponder: Bool { true }
+
+    // MARK: - Refresh rate
+
+    /// Drives the view at whatever the display it is actually on can do, so a
+    /// 120 Hz panel gets 120 fps and panning reads as continuous rather than
+    /// stepped.
+    ///
+    /// Set here rather than from `updateNSView` because the refresh rate is a
+    /// property of the *window's screen*, which does not exist when the view is
+    /// created and is not something SwiftUI re-evaluates on any schedule. It
+    /// used to be set in `updateNSView`, which happened to work only because
+    /// that ran constantly — the label overlay was invalidating the whole view
+    /// tree every frame. Once that was fixed, `updateNSView` stopped running
+    /// often enough to reliably catch the window, and the view silently stayed
+    /// at its provisional 60 fps.
+    private func matchDisplayRefreshRate() {
+        guard let maxFPS = window?.screen?.maximumFramesPerSecond, maxFPS > 0 else { return }
+        preferredFramesPerSecond = maxFPS
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        matchDisplayRefreshRate()
+
+        // Windows can be dragged between displays with different refresh rates.
+        NotificationCenter.default.removeObserver(
+            self, name: NSWindow.didChangeScreenNotification, object: nil
+        )
+        if let window {
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(windowChangedScreen),
+                name: NSWindow.didChangeScreenNotification,
+                object: window
+            )
+        }
+    }
+
+    @objc private func windowChangedScreen() {
+        matchDisplayRefreshRate()
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
 
     func installGestureRecognizers() {
         let magnify = NSMagnificationGestureRecognizer(target: self, action: #selector(handleMagnify(_:)))

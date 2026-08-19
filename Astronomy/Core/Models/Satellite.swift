@@ -315,7 +315,62 @@ struct SatelliteSnapshot: Sendable {
     /// reporting in `SkyViewModel`.
     let propagationDuration: TimeInterval
 
-    static let empty = SatelliteSnapshot(julianDay: 0, samples: [], propagationDuration: 0)
+    /// Indices into `samples`, ordered by ascending
+    /// `altitudeDegreesAtSnapshot`.
+    ///
+    /// A separate ordering rather than sorting `samples` itself, because
+    /// `sample(descriptorIndex:)` depends on that array staying index-ordered.
+    ///
+    /// This exists so the renderer does not have to look at every satellite
+    /// every frame. The geometry builder only draws objects within a band of
+    /// altitudes around where the camera is pointing, and with this it can
+    /// binary-search straight to that band: at a typical field that is a few
+    /// hundred candidates instead of all sixteen thousand, on the main thread,
+    /// sixty times a second. Built once per propagation tick on a background
+    /// actor, where a sort of this size costs nothing anyone can feel.
+    /// Empty is a valid state and means "no ordering available": the renderer
+    /// falls back to scanning every sample, which is correct, just slower. That
+    /// keeps hand-built snapshots in tests working without having to sort.
+    let altitudeOrder: [Int32]
+
+    init(
+        julianDay: Double,
+        samples: [SatelliteSample],
+        propagationDuration: TimeInterval,
+        altitudeOrder: [Int32] = []
+    ) {
+        self.julianDay = julianDay
+        self.samples = samples
+        self.propagationDuration = propagationDuration
+        self.altitudeOrder = altitudeOrder
+    }
+
+    static let empty = SatelliteSnapshot(
+        julianDay: 0, samples: [], propagationDuration: 0
+    )
+
+    /// The slice of `altitudeOrder` whose samples lie within `halfWidth`
+    /// degrees of `centre`. Both bounds found by binary search.
+    func altitudeOrderRange(centre: Double, halfWidth: Double) -> Range<Int> {
+        let low = lowerBound(altitude: centre - halfWidth)
+        let high = lowerBound(altitude: centre + halfWidth.nextUp)
+        return low..<max(low, high)
+    }
+
+    /// First position in `altitudeOrder` whose sample altitude is >= `altitude`.
+    private func lowerBound(altitude: Double) -> Int {
+        var low = 0
+        var high = altitudeOrder.count
+        while low < high {
+            let mid = (low + high) / 2
+            if samples[Int(altitudeOrder[mid])].altitudeDegreesAtSnapshot < altitude {
+                low = mid + 1
+            } else {
+                high = mid
+            }
+        }
+        return low
+    }
 
     /// Finds a sample by its descriptor index.
     ///
