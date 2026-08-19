@@ -111,39 +111,91 @@ enum TopocentricTransform {
         julianDay: Double,
         heightMetres: Double = 0
     ) -> LookAngles {
-        let observerPosition = observerPositionTEME(
-            observer: observer, julianDay: julianDay, heightMetres: heightMetres
-        )
-        let range = satellite - observerPosition
+        ObserverFrame(observer: observer, julianDay: julianDay, heightMetres: heightMetres)
+            .lookAngles(satellitePositionTEME: satellite)
+    }
 
-        let latitude = Angle.degreesToRadians(observer.latitudeDegrees)
-        let lst = Angle.degreesToRadians(
-            CoordinateTransformService.localSiderealTimeDegrees(
-                julianDay: julianDay, longitudeDegrees: observer.longitudeDegrees
+    /// The observer's position and orientation at one instant, hoisted out of
+    /// the per-satellite loop.
+    ///
+    /// Everything in here — the sidereal time polynomial, the ellipsoid
+    /// radius, four trigonometric functions — depends only on where and when
+    /// the observer is, not on which satellite is being looked at. Computing
+    /// it inside `lookAngles` meant paying for all of it once per satellite
+    /// per frame, several hundred times over, for an answer that was the same
+    /// every time.
+    struct ObserverFrame: Sendable {
+        let positionTEME: SIMD3<Double>
+        let sinLat: Double, cosLat: Double
+        let sinLST: Double, cosLST: Double
+
+        init(observer: GeographicLocation, julianDay: Double, heightMetres: Double = 0) {
+            positionTEME = observerPositionTEME(
+                observer: observer, julianDay: julianDay, heightMetres: heightMetres
             )
-        )
-        let sinLat = sin(latitude), cosLat = cos(latitude)
-        let sinLST = sin(lst), cosLST = cos(lst)
+            let latitude = Angle.degreesToRadians(observer.latitudeDegrees)
+            let lst = Angle.degreesToRadians(
+                CoordinateTransformService.localSiderealTimeDegrees(
+                    julianDay: julianDay, longitudeDegrees: observer.longitudeDegrees
+                )
+            )
+            sinLat = sin(latitude); cosLat = cos(latitude)
+            sinLST = sin(lst); cosLST = cos(lst)
+        }
 
-        // South-East-Zenith components of the range vector.
-        let south = sinLat * cosLST * range.x + sinLat * sinLST * range.y - cosLat * range.z
-        let east = -sinLST * range.x + cosLST * range.y
-        let zenith = cosLat * cosLST * range.x + cosLat * sinLST * range.y + sinLat * range.z
+        /// The range vector resolved onto the south/east/zenith basis, plus
+        /// its magnitude.
+        @inline(__always)
+        func southEastZenith(
+            satellitePositionTEME satellite: SIMD3<Double>
+        ) -> (south: Double, east: Double, zenith: Double, rangeKilometres: Double) {
+            let range = satellite - positionTEME
+            return (
+                south: sinLat * cosLST * range.x + sinLat * sinLST * range.y - cosLat * range.z,
+                east: -sinLST * range.x + cosLST * range.y,
+                zenith: cosLat * cosLST * range.x + cosLat * sinLST * range.y + sinLat * range.z,
+                rangeKilometres: simd_length(range)
+            )
+        }
 
-        let rangeMagnitude = simd_length(range)
-        let altitude = rangeMagnitude > 0
-            ? Angle.radiansToDegrees(asin(max(-1.0, min(1.0, zenith / rangeMagnitude))))
-            : 0
-        // Azimuth from north, increasing eastward — the same convention
-        // `CoordinateTransformService.horizontal` establishes, so satellites
-        // land in the same horizontal frame as everything else.
-        let azimuth = Angle.normalizeDegrees(Angle.radiansToDegrees(atan2(east, -south)))
+        /// The satellite's direction as a unit vector in the app's horizontal
+        /// Cartesian frame (X east, Y zenith, Z south) — the same frame
+        /// `CoordinateTransformService.unitDirection` produces, and therefore
+        /// directly projectable without ever forming alt/az.
+        ///
+        /// This is what lets the renderer reject an off-screen satellite
+        /// before paying for an arcsine and an arctangent.
+        @inline(__always)
+        func horizontalDirection(
+            satellitePositionTEME satellite: SIMD3<Double>
+        ) -> (direction: SIMD3<Double>, rangeKilometres: Double) {
+            let sez = southEastZenith(satellitePositionTEME: satellite)
+            guard sez.rangeKilometres > 0 else { return (SIMD3(0, 1, 0), 0) }
+            let inverse = 1.0 / sez.rangeKilometres
+            return (
+                SIMD3(sez.east * inverse, sez.zenith * inverse, sez.south * inverse),
+                sez.rangeKilometres
+            )
+        }
 
-        return LookAngles(
-            horizontal: HorizontalCoordinate(altitudeDegrees: altitude, azimuthDegrees: azimuth),
-            rangeKilometres: rangeMagnitude,
-            altitudeAboveGroundKm: heightAboveEllipsoid(geocentricPosition: satellite)
-        )
+        func lookAngles(satellitePositionTEME satellite: SIMD3<Double>) -> LookAngles {
+            let sez = southEastZenith(satellitePositionTEME: satellite)
+            let rangeMagnitude = sez.rangeKilometres
+            let altitude = rangeMagnitude > 0
+                ? Angle.radiansToDegrees(asin(max(-1.0, min(1.0, sez.zenith / rangeMagnitude))))
+                : 0
+            // Azimuth from north, increasing eastward — the same convention
+            // `CoordinateTransformService.horizontal` establishes, so
+            // satellites land in the same horizontal frame as everything else.
+            let azimuth = Angle.normalizeDegrees(
+                Angle.radiansToDegrees(atan2(sez.east, -sez.south))
+            )
+            return LookAngles(
+                horizontal: HorizontalCoordinate(altitudeDegrees: altitude, azimuthDegrees: azimuth),
+                rangeKilometres: rangeMagnitude,
+                altitudeAboveGroundKm: heightAboveEllipsoid(geocentricPosition: satellite)
+            )
+        }
     }
 
     /// Height above the WGS-84 ellipsoid, in kilometres.

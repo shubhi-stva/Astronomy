@@ -765,6 +765,12 @@ struct SkyGeometryBuilder {
         let fov = frameData.cameraFieldOfViewDegrees
         let observer = frameData.observerLocation
         let julianDay = frameData.julianDay
+        // Where the observer is and how they are oriented is a per-frame
+        // constant; it used to be recomputed inside every single look-angle
+        // call, twice per candidate satellite.
+        let observerFrame = TopocentricTransform.ObserverFrame(
+            observer: observer, julianDay: julianDay
+        )
 
         // Seconds elapsed since the propagation tick. Clamped: if the app was
         // suspended, or the user scrubbed the time bar, the linear
@@ -862,12 +868,16 @@ struct SkyGeometryBuilder {
             }
 
             let position = sample.position + sample.velocity * elapsedSeconds
-            let look = TopocentricTransform.lookAngles(
-                satellitePositionTEME: position, observer: observer, julianDay: julianDay
-            )
-            guard let ndc = project(horizontal: look.horizontal) else { continue }
+            // Straight from the range vector to a projectable direction: the
+            // south/east/zenith basis *is* the horizontal frame, so an
+            // off-screen satellite is rejected without ever forming alt/az.
+            let (direction, _) = observerFrame.horizontalDirection(satellitePositionTEME: position)
+            guard let ndc = projector.project(direction: direction) else { continue }
             guard isOnScreen(ndc, margin: 0.08) else { continue }
 
+            // Only now, for the handful still standing, is the full look angle
+            // worth computing.
+            let look = observerFrame.lookAngles(satellitePositionTEME: position)
             let dimming = TerrainProfile.dimming(
                 altitudeDegrees: look.horizontal.altitudeDegrees,
                 azimuthDegrees: look.horizontal.azimuthDegrees
@@ -882,7 +892,7 @@ struct SkyGeometryBuilder {
             // camera pans — the same trick the Moon's bright limb uses.
             let aheadAngle = travelScreenAngle(
                 position: position, velocity: sample.velocity,
-                observer: observer, julianDay: julianDay, centerNDC: ndc
+                observerFrame: observerFrame, centerNDC: ndc
             )
 
             var color = sample.isNotable
@@ -982,12 +992,12 @@ struct SkyGeometryBuilder {
     /// Screen-space direction the satellite is travelling, in radians.
     private func travelScreenAngle(
         position: SIMD3<Double>, velocity: SIMD3<Double>,
-        observer: GeographicLocation, julianDay: Double, centerNDC: SIMD2<Double>
+        observerFrame: TopocentricTransform.ObserverFrame, centerNDC: SIMD2<Double>
     ) -> Double {
-        let ahead = TopocentricTransform.lookAngles(
-            satellitePositionTEME: position + velocity, observer: observer, julianDay: julianDay
+        let (ahead, _) = observerFrame.horizontalDirection(
+            satellitePositionTEME: position + velocity
         )
-        guard let aheadNDC = project(horizontal: ahead.horizontal)
+        guard let aheadNDC = projector.project(direction: ahead)
         else { return 0 }
         let d = aheadNDC - centerNDC
         guard simd_length(d) > 1e-9 else { return 0 }
