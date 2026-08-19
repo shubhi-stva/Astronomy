@@ -109,6 +109,66 @@ precomputed ephemeris data.
   positions as visually indicative, not observation-grade.
 - No atmospheric refraction correction is applied to Alt/Az output.
 
+### Reference frame — everything is now "of date"
+
+All three sources produce positions referred to the **mean equinox and equator
+of the displayed date**, which is the frame the observer's sidereal time is in.
+Getting this consistent matters: mixing frames puts objects out of register with
+each other, which is exactly how a conjunction renders wrong.
+
+- The **Sun** (Meeus Ch. 25) and **Moon** (Ch. 47) series are of-date natively.
+- The **planets** are not. Standish's Keplerian elements are referred to the
+  **J2000.0 ecliptic**, so `PlanetPosition` now rotates by the J2000 obliquity
+  and then applies `Precession` from J2000 to the date. Previously it rotated by
+  the *of-date* obliquity and stopped there, which was a partial and
+  inconsistent version of the same correction and left the planets about 0.36°
+  out of register with the Sun and Moon in 2026.
+
+### Validity window — 1800-2050, and what the app does about it
+
+Standish publishes two element tables: one fitted for **1800 AD - 2050 AD** and a
+lower-accuracy one for 3000 BC - 3000 AD. This app carries the first, so
+1800-2050 is where the few-arcminute claim above actually holds. The truncated
+lunar series is likewise quoted for the modern era.
+
+**The decision (`EphemerisService.validYearRange`): the time machine is clamped
+to that window.** The date/time picker will not select outside it and the
+hour/day/month/year step buttons stop at its edges. Outside the window the code
+would still produce numbers, and they would still look exactly like a sky —
+degrees wrong, with nothing on screen to say so. Refusing to leave the window is
+the only behaviour that cannot mislead, and 1800-2050 is far wider than any
+"what does my sky look like in two months" question needs.
+
+## Precession of the equinoxes — `Core/Astronomy/Precession.swift`
+
+- **Formulation**: IAU 1976 precession (Lieske, Lederle, Fricke & Morando,
+  *Astronomy & Astrophysics* **58**, 1 (1977)), in the rigorous three-angle
+  form given by Meeus, *Astronomical Algorithms*, 2nd ed., **Chapter 21**,
+  equations 21.2 (the zeta / z / theta polynomials) and 21.4 (the rotation),
+  reduced to the fixed starting epoch J2000.0. Applied as a 3x3 rotation matrix
+  built once per frame and shared by every catalogue object, so per-star cost is
+  a matrix-vector product rather than its own trigonometry.
+- **Why it is needed**: the star and deep-sky catalogues are J2000.0 mean
+  places; the observer's celestial equator is not. The equinox has regressed
+  about 0.36° by 2026 (Sirius itself moves 0.28°) — already larger than the
+  Moon's radius, and a time machine spanning decades makes it far worse.
+- **Verification**: `PrecessionTests` checks two independent published
+  quantities. Meeus's worked **Example 21.b** (theta Persei to 2028 Nov 13.19)
+  reproduces to better than 0.005 arcseconds in declination; and precessing the
+  vernal equinox forward one Julian year reproduces the published IAU annual
+  constants m = 3.07496 s and n = 20.0431 arcsec to six significant figures.
+  The matrix is also asserted orthonormal with determinant +1.
+- **Not modelled — proper motion.** The bundled catalogue carries no per-star
+  velocity, so stars are treated as fixed on the celestial sphere. This is the
+  largest remaining error over long spans: Barnard's Star moves 10.3 arcsec/yr
+  and Arcturus 2.3, so a century-scale jump misplaces the fastest movers by
+  arcminutes. Every naked-eye star stays well within a pixel over a few decades
+  at any field this app draws.
+- **Also not modelled**: nutation (up to 17 arcsec in longitude) and annual
+  aberration (up to 20 arcsec). Both are an order of magnitude below one pixel
+  at any field of view offered. The IAU 2006/P03 refinement differs from IAU
+  1976 by well under an arcsecond across 1800-2050.
+
 ### Update process
 
 If higher accuracy is ever needed, the natural upgrade path is swapping the
@@ -235,6 +295,57 @@ comment block there for the full derivation.
   no per-observer dark adaptation. The slope of 0.55 is a fit, not a
   derivation. For a properly derived treatment see B. E. Schaefer,
   "Telescopic Limiting Magnitudes", *PASP* 102, 212 (1990).
+
+### The sky below the horizon (the see-through-Earth view)
+
+The app draws the whole celestial sphere, including the half the ground is in
+the way of. Applying the observer's own daylight sky brightness to those
+directions is wrong in a specific, correctable way, and
+`SkyBrightness.effectiveSunAltitudeDegrees` corrects it.
+
+**Daylight is an atmospheric foreground.** The blue glow that drowns out stars
+is sunlight scattered by air *along the line of sight*. A sightline aimed below
+the horizon never traverses that illuminated air — it goes down through the
+ground and emerges somewhere else on Earth, quite possibly on the night side.
+
+The geometry is exact and elementary. An observer on a sphere of radius R
+looking at depression |a| sends a chord into the sphere; the chord meets the
+inward radius at 90° - |a|, the triangle observer-centre-exit is isoceles, so
+the central angle is **2|a|**. The sightline therefore leaves the Earth a
+great-circle distance 2|a| away, reaching the exact antipode at a = -90°.
+Displacing an observer by great-circle distance d changes the Sun's altitude h
+by sin h' = sin h cos d + cos h sin d cos(psi); the app has no reason to prefer
+a bearing psi and the azimuth-average of the second term is zero, so the model
+keeps the first term:
+
+    sin h' = sin h cos(2|a|)
+
+continuous at the horizon (d = 0 gives h' = h) and exact at the antipode
+(d = 180° gives h' = -h). The displayed value is then `min(h, h')` — the
+*darker* of the two hemispheres — because the mechanism only ever removes a
+foreground: a sightline through the Earth can never be dimmed by daylight it
+does not pass through. Consequences:
+
+- **By day**, sub-horizon directions get the night-side limit, so the dark
+  hemisphere shows the depth that is physically there behind the rock.
+- **At night**, the far end is the *day* hemisphere, so the minimum keeps the
+  observer's own dark sky and nothing regresses.
+- **Above the horizon**, it is the observer's own value, unchanged.
+
+No arbitrary magnitude bonus is added anywhere; the aesthetic field-of-view
+limit (`StarAppearance.limitingMagnitude`) still caps everything, which is why
+the effect is modest at a whole-sky field and large when zoomed in. Measured
+against the bundled catalogue at latitude 37.5°N, camera 45° below the horizon:
+at a 90° field 522 -> 569 drawn stars, at a 25° field 33 -> 81. Above the
+horizon and at night the counts are byte-identical to before.
+
+The same view drives the satellite layer: everything orbiting the dark
+hemisphere is drawn by default rather than behind "Show all", still dimmed by
+terrain coverage. To keep that affordable, `SkyGeometryBuilder.buildSatellites`
+first applies an exact cheap necessary condition — angular separation is at
+least the difference of altitudes, so anything further than the viewport radius
+in altitude alone cannot project into the frame — using the altitude already
+carried in each sample, before any trigonometry.
 
 ## Planetary radii — `StarAppearance.angularDiameterDegrees`
 
@@ -421,6 +532,20 @@ What remains approximate, in decreasing order of how much it matters:
   implementation, and no amount of care in the propagator removes it. The app
   surfaces the age directly: select a satellite and the info panel shows
   "Element set: 2.3 days old". Treat that number as the accuracy caveat it is.
+
+  **This is also a hard limit on the time machine, and the app enforces it.**
+  Beyond about a week the along-track error stops being a caveat and becomes the
+  whole answer: at one month it is hundreds to thousands of kilometres, meaning
+  the object is *somewhere in its orbital plane* and the propagator has no idea
+  where. That is not imprecise, it is meaningless — a drawn position would be
+  indistinguishable from a random point on the ground track. So
+  `SatelliteAccuracy.maximumElementSetAgeDays` = **5 days**, symmetric about the
+  epoch, and outside it the satellite is **not drawn at all** — not dimmed, not
+  flagged, absent. The satellite layer is suppressed in the renderer and in
+  search alike, and the time bar states the reason in place of leaving the user
+  to wonder where the satellites went. Silently propagating months out and
+  presenting the result as real would be the single most dishonest thing this
+  app could do.
 - **Atmospheric drag** is modelled by SGP4's `B*` term, a single fitted
   coefficient. It does not know about solar activity, the satellite's attitude,
   or a manoeuvre. Objects that manoeuvre (the ISS reboosts; Starlink raises

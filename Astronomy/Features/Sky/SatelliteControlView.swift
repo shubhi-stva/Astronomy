@@ -85,6 +85,14 @@ struct SatelliteControlView: View {
     private var statusText: String {
         let tracked = viewModel.satelliteDescriptors.count
         guard tracked > 0 else { return "Loading element sets…" }
+        // Under the time machine the honest answer is not a count. Element sets
+        // are only meaningful within a few days of their epoch, so beyond that
+        // the layer suppresses itself and says so rather than reporting a
+        // number that describes nothing. See `SatelliteAccuracy`.
+        if viewModel.satelliteElementsAreOutOfDate {
+            let days = Int(SatelliteAccuracy.maximumElementSetAgeDays)
+            return "Hidden at this time: orbital elements are only valid within ±\(days) days of their epoch."
+        }
         return "\(viewModel.visibleSatelliteCount) visible of \(tracked.formatted()) tracked"
     }
 }
