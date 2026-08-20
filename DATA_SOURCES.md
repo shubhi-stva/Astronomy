@@ -37,13 +37,47 @@
   - `id` — HYG catalog row id (also used as the join key for constellation
     line segments, see below).
   - `name` — common/proper name where the HYG database provides one
-    (`proper` column), otherwise `nil` (UI falls back to `"HR <id>"`).
+    (`proper` column), otherwise `nil`. The UI then falls back through the
+    designations below — Bayer/Flamsteed, HR, HD, HIP, Gliese — and only as a
+    last resort prints `"HYG <id>"`, labelled as the internal row id it is.
   - `ra`, `dec` — J2000 equatorial coordinates, converted from HYG's
     RA-in-hours to decimal degrees.
   - `magnitude` — apparent visual magnitude.
   - `colorIndex` — B-V color index (HYG `ci` column), used to derive a
     physically-motivated star color for rendering (`StarAppearance.swift`).
   - `spectralType` — HYG `spect` column, spectral classification string.
+  - `hip`, `hd`, `hr` — Hipparcos, Henry Draper and Harvard Revised (Bright
+    Star Catalogue) numbers, from the HYG columns of the same names. Integers,
+    **omitted entirely** when the HYG row has no value rather than emitted as
+    `null` or `""`.
+  - `gl` — Gliese designation as printed ("Gl 244A"), HYG `gl` column.
+  - `bf` — HYG's compact Bayer/Flamsteed string ("9Alp CMa"): Flamsteed
+    number, Bayer code (sometimes split as "Alp-1"), IAU constellation
+    abbreviation. Unpacked at runtime by `StarDesignations`.
+- **Why the designations are there at all**: only **431** of the 83,479 entries
+  have a proper name. The other 83,048 previously carried **no identifier in
+  our schema whatsoever** — the columns were dropped at export — so they were
+  literally unsearchable, and `Star.displayName` fell back to printing the HYG
+  *row id* as if it were an HR number (Sirius is row 32263 and HR 2491; those
+  are different catalogues). Adding the identifier columns back is what makes
+  "HD 48915", "HIP 32349", "HR 2491" and "Alpha Canis Majoris" all resolve to
+  Sirius. See `Data/Catalogs/StarSearchIndex.swift`.
+- **Size cost, which is real**: `stars.json` grew from **9,268,296 to
+  11,360,648 bytes (+2.09 MB, +22.6%)**. The keys are deliberately short and
+  absent-rather-than-empty for exactly this reason. Decode time (Debug build,
+  Apple silicon, best of three) went from about 0.30 s to about 0.43 s, and the
+  new designation index costs a further ~0.10-0.15 s to build. All of it
+  happens on the `CatalogService` actor's executor while the UI shows its
+  loading state — nothing is added to the main actor — but it is 0.2 s of extra
+  launch work and worth knowing. If it ever matters, the fix is the same one
+  the decode note below already names: a binary format instead of JSON.
+- **Regeneration is field-additive and verified as such**: the export was
+  produced by re-reading the same HYG v4.1 CSV and merging the identifier
+  columns into the *existing* JSON rows, then asserting that stripping the five
+  new keys reproduces the previous file byte for byte. The star set, the
+  ordering and every `id` are unchanged, so all 690 constellation segments
+  still resolve (`AstronomyTests/StarDesignationSearchTests.swift` checks all
+  three properties against the bundled files).
 - **Provenance/build process**: downloaded directly from the upstream
   GitHub repository, filtered and re-serialized to JSON with a one-off
   Python script (not checked into the repo — the *output* `stars.json` is
@@ -230,6 +264,25 @@ depends on how positions are computed.
   a few degrees, which does not matter at label scale.
 - **License**: original data compiled for this project; no upstream license
   applies.
+
+## Constellation abbreviations and genitives — `Core/Models/ConstellationDesignations.swift`
+
+- **Source**: the IAU's list of the 88 constellations
+  (https://www.iau.org/public/themes/constellations/), which is normative for
+  the Latin nominative, the Latin genitive and the three-letter abbreviation.
+- **Use**: two things depend on it.
+  - **Constellation search.** `constellation_names.json` carries only the
+    nominative, so "Ori" and "UMa" — the abbreviations the HYG catalogue uses
+    and that appear inside every Bayer designation — would otherwise find
+    nothing. Matches are ranked (whole name or exact abbreviation first, then
+    prefix, then interior substring) because "UMa" is also a substring of
+    "TriangUlum AUstrale", and an unranked filter offers that one first.
+  - **Bayer designations spelled out.** A star's designation is stored as
+    "9Alp CMa" but is *read* as "Alpha Canis Majoris", which needs the
+    genitive. Search accepts the raw form, the abbreviation form, the Greek
+    character ("α CMa") and the spelled-out genitive form.
+- **Note**: Boötes is spelled with the diaeresis to match
+  `constellation_names.json`; search folds diacritics, so "Bootes" finds it.
 
 ## Milky Way band — procedural, not imagery
 

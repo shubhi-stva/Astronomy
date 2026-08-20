@@ -273,6 +273,8 @@ enum StarAppearance {
         // metres across at 400 km, which is a few arcseconds. There is nothing
         // to zoom into, so the marker stays a marker.
         case .satellite: return 16
+        // Never drawn. Present for exhaustiveness only.
+        case .constellation: return 0
         }
     }
 
@@ -303,6 +305,7 @@ enum StarAppearance {
         case .star: return byMagnitude
         case .deepSky: return deepSkyMinimumSize
         case .satellite: return satelliteMarkerSize
+        case .constellation: return 0
         }
     }
 

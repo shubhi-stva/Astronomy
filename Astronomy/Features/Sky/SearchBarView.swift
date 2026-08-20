@@ -4,8 +4,9 @@
 //
 //  Compact floating search pill: collapsed to a single icon so it stays out
 //  of the sky, expanding to a field (and result list) on click/focus.
-//  Substring match against loaded stars + planets; choosing a result
-//  recenters the camera on it.
+//  Matches stars (by proper name or any catalogue designation), planets and
+//  dwarf planets, deep-sky objects, satellites and constellations; choosing a
+//  result recenters the camera on it.
 //
 
 import SwiftUI
@@ -17,6 +18,36 @@ struct SearchBarView: View {
     @State private var isExpanded = false
 
     private var showsField: Bool { isExpanded || isFocused || !viewModel.searchText.isEmpty }
+
+    /// One glyph per category, so the eye can sort the result list before
+    /// reading any of it.
+    private static func symbol(for kind: CelestialObjectKind) -> String {
+        switch kind {
+        case .star: return "sparkle"
+        case .sun: return "sun.max"
+        case .moon: return "moon"
+        case .planet: return "circle.circle"
+        case .dwarfPlanet: return "circle.dotted"
+        case .deepSky: return "hurricane"
+        case .satellite: return "antenna.radiowaves.left.and.right"
+        case .constellation: return "point.topleft.down.to.point.bottomright.curvepath"
+        }
+    }
+
+    private static func categoryLabel(for object: CelestialObject) -> String {
+        switch object.kind {
+        case .star: return "Star"
+        case .sun: return "Sun"
+        case .moon: return "Moon"
+        case .planet: return "Planet"
+        case .dwarfPlanet: return "Dwarf planet"
+        // The morphological class is more use than the word "deepSky": a
+        // result reading "Galaxy" or "Open Cluster" says what it is.
+        case .deepSky: return object.deepSkyType?.displayName ?? "Deep-sky"
+        case .satellite: return "Satellite"
+        case .constellation: return "Constellation"
+        }
+    }
 
     var body: some View {
         GlassPanel {
@@ -30,7 +61,7 @@ struct SearchBarView: View {
                         }
 
                     if showsField {
-                        TextField("Search stars & planets", text: $viewModel.searchText)
+                        TextField("Search the sky", text: $viewModel.searchText)
                             .textFieldStyle(.plain)
                             .focused($isFocused)
                             .foregroundStyle(SkyPalette.chromeText)
@@ -68,11 +99,21 @@ struct SearchBarView: View {
                                 isExpanded = false
                                 isFocused = false
                             } label: {
-                                HStack {
+                                HStack(spacing: 8) {
+                                    // A category icon *and* a word. With
+                                    // stars, deep-sky objects, satellites and
+                                    // constellations all in one list, "M42"
+                                    // and "ISS" and "Ori" are otherwise three
+                                    // indistinguishable rows of text.
+                                    Image(systemName: Self.symbol(for: object.kind))
+                                        .font(.caption)
+                                        .frame(width: 14)
+                                        .foregroundStyle(SkyPalette.accentBlue)
                                     Text(object.name)
                                         .foregroundStyle(SkyPalette.chromeText)
-                                    Spacer()
-                                    Text(object.kind.rawValue.capitalized)
+                                        .lineLimit(1)
+                                    Spacer(minLength: 8)
+                                    Text(Self.categoryLabel(for: object))
                                         .font(.caption2)
                                         .foregroundStyle(SkyPalette.chromeSecondaryText)
                                 }

@@ -38,7 +38,9 @@ struct InfoPanelView: View {
                 }
                 if let satellite = object.satelliteDetails {
                     satelliteRows(satellite)
-                } else {
+                } else if object.kind != .constellation {
+                    // A constellation is a region of sky, not a light source;
+                    // it has no magnitude and printing 0.00 would invent one.
                     infoRow("Magnitude", String(format: "%.2f", object.magnitude))
                 }
                 if let major = object.majorAxisArcmin {
@@ -58,6 +60,7 @@ struct InfoPanelView: View {
         case .moon: return "Moon"
         case .planet: return "Planet"
         case .dwarfPlanet: return "Dwarf Planet"
+        case .constellation: return "Constellation"
         case .deepSky: return object.deepSkyType?.displayName ?? "Deep-Sky Object"
         case .satellite: return object.satelliteDetails?.regime.displayName ?? "Satellite"
         }

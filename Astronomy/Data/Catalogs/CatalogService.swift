@@ -21,6 +21,7 @@ actor CatalogService {
 
     private var cachedStars: [Star]?
     private var cachedStarIndex: StarIndex?
+    private var cachedStarSearchIndex: StarSearchIndex?
     private var cachedConstellationLines: [ConstellationLineSegment]?
     private var cachedConstellations: [Constellation]?
     private var cachedDeepSky: [DeepSkyObject]?
@@ -52,6 +53,19 @@ actor CatalogService {
         if let cachedStarIndex { return cachedStarIndex }
         let index = StarIndex(stars: try await loadStars())
         cachedStarIndex = index
+        return index
+    }
+
+    /// Loads (and caches) the designation index used by search.
+    ///
+    /// Built here for the same reason `loadStarIndex` is: this actor already
+    /// owns the decoded catalogue and is already off the main thread. The
+    /// build is one pass over 83,479 stars plus about 26,000 short string
+    /// normalisations, which is small next to the JSON decode it follows.
+    func loadStarSearchIndex() async throws -> StarSearchIndex {
+        if let cachedStarSearchIndex { return cachedStarSearchIndex }
+        let index = StarSearchIndex(stars: try await loadStars())
+        cachedStarSearchIndex = index
         return index
     }
 

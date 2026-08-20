@@ -17,6 +17,11 @@ enum CelestialObjectKind: String, Codable {
     /// what is in the sky. It is still searchable and selectable, and
     /// selecting it reveals it — see `SkyGeometryBuilder.buildSolarSystem`.
     case dwarfPlanet
+    /// A whole constellation, represented by its approximate figure centroid.
+    /// Never drawn as an object (the figure is drawn by its line segments and
+    /// its name by the label pass) — it exists so search can offer "Orion" and
+    /// fly the camera to the middle of it.
+    case constellation
     /// Artificial satellites. Unlike everything else in this enum these are
     /// *near*: their apparent position depends on where the observer stands,
     /// not just when they look, so they never travel the RA/Dec path the other

@@ -1171,7 +1171,7 @@ struct SkyGeometryBuilder {
                     )
                 )
 
-            case .star, .deepSky, .satellite:
+            case .star, .deepSky, .satellite, .constellation:
                 // Deep-sky objects and satellites never appear in
                 // `solarSystemObjects`; each has its own pass. This branch
                 // exists only for exhaustiveness and draws a plain point.
@@ -1254,6 +1254,10 @@ struct SkyGeometryBuilder {
                 fieldOfViewDegrees: frameData.cameraFieldOfViewDegrees,
                 viewportWidth: Double(frameData.viewportSize.width)
             ) * 1.15
+        case .constellation:
+            // Constellations are never projected as objects, so this is
+            // unreachable; a ring size is required for exhaustiveness.
+            baseSize = 26
         case .satellite:
             // A fixed comfortable ring: the marker never grows much, so a ring
             // that tracked it would be too small to see what is selected.

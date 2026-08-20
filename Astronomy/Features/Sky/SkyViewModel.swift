@@ -25,6 +25,8 @@ final class SkyViewModel {
     private(set) var starsByID: [Int: Star] = [:]
     /// Built off the main actor alongside the catalogue; see `StarIndex`.
     private(set) var starIndex: StarIndex?
+    /// Designation index over the whole catalogue; see `StarSearchIndex`.
+    private(set) var starSearchIndex: StarSearchIndex?
     private(set) var constellationLines: [ConstellationLineSegment] = []
     private(set) var isLoadingCatalog = true
     private(set) var loadError: String?
@@ -241,13 +243,16 @@ final class SkyViewModel {
             // happen while `isLoadingCatalog` is still true and the UI shows
             // its loading state. Only the assignments below touch @MainActor.
             async let indexResult = CatalogService.shared.loadStarIndex()
+            async let searchIndexResult = CatalogService.shared.loadStarSearchIndex()
             async let linesResult = CatalogService.shared.loadConstellationLines()
             async let namesResult = CatalogService.shared.loadConstellations()
             async let deepSkyResult = CatalogService.shared.loadDeepSkyObjects()
             let (loadedIndex, loadedLines, loadedNames) = try await (indexResult, linesResult, namesResult)
             let loadedDeepSky = try await deepSkyResult
             let loadedStars = try await CatalogService.shared.loadStars()
+            let loadedSearchIndex = try await searchIndexResult
             self.starIndex = loadedIndex
+            self.starSearchIndex = loadedSearchIndex
             self.stars = loadedStars
             self.starsByID = Dictionary(uniqueKeysWithValues: loadedStars.map { ($0.id, $0) })
             self.constellationLines = loadedLines
@@ -359,6 +364,11 @@ final class SkyViewModel {
 
     // MARK: - Search
 
+    /// Result cap per category. Twenty is enough that a broad query still
+    /// shows the interesting matches and few enough that no one category can
+    /// crowd the others out of the list.
+    private static let resultsPerCategory = 20
+
     func updateSearchResults() {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else {
@@ -366,23 +376,33 @@ final class SkyViewModel {
             return
         }
         let lowered = query.lowercased()
+        let condensedQuery = StarSearchIndex.normalize(query)
 
+        // Ordered by how specific a hit in each category tends to be. A
+        // solar-system body is the most likely thing meant by a bare name
+        // ("Mars" is the planet, not a star), constellations and named stars
+        // next, then the deep-sky and satellite catalogues, which are large
+        // and full of near-miss substrings.
         var results: [CelestialObject] = solarSystemObjects.filter {
             $0.name.lowercased().contains(lowered)
         }
 
-        let starMatches = stars
-            .filter { ($0.name?.lowercased().contains(lowered)) ?? false }
-            .prefix(20)
-            .map { $0.asCelestialObject }
+        results.append(contentsOf: constellationMatches(query: query))
 
-        results.append(contentsOf: starMatches)
+        // Every star in the catalogue, by proper name, Bayer/Flamsteed, HR,
+        // HD, HIP or Gliese designation. See `StarSearchIndex`.
+        if let starSearchIndex {
+            results.append(
+                contentsOf: starSearchIndex
+                    .matches(query: query, limit: Self.resultsPerCategory)
+                    .map { $0.asCelestialObject }
+            )
+        }
 
         // Deep-sky objects match on either spelling: the common name
         // ("Andromeda Galaxy", "Pleiades") or the catalogue designation
         // ("M31", "NGC 7000"). Designations are compared with whitespace
         // removed so "NGC7000" and "NGC 7000" both hit.
-        let condensedQuery = lowered.replacingOccurrences(of: " ", with: "")
         let deepSkyMatches = deepSkyObjects
             .filter { object in
                 if let name = object.name?.lowercased(), name.contains(lowered) { return true }
@@ -392,12 +412,36 @@ final class SkyViewModel {
                     || object.id.lowercased().contains(condensedQuery)
             }
             .sorted { $0.magnitude < $1.magnitude }
-            .prefix(20)
+            .prefix(Self.resultsPerCategory)
             .map { $0.asCelestialObject }
 
         results.append(contentsOf: deepSkyMatches)
         results.append(contentsOf: satelliteMatches(lowered: lowered, query: query))
         searchResults = results
+    }
+
+    /// Constellations match on their name ("Orion", "Ursa Major") or on their
+    /// three-letter IAU abbreviation ("Ori", "UMa") — the same abbreviation the
+    /// HYG catalogue uses and the one that appears inside every Bayer
+    /// designation, so it is a form users have already seen in this app. The
+    /// matching and ranking live in `ConstellationDesignations`.
+    ///
+    /// Choosing one flies the camera to the constellation's centroid, which is
+    /// the same approximate figure centre the name labels are placed at.
+    private func constellationMatches(query: String) -> [CelestialObject] {
+        ConstellationDesignations.rankedMatches(query: query, in: constellations)
+            .prefix(Self.resultsPerCategory)
+            .map { constellation in
+                CelestialObject(
+                    id: "constellation-\(constellation.name)",
+                    name: constellation.name,
+                    kind: .constellation,
+                    equatorial: constellation.equatorial,
+                    // A region of sky has no magnitude. Zero is a placeholder
+                    // the info panel deliberately does not print.
+                    magnitude: 0
+                )
+            }
     }
 
     /// Satellites match on name or on NORAD catalog number, so both "ISS" and
@@ -469,7 +513,10 @@ final class SkyViewModel {
     private static func horizontalForCamera(
         object: CelestialObject, observer: GeographicLocation, julianDay: Double
     ) -> HorizontalCoordinate {
+        // Constellation centroids are J2000 catalogue places like the star
+        // and deep-sky ones, so they precess with them.
         let needsPrecession = object.kind == .star || object.kind == .deepSky
+            || object.kind == .constellation
         let equatorial = needsPrecession
             ? Precession.precess(object.equatorial, julianDay: julianDay)
             : object.equatorial
