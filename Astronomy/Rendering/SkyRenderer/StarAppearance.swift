@@ -215,6 +215,9 @@ enum StarAppearance {
         case "saturn":  return 60_268.0
         case "uranus":  return 25_559.0
         case "neptune": return 24_764.0
+        // IAU/New Horizons mean radius. Kept for completeness; at 30+ AU the
+        // marker floor dominates at every field of view.
+        case "pluto":   return 1_188.3
         default:        return nil
         }
     }
@@ -258,6 +261,10 @@ enum StarAppearance {
         case .sun: return 300
         case .moon: return 340
         case .planet: return 260
+        // Pluto's true disk is about 0.1 arcsec across — it never resolves at
+        // any field of view this app allows, so the ceiling only has to be
+        // clear of the marker floor.
+        case .dwarfPlanet: return 40
         case .star: return 13
         // Metal caps point sizes at 511 on current Apple GPUs; 500 leaves
         // headroom while still letting a zoomed-in M31 fill the view.
@@ -289,6 +296,10 @@ enum StarAppearance {
         // the way in would blunt the smooth-max blend and stop the true angular
         // size dominating cleanly at high zoom.
         case .planet: return max(6.0, min(11.0, byMagnitude))
+        // A deliberately small marker: a dwarf planet is a point of light far
+        // below the naked-eye limit, and it should read as one when revealed
+        // by selection rather than as another planet.
+        case .dwarfPlanet: return 5.0
         case .star: return byMagnitude
         case .deepSky: return deepSkyMinimumSize
         case .satellite: return satelliteMarkerSize

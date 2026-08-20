@@ -10,6 +10,13 @@ import Foundation
 
 enum CelestialObjectKind: String, Codable {
     case star, sun, moon, planet, deepSky
+    /// Dwarf planets (currently Pluto). Rendered like a planet, but *not*
+    /// exempt from the limiting-magnitude cutoff the way the major planets
+    /// are: at magnitude ~14 Pluto is a hundred times fainter than the
+    /// naked-eye limit, and drawing it unconditionally would be a lie about
+    /// what is in the sky. It is still searchable and selectable, and
+    /// selecting it reveals it — see `SkyGeometryBuilder.buildSolarSystem`.
+    case dwarfPlanet
     /// Artificial satellites. Unlike everything else in this enum these are
     /// *near*: their apparent position depends on where the observer stands,
     /// not just when they look, so they never travel the RA/Dec path the other

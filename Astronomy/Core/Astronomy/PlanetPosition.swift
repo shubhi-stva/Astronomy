@@ -17,13 +17,30 @@
 import Foundation
 import simd
 
+/// The bodies carried by the JPL Keplerian element table (Earth is handled
+/// separately below, as the Earth-Moon barycentre).
+///
+/// Pluto is in the table as its ninth row and is included here for that
+/// reason: it is the same source, fitted the same way, so its provenance is
+/// consistent with everything else in this file. Two caveats belong with it:
+/// it is the **least accurate** row in the table (a highly inclined,
+/// eccentric orbit fitted by a purely two-body Keplerian solution, so the
+/// residual is degrees rather than the few arcminutes the inner planets
+/// enjoy), and the 1800-2050 validity window matters far more for it — one
+/// Pluto orbit is 248 years, so the window is barely a single revolution and
+/// the linear element rates have no long baseline to be right over.
 enum Planet: String, CaseIterable, Identifiable {
-    case mercury, venus, mars, jupiter, saturn, uranus, neptune
+    case mercury, venus, mars, jupiter, saturn, uranus, neptune, pluto
     var id: String { rawValue }
 
     var displayName: String {
         rawValue.capitalized
     }
+
+    /// Pluto is a dwarf planet (IAU 2006 resolution B5), not a major planet.
+    /// It rides in this enum because it rides in the same element table; it is
+    /// classified honestly everywhere it is shown.
+    var isDwarfPlanet: Bool { self == .pluto }
 }
 
 /// Mean orbital elements at J2000.0 and their rates per Julian century.
@@ -93,6 +110,18 @@ private let elementsTable: [Planet: OrbitalElements] = [
         l0: -55.12002969, lDot: 218.45945325,
         peri0: 44.96476227, periDot: -0.32241464,
         node0: 131.78422574, nodeDot: -0.00508664
+    ),
+    // Ninth row of the same JPL table, valid 1800-2050. See the note on
+    // `Planet` above: this is the least accurate entry in the set, and the
+    // validity window is the binding constraint for it in a way it is not for
+    // Mercury.
+    .pluto: OrbitalElements(
+        a0: 39.48211675, aDot: -0.00031596,
+        e0: 0.24882730, eDot: 0.00005170,
+        i0: 17.14001206, iDot: 0.00004818,
+        l0: 238.92903833, lDot: 145.20780515,
+        peri0: 224.06891629, periDot: -0.04062942,
+        node0: 110.30393684, nodeDot: -0.01183482
     ),
 ]
 

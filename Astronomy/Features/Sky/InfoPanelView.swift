@@ -57,6 +57,7 @@ struct InfoPanelView: View {
         case .sun: return "Sun"
         case .moon: return "Moon"
         case .planet: return "Planet"
+        case .dwarfPlanet: return "Dwarf Planet"
         case .deepSky: return object.deepSkyType?.displayName ?? "Deep-Sky Object"
         case .satellite: return object.satelliteDetails?.regime.displayName ?? "Satellite"
         }

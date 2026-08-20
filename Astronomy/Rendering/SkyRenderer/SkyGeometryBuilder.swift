@@ -1044,10 +1044,31 @@ struct SkyGeometryBuilder {
             // The terrain dimming is folded in on top: a planet below the
             // skyline is still drawn at its true position, just dimmer, to
             // match the dimmed sky it now sits against.
+            //
+            // Dwarf planets are the one exception to that exemption. Pluto at
+            // magnitude 14 is roughly 1,500 times fainter than the naked-eye
+            // limit, and drawing it alongside Jupiter would misrepresent the
+            // sky. It goes through the same `StarAppearance.visibility` cutoff
+            // a star of its magnitude would, so it is absent from the
+            // naked-eye view — *unless it is selected*, which is what makes
+            // searching for it useful. Search hands the camera a real position
+            // and selects the object, and selection is what marks it: the
+            // sprite is forced visible and the selection ring (below) draws
+            // around it, so "search Pluto" ends with a marked point at Pluto's
+            // true place rather than an empty patch of sky.
+            let isSelected = frameData.selectedObjectID == object.id
             let visibility: Double
             switch object.kind {
             case .sun, .moon:
                 visibility = shaded.dimming
+            case .dwarfPlanet:
+                let magnitudeVisibility = isSelected ? 1.0 : StarAppearance.visibility(
+                    magnitude: object.magnitude,
+                    fieldOfViewDegrees: fov,
+                    sunAltitudeDegrees: sunAltitude
+                )
+                guard magnitudeVisibility > 0.001 else { continue }
+                visibility = magnitudeVisibility * shaded.dimming
             default:
                 visibility = SkyBrightness.starContrast(sunAltitudeDegrees: sunAltitude) * shaded.dimming
             }
@@ -1114,7 +1135,7 @@ struct SkyGeometryBuilder {
                     )
                 )
 
-            case .planet:
+            case .planet, .dwarfPlanet:
                 var color = StarAppearance.planetColor(id: object.id)
                 color.w = alpha
                 var glowColor = color
@@ -1164,11 +1185,10 @@ struct SkyGeometryBuilder {
 
             projectedObjects.append(ProjectedObject(object: object, ndcPosition: ndc))
 
-            let isSelected = frameData.selectedObjectID == object.id
             let priority: LabelPriority
             if isSelected {
                 priority = .selected
-            } else if object.kind == .planet {
+            } else if object.kind == .planet || object.kind == .dwarfPlanet {
                 priority = .planet
             } else {
                 priority = .luminary
@@ -1213,7 +1233,7 @@ struct SkyGeometryBuilder {
 
         let baseSize: Float
         switch projected.object.kind {
-        case .sun, .moon, .planet:
+        case .sun, .moon, .planet, .dwarfPlanet:
             // Ring tracks the actual drawn disk, so selecting a zoomed-in
             // planet rings the planet rather than sitting inside it.
             baseSize = StarAppearance.solarSystemPointSize(

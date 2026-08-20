@@ -52,8 +52,8 @@ enum EphemerisService {
         min(max(date, validDateRange.lowerBound), validDateRange.upperBound)
     }
 
-    /// Computes the current positions of the Sun, Moon, and all seven other
-    /// major planets for the given Julian Day.
+    /// Computes the current positions of the Sun, Moon, the seven other major
+    /// planets and Pluto for the given Julian Day.
     static func solarSystemObjects(julianDay jd: Double) -> [CelestialObject] {
         var objects: [CelestialObject] = []
 
@@ -85,7 +85,7 @@ enum EphemerisService {
             objects.append(CelestialObject(
                 id: planet.rawValue,
                 name: planet.displayName,
-                kind: .planet,
+                kind: planet.isDwarfPlanet ? .dwarfPlanet : .planet,
                 equatorial: state.equatorial,
                 magnitude: approximateMagnitude(for: planet),
                 distanceKilometres: state.geocentricDistanceAU
@@ -108,6 +108,10 @@ enum EphemerisService {
         case .saturn: return 0.5
         case .uranus: return 5.7
         case .neptune: return 7.8
+        // Pluto ranges roughly 13.7-16.3 over its orbit; ~14.4 is where it
+        // sits in the 2020s. Far below any naked-eye limit, which is exactly
+        // why it is classified `.dwarfPlanet` and left subject to the cutoff.
+        case .pluto: return 14.4
         }
     }
 }

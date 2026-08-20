@@ -99,6 +99,49 @@ precomputed ephemeris data.
   **no planetary perturbations**, valid for roughly 1800-2050 with
   accuracy on the order of a few arcminutes for the inner planets and
   somewhat worse (tens of arcminutes) for the outer planets.
+- **Pluto** (same file, same table): the JPL table has a **ninth row** for
+  Pluto, valid over the same 1800-2050 span, and that is where Pluto's
+  elements come from — deliberately the same source as everything else here,
+  so the provenance stays consistent rather than mixing a second ephemeris in.
+  Two caveats belong with it:
+  - It is the **least accurate row in the table**. A steeply inclined (17°),
+    eccentric (e = 0.249) orbit modelled by a pure two-body Keplerian solution
+    with no perturbations is the hardest case in the set.
+  - The **1800-2050 validity window matters far more for Pluto** than for the
+    inner planets. Pluto's period is 248 years, so the window covers barely
+    one revolution; the linear element rates have almost no baseline to be
+    right over, and the residual grows toward the ends of the window rather
+    than staying flat the way Mercury's does. The app clamps the time machine
+    to that window anyway (below), which is what keeps this honest.
+
+  Measured residual against **JPL Horizons** (target `999`, centre `500@399`,
+  `QUANTITIES=2`, i.e. apparent airless RA/Dec of date) for 2026-Jan-01
+  00:00 UTC: **0.0050°, about 18 arcseconds** — see
+  `AstronomyTests/PlutoTests.swift`, which pins this.
+
+  Pluto is classified `CelestialObjectKind.dwarfPlanet`, not `.planet`, and
+  that distinction is load-bearing at render time. The major planets are
+  **exempt** from the limiting-magnitude cutoff (a planetarium has to be able
+  to answer "where is Neptune"); Pluto, at magnitude ~14.4, is **not** — it
+  goes through the same `StarAppearance.visibility` cutoff a star of that
+  magnitude would, so it is correctly absent from the naked-eye sky at every
+  field of view and every sky brightness. It is still fully searchable and
+  selectable, and **selection reveals it**: a selected dwarf planet is drawn
+  at full strength with the selection ring around it, so searching "Pluto"
+  ends on a marked point at Pluto's true place rather than an empty patch of
+  sky.
+
+### Other dwarf planets — deliberately **not** included
+
+Ceres, Eris, Makemake, Haumea and the rest are **not in the JPL major-planet
+Keplerian table**, and no elements for them are bundled or invented. Adding
+them properly means a second, separately-documented source — JPL Small-Body
+Database or MPC osculating elements — which also means osculating elements
+with a stated epoch rather than the mean-elements-plus-secular-rates form this
+file is built around, and (for Ceres in the main belt) perturbation handling
+this two-body solver does not have. Rather than fabricate an element row, they
+are left out. Pluto is included because, and only because, it is in the source
+this app already uses.
 
 ### Accuracy caveats
 
@@ -350,6 +393,9 @@ carried in each sample, before any trigonometry.
 ## Planetary radii — `StarAppearance.angularDiameterDegrees`
 
 - **Source**: NASA/GSFC Planetary Fact Sheets (mean equatorial radii, in km).
+  Pluto's 1188.3 km is the IAU value from the New Horizons flyby. It is
+  carried for completeness only: at 30+ AU Pluto's disk is about 0.1", far
+  below any field of view the app offers, so the marker floor always wins.
 - **Use**: apparent angular diameter is computed as `2·atan(r / d)` where `d`
   is the geocentric distance from the ephemeris, so disks grow and shrink
   correctly as a planet approaches or recedes. A documented
