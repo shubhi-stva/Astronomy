@@ -31,7 +31,29 @@ final class Camera {
     /// aspect ratio at projection time.
     private(set) var fieldOfViewDegrees: Double
 
-    static let minFieldOfView = 3.0
+    /// The tightest field the camera will zoom to.
+    ///
+    /// This was 3 degrees, and at 3 degrees **no planet could ever resolve**.
+    /// Mars at its closest opposition subtends 25 arcseconds; across a
+    /// 1600-point viewport at a 3-degree field that is three and a half points
+    /// — a marker, not a disk. Jupiter reached seven. So the surface maps, the
+    /// procedural bands and Saturn's rings were all sitting behind a zoom limit
+    /// that could not be reached, and `StarAppearance.detailLevel` (which needs
+    /// 16 points to begin and 52 to finish) never left zero for anything but
+    /// the Moon.
+    ///
+    /// 0.15 degrees — nine arcminutes — puts Mars at opposition at about 70
+    /// points and Jupiter at nearly 150, which is where a disk genuinely reads
+    /// as a disk. It is also a normal limit for a desktop planetarium; the
+    /// binding constraint on this app is not the projection but the resolution
+    /// of what it has to draw.
+    ///
+    /// Nothing else needs adjusting to suit it. `limitingMagnitude` and the
+    /// shader's zoom darkening both clamp at their narrow ends, so they simply
+    /// hold their tightest values below 3 degrees, which is what they should do
+    /// — the star catalogue bottoms out at magnitude 9 and no amount of further
+    /// zoom adds a star.
+    static let minFieldOfView = 0.15
     static let maxFieldOfView = 150.0
 
     // MARK: - Momentum state

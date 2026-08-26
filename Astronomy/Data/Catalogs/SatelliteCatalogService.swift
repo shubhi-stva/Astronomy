@@ -95,6 +95,30 @@ actor SatelliteCatalogService {
         ),
     ]
 
+    /// Base URL of the per-object lookup used when every bulk source is
+    /// unreachable. Appending a catalogue number returns that one object's
+    /// current element set as JSON.
+    ///
+    /// This is a **targeted** source and is deliberately never used in bulk.
+    /// The same service can serve the whole catalogue, but only 100 objects per
+    /// request — 257 requests — which is far too rude for something that runs on
+    /// a timer. One request per notable object, only when the bulk sources have
+    /// already failed, is a reasonable thing to ask of a free mirror.
+    ///
+    /// It is a third-party mirror of Space-Track's public-domain US Government
+    /// element sets, not an authority in its own right. See DATA_SOURCES.md.
+    static let targetedSourceName = "TLE API (ivanstanojevic.me)"
+    static let targetedSourceBaseURL = URL(string: "https://tle.ivanstanojevic.me/api/tle/")!
+
+    /// Ceiling on how many objects one targeted sweep may request, so this can
+    /// never quietly grow into a bulk download. The notable list is 19 objects;
+    /// the selected satellite may add one more.
+    static let maximumTargetedRequests = 40
+
+    /// Pause between targeted requests. Twenty per sweep at this spacing is
+    /// about eight seconds of traffic, once, after a bulk failure.
+    static let targetedRequestInterval: TimeInterval = 0.4
+
     /// These services ask clients not to poll aggressively and to identify
     /// themselves. Both are honoured: this User-Agent is descriptive, and
     /// `minimumRefreshInterval` is a hard floor of one day between *successful*
@@ -300,13 +324,178 @@ actor SatelliteCatalogService {
             }
         }
 
+        // Every bulk source is unreachable. Rather than leave the whole
+        // catalogue to age, spend a handful of requests keeping the objects a
+        // user is actually likely to look at current. This is the difference
+        // between "the ISS is a kilometre off" and "the ISS is thirty
+        // kilometres off" during a long CelesTrak outage.
+        let targeted = await refreshTargeted(catalogNumbers: Self.targetedCatalogNumbers())
+
         consecutiveFailures += 1
         refreshStatus.consecutiveFailures = consecutiveFailures
         lastRefreshError = failures.first ?? "no element-set source could be reached"
         Self.logger.notice(
             "Satellite refresh failed, keeping existing elements: \(failures.joined(separator: "; "))"
         )
-        return false
+        // The bulk failure is still recorded above — the catalogue as a whole
+        // *is* going stale and the UI must keep saying so. `true` here only
+        // means the supplement on disk changed, so the caller reloads.
+        return targeted
+    }
+
+    /// Which objects a targeted sweep covers: the curated notable list, plus
+    /// whatever the user currently has selected.
+    private static func targetedCatalogNumbers() -> [Int] {
+        Array(Satellite.notableCatalogNumbers.sorted().prefix(maximumTargetedRequests))
+    }
+
+    /// Fetches a few named objects one at a time and folds them into the
+    /// supplement file.
+    ///
+    /// Merged, never written over the top: the supplement may already hold
+    /// SatNOGS or AMSAT elements for objects this sweep does not cover, and
+    /// `overlay` keeps whichever set is newer for each object. Returns true
+    /// when the file on disk actually changed.
+    ///
+    /// Stops early and quietly on the first non-200 response. A mirror that
+    /// starts refusing requests is telling us to go away, and the correct
+    /// response is to go away rather than to finish the loop.
+    @discardableResult
+    func refreshTargeted(catalogNumbers: [Int]) async -> Bool {
+        guard let destination = Self.supplementFileURL, !catalogNumbers.isEmpty else { return false }
+
+        var fetched: [String] = []
+        for (index, number) in catalogNumbers.prefix(Self.maximumTargetedRequests).enumerated() {
+            if index > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(Self.targetedRequestInterval * 1_000_000_000))
+            }
+            guard let text = try? await fetchTargeted(catalogNumber: number) else { break }
+            fetched.append(text)
+        }
+        guard !fetched.isEmpty else { return false }
+
+        let existingText = (try? String(contentsOf: destination, encoding: .utf8)) ?? ""
+        let text = Self.mergeElementSetText(
+            supplement: fetched.joined(), onto: existingText
+        )
+        do {
+            try FileManager.default.createDirectory(
+                at: destination.deletingLastPathComponent(), withIntermediateDirectories: true
+            )
+            let existing = try? String(contentsOf: destination, encoding: .utf8)
+            guard existing != text else { return false }
+            try Data(text.utf8).write(to: destination, options: .atomic)
+        } catch {
+            return false
+        }
+
+        refreshStatus.lastSuccess = Date()
+        refreshStatus.lastSuccessfulSource = Self.targetedSourceName
+        Self.logger.info(
+            "Targeted refresh updated \(fetched.count) notable element sets from \(Self.targetedSourceName)"
+        )
+        return true
+    }
+
+    /// One object's element set, as three-line TLE text.
+    private func fetchTargeted(catalogNumber: Int) async throws -> String {
+        let url = Self.targetedSourceBaseURL.appendingPathComponent(String(catalogNumber))
+        var request = URLRequest(url: url)
+        request.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
+        request.timeoutInterval = 20
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            throw RefreshError.unexpectedResponse
+        }
+        return try Self.tleText(fromTargetedJSON: data)
+    }
+
+    /// The lookup serves a single object as
+    /// `{"satelliteId": 25544, "name": "ISS (ZARYA)", "line1": "1 …", "line2": "2 …"}`.
+    static func tleText(fromTargetedJSON data: Data) throws -> String {
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let line1 = object["line1"] as? String,
+              let line2 = object["line2"] as? String else {
+            throw RefreshError.undecodableResponse
+        }
+        let name = (object["name"] as? String)?.trimmingCharacters(in: .whitespaces) ?? ""
+        return "\(name)\n\(line1)\n\(line2)\n"
+    }
+
+    /// Merges one element-set *file* over another, newest-epoch-wins.
+    ///
+    /// Exactly the rule `overlay` applies, but carried out on the raw
+    /// three-line text rather than on parsed `TwoLineElement` values.
+    ///
+    /// Text, because `TwoLineElement` keeps the *decoded* fields and not the
+    /// lines it decoded them from, so a parse/re-emit round trip would have to
+    /// reconstruct — and re-checksum — every record. Rewriting element sets
+    /// from our own formatter is a great way to introduce a subtle field-width
+    /// bug into the one thing in this app that has to be byte-exact. The lines
+    /// arrive from the source correct; they are stored exactly as they arrived.
+    ///
+    /// `TwoLineElement.parse` is still used, but only to *read* the catalogue
+    /// number and epoch that decide which record wins.
+    static func mergeElementSetText(supplement: String, onto base: String) -> String {
+        /// One record as it appeared: name line, line 1, line 2.
+        struct Record {
+            var lines: [String]
+            var epochJulianDay: Double
+        }
+
+        func records(in text: String) -> [(number: Int, record: Record)] {
+            var out: [(Int, Record)] = []
+            var pendingName: String?
+            var pendingLine1: String?
+            text.enumerateLines { rawLine, _ in
+                let line = rawLine.hasSuffix("\r") ? String(rawLine.dropLast()) : rawLine
+                if line.hasPrefix("1 ") {
+                    pendingLine1 = line
+                } else if line.hasPrefix("2 "), let line1 = pendingLine1 {
+                    if let element = TwoLineElement.parse(
+                        name: pendingName, line1: line1, line2: line
+                    ) {
+                        out.append((
+                            element.catalogNumber,
+                            Record(
+                                lines: [pendingName ?? element.name, line1, line],
+                                epochJulianDay: element.epochJulianDay
+                            )
+                        ))
+                    }
+                    pendingLine1 = nil
+                    pendingName = nil
+                } else {
+                    pendingName = line.trimmingCharacters(in: .whitespaces)
+                }
+            }
+            return out
+        }
+
+        var order: [Int] = []
+        var byNumber: [Int: Record] = [:]
+        for (number, record) in records(in: base) {
+            if byNumber[number] == nil { order.append(number) }
+            byNumber[number] = record
+        }
+        for (number, record) in records(in: supplement) {
+            if let existing = byNumber[number] {
+                if record.epochJulianDay > existing.epochJulianDay {
+                    byNumber[number] = record
+                }
+            } else {
+                order.append(number)
+                byNumber[number] = record
+            }
+        }
+
+        var lines: [String] = []
+        lines.reserveCapacity(order.count * 3)
+        for number in order {
+            guard let record = byNumber[number] else { continue }
+            lines.append(contentsOf: record.lines)
+        }
+        return lines.isEmpty ? "" : lines.joined(separator: "\n") + "\n"
     }
 
     /// One source's body, already converted to TLE text.
