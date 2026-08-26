@@ -71,6 +71,29 @@ struct SatelliteControlView: View {
                         .foregroundStyle(SkyPalette.chromeSecondaryText.opacity(0.75))
                         .padding(.top, 6)
                         .fixedSize(horizontal: false, vertical: true)
+
+                    // Element staleness, stated rather than implied. Drawn
+                    // positions degrade gradually as elements age; the user is
+                    // told how far along that curve they are instead of being
+                    // left to trust a marker that may be degrees out.
+                    if let staleness = stalenessText {
+                        Text(staleness)
+                            .font(.system(size: 9))
+                            .foregroundStyle(stalenessColor)
+                            .padding(.top, 4)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    // A refresh that keeps failing used to be visible only in
+                    // the system log, which is exactly how the app came to run
+                    // for weeks on elements it shipped with.
+                    if let failure = refreshFailureText {
+                        Text(failure)
+                            .font(.system(size: 9))
+                            .foregroundStyle(SkyPalette.chromeSecondaryText.opacity(0.75))
+                            .padding(.top, 4)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
             .frame(width: isExpanded ? 190 : 16)
@@ -89,10 +112,36 @@ struct SatelliteControlView: View {
         // are only meaningful within a few days of their epoch, so beyond that
         // the layer suppresses itself and says so rather than reporting a
         // number that describes nothing. See `SatelliteAccuracy`.
-        if viewModel.satelliteElementsAreOutOfDate {
+        if viewModel.satellitesSuppressedBySimulatedTime {
             let days = Int(SatelliteAccuracy.maximumElementSetAgeDays)
             return "Hidden at this time: orbital elements are only valid within ±\(days) days of their epoch."
         }
         return "\(viewModel.visibleSatelliteCount) visible of \(tracked.formatted()) tracked"
+    }
+
+    /// "Elements 7.7 days old — positions unreliable…". Absent while the
+    /// elements are fresh, because then there is nothing to say, and absent
+    /// while the layer is suppressed, because then `statusText` has already
+    /// said the stronger thing.
+    private var stalenessText: String? {
+        guard !viewModel.satelliteDescriptors.isEmpty,
+              !viewModel.satellitesSuppressedBySimulatedTime,
+              let caveat = viewModel.satelliteStaleness.caveat else { return nil }
+        let age = viewModel.satelliteElementAgeDays
+        return String(format: "Elements %.1f days old. %@", age, caveat)
+    }
+
+    private var stalenessColor: Color {
+        viewModel.satelliteStaleness == .unreliable
+            ? SkyPalette.warningAmber
+            : SkyPalette.chromeSecondaryText.opacity(0.85)
+    }
+
+    /// Only shown once the app has actually failed to fetch, and phrased as
+    /// what it is: the app is still showing what it already had.
+    private var refreshFailureText: String? {
+        let status = viewModel.satelliteRefreshStatus
+        guard status.isFailing else { return nil }
+        return "Could not fetch newer element sets (\(status.consecutiveFailures) attempt\(status.consecutiveFailures == 1 ? "" : "s")). Still using the elements above; retrying."
     }
 }

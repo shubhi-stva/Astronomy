@@ -90,6 +90,19 @@ struct InfoPanelView: View {
         infoRow("Azimuth", String(format: "%.2f°", satellite.horizontal.azimuthDegrees))
         infoRow("Sunlight", illuminationText(satellite.illumination))
         infoRow("Element set", elementAgeText(satellite.elementSetAgeDays))
+        // What that age means for the numbers directly above it. A position
+        // from week-old elements is still worth drawing; presenting it with the
+        // same confidence as an hour-old one would not be.
+        if let caveat = SatelliteAccuracy.staleness(ageDays: satellite.elementSetAgeDays).caveat {
+            Text(caveat)
+                .font(.system(size: 9))
+                .foregroundStyle(
+                    SatelliteAccuracy.staleness(ageDays: satellite.elementSetAgeDays) == .unreliable
+                        ? SkyPalette.warningAmber
+                        : SkyPalette.chromeSecondaryText
+                )
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     private func illuminationText(_ illumination: TopocentricTransform.Illumination) -> String {
@@ -101,9 +114,16 @@ struct InfoPanelView: View {
     }
 
     private func elementAgeText(_ days: Double) -> String {
-        if days < 0 { return String(format: "%.1f days ahead", -days) }
-        if days < 1 { return String(format: "%.0f hours old", days * 24) }
-        return String(format: "%.1f days old", days)
+        let age: String
+        if days < 0 {
+            age = String(format: "%.1f days ahead", -days)
+        } else if days < 1 {
+            age = String(format: "%.0f hours old", days * 24)
+        } else {
+            age = String(format: "%.1f days old", days)
+        }
+        guard let qualifier = SatelliteAccuracy.staleness(ageDays: days).shortLabel else { return age }
+        return "\(age) — \(qualifier)"
     }
 
     /// Angular extent in arcminutes, "major x minor" when both are known.

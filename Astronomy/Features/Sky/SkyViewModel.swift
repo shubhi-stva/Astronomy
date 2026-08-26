@@ -182,13 +182,30 @@ final class SkyViewModel {
     /// the elements?" — is about the catalogue as a whole.
     private var medianElementEpochJulianDay: Double = 0
 
-    /// True when the displayed instant is far enough from the element sets that
-    /// the satellite layer has suppressed itself. See `SatelliteAccuracy`.
-    var satelliteElementsAreOutOfDate: Bool {
+    /// True when the *time machine* has been scrubbed far enough from both real
+    /// time and the element epochs that the satellite layer suppresses itself.
+    ///
+    /// This is the only case in which satellites are hidden. Aging elements at
+    /// real time are drawn and labelled instead — see `satelliteStaleness`.
+    var satellitesSuppressedBySimulatedTime: Bool {
         guard medianElementEpochJulianDay > 0, !satelliteDescriptors.isEmpty else { return false }
-        return !SatelliteAccuracy.isReliable(
-            julianDay: time.julianDay, epochJulianDay: medianElementEpochJulianDay
+        return !SatelliteAccuracy.isDrawable(
+            julianDay: time.julianDay,
+            nowJulianDay: JulianDate.julianDay(from: Date()),
+            epochJulianDay: medianElementEpochJulianDay
         )
+    }
+
+    /// Age in days of the catalogue's median element set at the displayed
+    /// instant. The number the staleness wording is built from.
+    var satelliteElementAgeDays: Double {
+        guard medianElementEpochJulianDay > 0 else { return 0 }
+        return time.julianDay - medianElementEpochJulianDay
+    }
+
+    /// How much the drawn satellite positions can be trusted right now.
+    var satelliteStaleness: ElementSetStaleness {
+        SatelliteAccuracy.staleness(ageDays: satelliteElementAgeDays)
     }
 
     /// The one honest sentence to put under the time bar about what on screen
@@ -201,11 +218,13 @@ final class SkyViewModel {
     /// proper motion is missing, and that stays sub-pixel for centuries).
     var timeAccuracyCaveat: String? {
         var notes: [String] = []
-        if satellitesEnabled && satelliteElementsAreOutOfDate {
+        if satellitesEnabled && satellitesSuppressedBySimulatedTime {
             let days = Int(SatelliteAccuracy.maximumElementSetAgeDays)
             notes.append(
                 "Satellites hidden: orbital element sets are only meaningful within about \(days) days of their epoch, so positions at this time would be meaningless rather than merely imprecise."
             )
+        } else if satellitesEnabled, let caveat = satelliteStaleness.caveat {
+            notes.append("Satellite elements are \(satelliteElementAgeDays.formatted(.number.precision(.fractionLength(1)))) days old. \(caveat)")
         }
         let year = Calendar.current.component(.year, from: time.currentDate)
         if !EphemerisService.validYearRange.contains(year) {
