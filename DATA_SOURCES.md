@@ -570,6 +570,185 @@ carried in each sample, before any trigonometry.
   image is loaded without sRGB decoding, which is a deliberate simplification —
   the layer is a subtle additive wash, not a colour-managed reproduction.
 
+## Planetary surface maps — `Rendering/Resources/*_map.jpg`
+
+Three bodies carry a real photographic/cartographic surface map, sampled in the
+point-sprite fragment shader and faded in with zoom. **Every bundled image is a
+US Government work and is not subject to copyright in the United States.** The
+licence of each was checked on its own hosting page rather than assumed —
+"NASA" is not by itself a licence, since NASA hosts some third-party
+copyrighted imagery.
+
+### Mars — `mars_map.jpg`
+
+- **Source page**: <https://astrogeology.usgs.gov/search/map/mars_viking_colorized_global_mosaic_232m>
+  ("Mars Viking Colorized Global Mosaic 232m", MDIM 2.1), USGS Astrogeology
+  Science Center, Astropedia. Downloaded from that page's 1024-pixel sample.
+- **Credit**: U.S. Geological Survey / Department of the Interior; originator
+  NASA Ames Research Center; derived from Viking Orbiter imagery.
+- **Terms**: the Astropedia product page carries no per-product licence text.
+  The governing statement is the USGS copyright policy at
+  <https://www.usgs.gov/information-policies-and-instructions/copyrights-and-credits>:
+  *"USGS-authored or produced data and information are considered to be in the
+  U.S. Public Domain."* The same page notes that not all content on USGS sites
+  is public domain and asks for the credit line
+  *"Credit: U.S. Geological Survey / Department of the Interior/USGS."* The
+  originator here is a NASA centre, so both halves are US Government work.
+- **Projection**: Simple Cylindrical (equirectangular), planetocentric
+  latitude, **+East longitude, -180 to +180**.
+
+### Jupiter — `jupiter_map.jpg`
+
+- **Source page**: <https://science.nasa.gov/photojournal/cassinis-best-maps-of-jupiter-cylindrical-map/>
+  (PIA07782), NASA Photojournal.
+- **Credit**: NASA / JPL / Space Science Institute. Assembled from Cassini
+  narrow-angle camera images taken during the 2000 Jupiter flyby.
+- **Terms**: the individual page states no licence. The governing NASA media
+  policy at <https://www.nasa.gov/nasa-brand-center/images-and-media/> says
+  NASA content — explicitly including *"texture maps and polygon data in any
+  format"* — *"generally are not subject to copyright in the United States"*,
+  and that third-party material *"will be marked identified as copyright
+  protected with the name of the copyright holder."* PIA07782 carries no such
+  mark. This is a site-wide policy plus an absence of a copyright mark rather
+  than an explicit per-image grant, which is worth stating plainly.
+
+### Moon — `moon_map.jpg`
+
+- **Source page**: <https://svs.gsfc.nasa.gov/4720/> ("CGI Moon Kit"), NASA's
+  Scientific Visualization Studio. File `lroc_color_2k.jpg`.
+- **Credit**: NASA's Scientific Visualization Studio (visualiser Ernie Wright,
+  USRA; scientist Noah Petro, NASA/GSFC), from the LROC Wide Angle Camera
+  Hapke-normalised colour mosaic.
+- **Terms**: this is the most explicit of the three. The SVS usage page
+  <https://svs.gsfc.nasa.gov/help/> states: *"All of our content is in the
+  public domain (unless otherwise noted), meaning that it is free to download,
+  use, and redistribute for whatever purposes you see fit."* The page's only
+  carve-out concerns licensed **music** in some visualisations; item 4720
+  carries no such note.
+
+### Sizes, and why these three and no others
+
+- Every map is resampled (Lanczos) to **1024 x 512** and saved as JPEG at
+  quality 88. Total added to the bundle: **338 KB** — Mars 123 KB, Moon 120 KB,
+  Jupiter 95 KB.
+- 1024 x 512 is sized against the *renderer*, not the source. A planet's
+  rendered disk is capped at 260 points (`StarAppearance.maximumPointSize`), it
+  shows one hemisphere, and a hemisphere is half the map's width — so 512
+  texels across roughly 520 backing pixels on a Retina display is close to one
+  texel per pixel at maximum zoom. The full USGS Mars product is 92,160 pixels
+  wide and 12 GB; none of that detail is reachable here.
+- **Venus and the ice giants are deliberately untextured.** They are featureless
+  in visible light. The only public-domain Venus mosaic is Magellan's *radar*
+  topography, synthetically colourised — painting that on the disk would show
+  the user a surface no telescope can see, which is worse than showing nothing.
+- **Mercury is deliberately untextured.** Its only public-domain global mosaic
+  (MESSENGER MDIS) is *enhanced* colour, which is intentionally false colour
+  and would render Mercury blue and tan.
+- **Saturn is deliberately untextured.** No public-domain global colour map of
+  Saturn could be verified. It keeps its procedural golden disk and rings.
+- Creative-Commons-licensed texture packs (notably Solar System Scope, CC BY
+  4.0) would have covered all of these. They were not used: they carry an
+  attribution obligation this app has no acknowledgements pane to discharge,
+  and their own page notes that gaps in the source data are *"filled with
+  fictional terrain"* — which is precisely the thing that must not be presented
+  as a planet's real appearance.
+
+### How the map is applied — and what is and is not accurate
+
+- The disk sprite is treated as the orthographic projection of the visible
+  hemisphere. The shader lifts each sprite pixel back onto the sphere, reads
+  latitude and longitude in the body's own frame, and samples the
+  equirectangular map (`surfaceModulation` in `Shaders.metal`).
+- The map is applied as a **modulation of the flat tint**, not as a replacement
+  for it: the sample is divided by the map's measured mean colour, so it
+  contributes structure and local colour departure while the app's palette
+  keeps control of the body's overall hue. Two consequences worth stating: Mars
+  cannot be dragged toward a garish red by the texture, and at zero detail the
+  modulation mixes out to *exactly* the previous flat-disk appearance, so the
+  fade-in is continuous by construction.
+- It is faded in by the existing `StarAppearance.detailLevel` ramp (zero below
+  16 points across, full at 52), so a wide field is a clean tinted dot and no
+  detail ever pops into existence.
+- **Orientation is computed, not assumed.** `Core/Astronomy/PlanetaryOrientation.swift`
+  derives the sub-Earth longitude and latitude and the pole direction from
+  published rotation elements, so the hemisphere facing you is the real one and
+  Mars's polar cap tips toward and away from Earth with its seasons. Source:
+
+  > Archinal, B. A., Acton, C. H., A'Hearn, M. F., Conrad, A., Consolmagno,
+  > G. J., Duxbury, T., Hestroffer, D., Hilton, J. L., Kirk, R. L., Klioner,
+  > S. A., McCarthy, D., Meech, K., Oberst, J., Ping, J., Seidelmann, P. K.,
+  > Tholen, D. J., Thomas, P. C., and Williams, I. P. (2018), "Report of the
+  > IAU Working Group on Cartographic Coordinates and Rotational Elements:
+  > 2015", *Celestial Mechanics and Dynamical Astronomy* **130**, 22.
+  > DOI [10.1007/s10569-017-9805-5](https://doi.org/10.1007/s10569-017-9805-5).
+
+  Values cross-checked against NAIF's `pck00011.tpc`, which encodes that
+  report. Note these are the **2015** elements; older code and older kernels
+  carry a superseded 2009 set (Mars pole at 317.68143, 52.88650).
+- **Approximations, stated plainly:**
+  - Only the **linear** terms of each IAU expression are used — the pole's
+    secular drift and the uniform rotation of the prime meridian. The
+    trigonometric nutation terms are dropped; they are at the 0.001-degree
+    level for Mars and Jupiter, far below one pixel.
+  - For the **Moon** the dropped terms are the *physical* libration. The
+    **optical** libration — the +/- 8 degrees that actually reveals the limb
+    regions — is reproduced, because the sub-Earth point is computed from the
+    Moon's true geocentric direction rather than a mean one. Residual error is
+    a few hundredths of a degree. A test asserts the Moon keeps the same face
+    turned toward Earth over two months, which is the strongest available check
+    on the whole construction.
+  - **Jupiter's longitude origin is the weakest link.** The prime meridian used
+    is IAU **System III** (the magnetic field's rotation), which is the standard
+    reference — but Jupiter has no solid surface and its visible cloud features
+    drift relative to any fixed system by degrees per month. The Cassini map's
+    own longitude registration is also taken on trust. The **belts and zones are
+    at the right latitudes**; the longitude of the Great Red Spot should not be
+    treated as truthful.
+  - The IAU pole is J2000 and the ephemeris is of-date, so the pole is precessed
+    forward with the app's existing `Precession` before use rather than the two
+    frames being silently mixed.
+  - Light-time and aberration are not applied to the rotation phase. For Mars
+    that is at most about 20 minutes of light time, i.e. ~5 degrees of
+    longitude at closest approach — visible if you were measuring, not if you
+    are looking.
+  - **Not visually verified.** The shader's mapping was derived and reasoned
+    through but could not be seen running in this environment, so the
+    east/west handedness of the rendered disk in particular is unconfirmed by
+    eye.
+
+## Planet and star colours — `Rendering/SkyRenderer/StarAppearance.swift`
+
+- **Star colours** are derived from the HYG catalogue's B-V colour index
+  through a piecewise-linear ramp, deliberately pulled toward white because
+  colour vision is barely engaged at naked-eye star brightnesses. The ramp was
+  reviewed rather than rewritten; a test now pins the properties that make it
+  physical (red never falls and blue never rises as B-V increases, and neither
+  extreme reaches a saturated hue).
+- **Planet tints** are the bodies' real appearance rather than marker colours:
+  Mercury grey, Venus pale cream-white, **Mars a muted ochre (0.86, 0.59,
+  0.44)**, Jupiter warm tan, Saturn pale gold, Uranus pale cyan, Neptune a
+  deeper blue. Mars is the one worth calling out: its integrated colour is
+  closer to butterscotch or dried terracotta than to red, and
+  `StarAppearance.marsSaturationRange` pins the allowed saturation band so a
+  later edit cannot quietly turn it into a stoplight.
+
+## Glow / aura model — `StarAppearance.aura`
+
+Not a data source, but a modelling choice worth recording. The halo behind a
+solar-system body is derived from *measured* quantities — the body's apparent
+magnitude and the diameter it is actually being drawn at — rather than
+hard-coded per body, so Mars near opposition genuinely blooms more than Mars
+near conjunction, Venus always outshines everything, and Uranus and Neptune get
+no halo at all (a halo on a telescopic object would be a false claim about how
+it looks). The alpha is linear in magnitude, i.e. logarithmic in flux, with no
+constant term so it starts at exactly zero at the threshold; the size is a
+multiple of the disk smooth-minned against a bounded offset from it, so it stops
+growing rather than swallowing the frame; and every aura dissolves as the disk
+resolves — hardest for the Moon, whose terminator it must not wash out. The
+halo colour is the body's tint pulled part-way to white, since a halo covers far
+more pixels than the disk and drawing it at full saturation is what would turn a
+subtle ochre Mars into a red smear.
+
 ## Satellite element sets — `Astronomy/Data/Catalogs/satellites.txt`
 
 - **Source**: [CelesTrak](https://celestrak.org) GP element sets, the `active`
@@ -617,13 +796,65 @@ carried in each sample, before any trigonometry.
   written to `satellites-supplement.txt` and overlaid onto it by catalogue
   number, and only where their epoch is genuinely newer. Falling back therefore
   costs the user nothing.
-- **Snapshot bundled**: 16,225 element sets, 2.6 MB. The bulk of it was fetched
-  from CelesTrak on 2026-08-17; 1,277 objects were refreshed and 146 added from
-  SatNOGS and AMSAT on 2026-08-26 under the same newer-epoch-wins rule, because
-  CelesTrak was still unreachable. The ISS and the other commonly watched
-  objects are therefore current; the long tail that only CelesTrak publishes is
-  as old as the original fetch. Bundling it is what lets the app work with no
-  network at all, the same promise the star catalogue makes.
+- **Targeted fallback source — a third-party mirror**:
+  **[TLE API](https://tle.ivanstanojevic.me/), by Ivan Stanojevic**
+  (`https://tle.ivanstanojevic.me/api/tle/`). Added on 2026-08-26, when
+  CelesTrak had been unreachable from this machine for days (DNS resolved, TCP
+  to port 443 timed out, retried repeatedly with and without the app's
+  User-Agent) and the two existing fallbacks between them covered only about
+  1,400 of 16,000 objects.
+  - **What it is**: a *mirror*, not an authority. It republishes the same
+    Space-Track element sets as everything else here. The underlying orbital
+    data is a work of the US Government and is not subject to copyright in the
+    United States, which is the basis on which it is used. **The mirror itself
+    publishes no licence statement**, so — exactly as with CelesTrak above —
+    no licence is being claimed on its behalf. The credit to Ivan Stanojevic
+    is a courtesy.
+  - **How it is used at runtime**: only for **targeted, single-object lookup**
+    (`/api/tle/25544`), and only after every bulk source has failed. It *can*
+    serve the whole catalogue, but at 100 objects per request that is 257
+    requests, which is far too rude for something on a timer. Instead the app
+    spends at most 40 requests — the curated notable list — spaced 0.4 seconds
+    apart, so the objects a user is actually likely to look at stay current
+    through a long CelesTrak outage. `maximumTargetedRequests` exists
+    specifically so this can never drift into being a bulk download, and a test
+    asserts it. Results go into the same `satellites-supplement.txt` overlay,
+    under the same newer-epoch-wins rule.
+  - **How it was used once, offline**: the same API supplied the regenerated
+    bundled snapshot below. That was a deliberate one-off — 257 requests with a
+    descriptive User-Agent, a delay between each, retry on transient failure,
+    and an immediate stop on any rate-limit response.
+- **Snapshot bundled**: **16,348 element sets, 2.5 MB**, regenerated on
+  2026-08-26.
+  - **Provenance**: the full catalogue was pulled from the TLE API mirror above
+    (25,675 records covering 17,336 distinct objects — the API serves each
+    object's element-set *history*, so only the newest per catalogue number was
+    kept) and **merged into**, not substituted for, the existing snapshot,
+    newest-epoch-wins by catalogue number.
+  - **What the merge did**: 10,032 objects refreshed, 123 new objects added,
+    1,023 mirror records rejected as *older* than what was already bundled, and
+    **5,170 objects the mirror does not carry kept at their existing elements**
+    rather than dropped. Every record was validated before being written:
+    parses as a TLE, both line checksums correct, catalogue numbers agree
+    between the two lines, mean motion and eccentricity physically plausible,
+    and catalogue numbers unique across the file.
+  - **What was deliberately left out**: the mirror carries a long tail of
+    decayed and inactive objects whose element sets are years old (its worst is
+    over eighteen years). CelesTrak's `active` group excludes those on purpose,
+    and importing 6,158 of them would have filled the sky with satellites that
+    are not up there any more. Objects unknown to the existing snapshot were
+    therefore imported only if their elements were under 30 days old.
+  - **Epoch age, before and after** (measured against the build date):
+
+    | | objects | median | mean | p90 | max |
+    |---|---|---|---|---|---|
+    | before | 16,225 | 8.22 d | 7.71 d | 8.83 d | 31.1 d |
+    | after | 16,348 | **1.61 d** | 3.46 d | 8.48 d | 31.1 d |
+
+    The remaining tail is almost entirely the 5,170 objects only CelesTrak
+    publishes. The ISS is at 0.34 days.
+  - Bundling any of this at all is what lets the app work with no network,
+    the same promise the star catalogue makes.
 - **Refresh and caching**: a fresh full copy is written to
   `~/Library/Application Support/Astronomy/satellites.txt` and preferred over
   the bundle on subsequent launches. The refresh is attempted **repeatedly
