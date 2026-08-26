@@ -597,18 +597,45 @@ carried in each sample, before any trigonometry.
     (`Astronomy-macOS-Planetarium/1.0 (satellite tracking; TLE refresh once per day)`);
   - a response that does not parse as element sets is discarded rather than
     written over a working cache, so a rate-limit page cannot poison it.
-- **Snapshot bundled**: 16,079 element sets, 2.6 MB, fetched 2026-08-17.
-  Bundling it is what lets the app work with no network at all, the same
-  promise the star catalogue makes.
-- **Refresh and caching**: a fresh copy is written to
+- **Fallback sources**, added after CelesTrak proved to be unreachable for
+  days at a time (DNS resolved, TCP to port 443 timed out) and the app quietly
+  ran off its bundled snapshot until every satellite aged out of the accuracy
+  window and vanished. One source is not a supply chain. Both of these were
+  fetched and checked before being added — they parse as TLEs and carry current
+  epochs, including the ISS:
+  - **[SatNOGS DB](https://db.satnogs.org)** (`/api/tle/?format=json`), the
+    open SatNOGS ground-station network's element-set API: about 1,700 objects,
+    mostly Space-Track-derived, served as JSON and converted to TLE text.
+    SatNOGS is a Libre Space Foundation project and its DB data is openly
+    published.
+  - **[AMSAT](https://www.amsat.org/tle/current/nasabare.txt)**, the ~100
+    amateur-radio objects, in plain NASA two-line format.
+  - **Space-Track is deliberately not used.** It is the authoritative source,
+    but it requires an account, and shipping credentials inside an app is not
+    something this app will do.
+  Both fallbacks are *partial*, so they never replace the catalogue: they are
+  written to `satellites-supplement.txt` and overlaid onto it by catalogue
+  number, and only where their epoch is genuinely newer. Falling back therefore
+  costs the user nothing.
+- **Snapshot bundled**: 16,225 element sets, 2.6 MB. The bulk of it was fetched
+  from CelesTrak on 2026-08-17; 1,277 objects were refreshed and 146 added from
+  SatNOGS and AMSAT on 2026-08-26 under the same newer-epoch-wins rule, because
+  CelesTrak was still unreachable. The ISS and the other commonly watched
+  objects are therefore current; the long tail that only CelesTrak publishes is
+  as old as the original fetch. Bundling it is what lets the app work with no
+  network at all, the same promise the star catalogue makes.
+- **Refresh and caching**: a fresh full copy is written to
   `~/Library/Application Support/Astronomy/satellites.txt` and preferred over
-  the bundle on subsequent launches. Any failure — offline, timeout, rate
-  limit, malformed response — leaves the previous elements in place and is
-  logged, never surfaced as an error. A network failure can never break the
-  sky.
+  the bundle on subsequent launches. The refresh is attempted **repeatedly
+  within a session**, not once per launch: a failure retries after a minute,
+  doubling to a ceiling of half an hour, so a transient outage heals without a
+  restart, while a *success* resets to the polite one-a-day floor. A failure
+  leaves the previous elements in place, and — unlike before — says so in the
+  satellite control, because a failure only a log ever sees is a failure nobody
+  ever fixes. A network failure can never break the sky.
 - **Regime breakdown** of the bundled snapshot, as classified by
-  `OrbitalRegime.classify`: **15,275 LEO, 179 MEO, 584 GEO, 41 highly
-  elliptical**. Of these, **799 have orbital periods of 225 minutes or more**
+  `OrbitalRegime.classify`: **15,409 LEO, 183 MEO, 590 GEO, 43 highly
+  elliptical**. Of these, **808 have orbital periods of 225 minutes or more**
   and are propagated through the deep-space (SDP4) branch of the model.
 
 ### Accuracy, and its real limits
@@ -629,8 +656,22 @@ What remains approximate, in decreasing order of how much it matters:
   a noticeable distance along its own track — visible as the pass happening a
   few seconds early or late. This is a property of the data, not of the
   implementation, and no amount of care in the propagator removes it. The app
-  surfaces the age directly: select a satellite and the info panel shows
-  "Element set: 2.3 days old". Treat that number as the accuracy caveat it is.
+  surfaces the age directly, and grades it (`ElementSetStaleness`):
+  - **up to 2 days — fresh.** A few kilometres at worst, which at ~7.7 km/s is
+    well under a second of pass timing and a few tenths of a degree on the sky.
+    Shown with no warning, because there is nothing worth warning about.
+  - **2 to 10 days — aging.** Of order 10–30 km along-track: seconds of timing
+    error, and up to a few degrees at a close overhead pass. Drawn, and labelled
+    "aging" with that consequence spelled out.
+  - **beyond 10 days — unreliable.** Tens to hundreds of kilometres, growing
+    non-linearly; a pass may be minutes early or late. The orbital *plane* is
+    still about right, so the track still means something, but the position
+    along it does not. Drawn, and plainly flagged.
+
+  Select a satellite and the info panel shows "Element set: 7.7 days old —
+  aging" with the caveat underneath; the satellite control says the same thing
+  about the catalogue as a whole. Treat that number as the accuracy caveat it
+  is.
 
   **This is also a hard limit on the time machine, and the app enforces it.**
   Beyond about a week the along-track error stops being a caveat and becomes the
@@ -645,6 +686,16 @@ What remains approximate, in decreasing order of how much it matters:
   to wonder where the satellites went. Silently propagating months out and
   presenting the result as real would be the single most dishonest thing this
   app could do.
+
+  **That refusal is about the time machine, not about aging data.** The two
+  cases are different and are now treated differently. Within
+  `SatelliteAccuracy.realTimeWindowDays` = **5 days** of *real* time the user is
+  looking at a sky they can check against the one outside, so satellites are
+  always drawn whatever the age of the elements — with the staleness stated,
+  never passed off as precision. It is only when the displayed instant is far
+  from **both** real time and the element epoch that nothing is drawn.
+  `SatelliteAccuracy.isDrawable` is that single gate, and both halves of it are
+  pinned by tests.
 - **Atmospheric drag** is modelled by SGP4's `B*` term, a single fitted
   coefficient. It does not know about solar activity, the satellite's attitude,
   or a manoeuvre. Objects that manoeuvre (the ISS reboosts; Starlink raises
