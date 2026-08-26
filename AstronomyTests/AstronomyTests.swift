@@ -1359,3 +1359,165 @@ final class TimeContinuityTests: XCTestCase {
         XCTAssertGreaterThan(second, first)
     }
 }
+
+// MARK: - The skyline has to be readable in the dark
+
+/// At full night the sky is only about (0.008, 0.020, 0.047) and the dunes,
+/// whose colour is derived from it, came out within a level or so of it: the
+/// two horizons were indistinguishable. These tests pin the fix.
+///
+/// Units: the drawable is `bgra8Unorm`, not an sRGB format, so shader output is
+/// already display-encoded and a luminance difference of 0.02 is about five
+/// 8-bit levels — the threshold below which a boundary stops reading on a dark
+/// screen.
+final class NightHorizonContrastTests: XCTestCase {
+
+    /// The palette anchors from `twilightZenithColor`, as sampled near the
+    /// skyline. The darkest sky the app ever paints.
+    private static let darkestSky = SIMD3<Double>(0.008, 0.020, 0.047)
+    private static let darkestHorizonSky = SIMD3<Double>(0.012, 0.031, 0.067)
+    private static let nauticalTwilightSky = SIMD3<Double>(0.024, 0.046, 0.112)
+    private static let daytimeSky = SIMD3<Double>(0.155, 0.320, 0.605)
+
+    private static let azimuths = stride(from: 0.0, to: 360.0, by: 3.0)
+
+    /// Luminance just above the crest minus luminance just below it, minimised
+    /// over the whole horizon.
+    private func worstSkylineContrast(sky: SIMD3<Double>) -> Double {
+        var worst = Double.infinity
+        for azimuth in Self.azimuths {
+            let crest = TerrainProfile.skylineAltitudeDegrees(azimuthDegrees: azimuth)
+            let above = TerrainProfile.luminance(
+                TerrainProfile.composite(
+                    skyColor: sky, altitudeDegrees: crest + 0.45, azimuthDegrees: azimuth
+                )
+            )
+            for depth in [0.3, 0.5, 1.0] {
+                let below = TerrainProfile.luminance(
+                    TerrainProfile.composite(
+                        skyColor: sky, altitudeDegrees: crest - depth, azimuthDegrees: azimuth
+                    )
+                )
+                worst = min(worst, above - below)
+            }
+        }
+        return worst
+    }
+
+    /// **The user's report.** At the darkest sky, at every azimuth, the sky
+    /// just above the skyline must be measurably brighter than the terrain just
+    /// below it. Measured value at the time of writing: about 0.022, i.e. five
+    /// to six 8-bit levels.
+    func testTheSkylineReadsAtTheDarkestSky() {
+        for sky in [Self.darkestSky, Self.darkestHorizonSky] {
+            let contrast = worstSkylineContrast(sky: sky)
+            XCTAssertGreaterThan(
+                contrast, 0.018,
+                "the skyline must not fade into a night sky of luminance \(TerrainProfile.luminance(sky))"
+            )
+        }
+    }
+
+    /// It must not fall into a hole in twilight either, which is where the
+    /// multiplicative darkening is weakest and the rim has begun to fade.
+    func testTheSkylineReadsThroughTwilight() {
+        XCTAssertGreaterThan(worstSkylineContrast(sky: Self.nauticalTwilightSky), 0.015)
+    }
+
+    /// The floor and the rim are both one-sided: neither may touch the approved
+    /// daytime look. By day the multiplicative colour is already far darker
+    /// than the floor requires, and the rim has faded to nothing.
+    func testDaytimeIsUntouched() {
+        for azimuth in Self.azimuths {
+            let crest = TerrainProfile.skylineAltitudeDegrees(azimuthDegrees: azimuth)
+            for altitude in [crest + 0.45, crest - 0.5, -3.0, -9.0] {
+                let rim = TerrainProfile.skylineRim(
+                    skyColor: Self.daytimeSky, altitudeDegrees: altitude, azimuthDegrees: azimuth
+                )
+                XCTAssertEqual(TerrainProfile.luminance(rim), 0, accuracy: 1e-12)
+            }
+        }
+        // Every layer's daytime colour is the plain desaturate-and-darken
+        // result, with the floor inactive.
+        let luminance = TerrainProfile.luminance(Self.daytimeSky)
+        for index in TerrainProfile.layers.indices {
+            let colour = TerrainProfile.layerColor(index: index, skyColor: Self.daytimeSky)
+            XCTAssertEqual(
+                TerrainProfile.luminance(colour),
+                luminance * TerrainProfile.layers[index].darkness,
+                accuracy: 1e-9,
+                "layer \(index) must be unchanged by day"
+            )
+        }
+    }
+
+    /// The rim is a rim, not a glow: it exists only in the degree or so above
+    /// the crest, and never lightens the terrain itself.
+    func testTheRimIsConfinedToTheCrest() {
+        for azimuth in Self.azimuths {
+            let crest = TerrainProfile.skylineAltitudeDegrees(azimuthDegrees: azimuth)
+            XCTAssertEqual(
+                TerrainProfile.skylineRimMask(
+                    altitudeDegrees: crest - TerrainProfile.edgeSoftnessDegrees,
+                    azimuthDegrees: azimuth
+                ),
+                0, accuracy: 1e-12, "no lift below the crest"
+            )
+            XCTAssertEqual(
+                TerrainProfile.skylineRimMask(
+                    altitudeDegrees: crest + TerrainProfile.edgeSoftnessDegrees
+                        + TerrainProfile.skylineRimWidthDegrees,
+                    azimuthDegrees: azimuth
+                ),
+                0, accuracy: 1e-12, "and none once you are a degree above it"
+            )
+            XCTAssertEqual(
+                TerrainProfile.skylineRimMask(altitudeDegrees: crest + 5.0, azimuthDegrees: azimuth),
+                0, accuracy: 1e-12
+            )
+        }
+    }
+
+    /// Depth survives: at night the view still gets darker the further below
+    /// the skyline you look, which is the whole depth cue.
+    func testLayeredDepthSurvivesAtNight() {
+        let sky = Self.darkestHorizonSky
+        for azimuth in stride(from: 0.0, to: 360.0, by: 11.0) {
+            let crest = TerrainProfile.skylineAltitudeDegrees(azimuthDegrees: azimuth)
+            var previous = Double.infinity
+            for step in stride(from: 0.0, through: 14.0, by: 0.5) {
+                let value = TerrainProfile.luminance(
+                    TerrainProfile.composite(
+                        skyColor: sky, altitudeDegrees: crest - 0.5 - step, azimuthDegrees: azimuth
+                    )
+                )
+                XCTAssertLessThanOrEqual(
+                    value, previous + 1e-12,
+                    "the view must never brighten on the way down at azimuth \(azimuth)"
+                )
+                previous = value
+            }
+            // And the bottom of the stack is markedly darker than the skyline.
+            let deep = TerrainProfile.luminance(
+                TerrainProfile.composite(
+                    skyColor: sky, altitudeDegrees: crest - 14.0, azimuthDegrees: azimuth
+                )
+            )
+            let atSkyline = TerrainProfile.luminance(
+                TerrainProfile.composite(
+                    skyColor: sky, altitudeDegrees: crest - 0.5, azimuthDegrees: azimuth
+                )
+            )
+            XCTAssertLessThan(deep, atSkyline * 0.75)
+        }
+    }
+
+    /// And translucency survives, which is the property the whole see-through
+    /// horizon rests on: the dunes still only dim what is behind them.
+    func testTerrainIsStillTranslucent() {
+        XCTAssertLessThan(TerrainProfile.maxCoverage, 0.85)
+        XCTAssertGreaterThan(TerrainProfile.minimumVisibility, 0.6)
+        // The colour work above must not have touched a single alpha.
+        XCTAssertEqual(TerrainProfile.maxCoverage, 0.749951488, accuracy: 1e-9)
+    }
+}

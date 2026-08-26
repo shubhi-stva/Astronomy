@@ -887,3 +887,215 @@ final class SatelliteRenderingTests: XCTestCase {
         _ = atTick
     }
 }
+
+// MARK: - Graduated element-set staleness
+
+/// The regression the user hit, and the rule that replaced it.
+///
+/// Satellites disappeared because the bundled element sets aged past a hard
+/// five-day cutoff while the daily refresh — one source, one attempt per launch
+/// — had never once succeeded. The cutoff was right about the time machine and
+/// wrong about the live sky: at real time, week-old elements still tell you
+/// which moving dot is the ISS, provided the app says how good the answer is.
+final class ElementSetStalenessTests: XCTestCase {
+
+    // MARK: Classification
+
+    func testFreshElementsAreNotFlagged() {
+        XCTAssertEqual(SatelliteAccuracy.staleness(ageDays: 0), .fresh)
+        XCTAssertEqual(SatelliteAccuracy.staleness(ageDays: 1.9), .fresh)
+        XCTAssertEqual(SatelliteAccuracy.staleness(ageDays: 2.0), .fresh)
+        XCTAssertNil(ElementSetStaleness.fresh.caveat)
+        XCTAssertNil(ElementSetStaleness.fresh.shortLabel)
+    }
+
+    func testAgingElementsCarryACaveat() {
+        XCTAssertEqual(SatelliteAccuracy.staleness(ageDays: 2.1), .aging)
+        XCTAssertEqual(SatelliteAccuracy.staleness(ageDays: 7.7), .aging)
+        XCTAssertEqual(SatelliteAccuracy.staleness(ageDays: 10.0), .aging)
+        XCTAssertNotNil(ElementSetStaleness.aging.caveat)
+        XCTAssertEqual(ElementSetStaleness.aging.shortLabel, "aging")
+    }
+
+    func testVeryOldElementsAreFlaggedUnreliable() {
+        XCTAssertEqual(SatelliteAccuracy.staleness(ageDays: 10.1), .unreliable)
+        XCTAssertEqual(SatelliteAccuracy.staleness(ageDays: 90), .unreliable)
+        XCTAssertNotNil(ElementSetStaleness.unreliable.caveat)
+        XCTAssertEqual(ElementSetStaleness.unreliable.shortLabel, "unreliable")
+    }
+
+    /// Elements dated *after* the displayed instant are exactly as approximate
+    /// as ones the same distance before it.
+    func testClassificationIsSymmetric() {
+        XCTAssertEqual(SatelliteAccuracy.staleness(ageDays: -7.0), .aging)
+        XCTAssertEqual(SatelliteAccuracy.staleness(ageDays: -30.0), .unreliable)
+    }
+
+    func testSeverityIsOrdered() {
+        XCTAssertLessThan(ElementSetStaleness.fresh, .aging)
+        XCTAssertLessThan(ElementSetStaleness.aging, .unreliable)
+    }
+
+    // MARK: The gate itself
+
+    private let now = 2_460_500.5
+
+    /// **The user's bug.** At real time, elements older than the old five-day
+    /// cutoff must still be drawn.
+    func testAgingElementsAreStillDrawnAtRealTime() {
+        for age in [5.1, 7.7, 12.0, 40.0] {
+            XCTAssertTrue(
+                SatelliteAccuracy.isDrawable(
+                    julianDay: now, nowJulianDay: now, epochJulianDay: now - age
+                ),
+                "\(age)-day-old elements must not hide the live sky"
+            )
+        }
+    }
+
+    /// **The rule that must not be lost.** Scrubbing simulated time far from
+    /// both real time and the epoch draws nothing: an SGP4 propagation that far
+    /// out is not an imprecise position, it is no position at all.
+    func testFarSimulatedTimeIsStillSuppressed() {
+        let epoch = now - 1.0
+        for offset in [6.0, 30.0, 365.0, -30.0] {
+            XCTAssertFalse(
+                SatelliteAccuracy.isDrawable(
+                    julianDay: now + offset, nowJulianDay: now, epochJulianDay: epoch
+                ),
+                "scrubbing \(offset) days out must draw nothing"
+            )
+        }
+    }
+
+    /// A short scrub with fresh elements is still fine, which is what makes
+    /// "watch tonight's pass an hour early" work.
+    func testShortScrubsWithFreshElementsAreDrawn() {
+        XCTAssertTrue(
+            SatelliteAccuracy.isDrawable(
+                julianDay: now + 2.0, nowJulianDay: now, epochJulianDay: now
+            )
+        )
+        XCTAssertTrue(
+            SatelliteAccuracy.isDrawable(
+                julianDay: now + 40.0, nowJulianDay: now, epochJulianDay: now + 38.0
+            ),
+            "elements near the displayed instant are valid wherever that instant is"
+        )
+    }
+}
+
+// MARK: - Satellites at the age the app actually ships with
+
+/// End-to-end version of the regression: a frame at real time whose elements
+/// are as old as the bundled snapshot had become must still draw its satellite.
+final class BundledElementAgeRenderingTests: XCTestCase {
+
+    private func drawnCount(elementAgeDays: Double, simulatedOffsetDays: Double = 0) -> Int {
+        let now = JulianDate.julianDay(from: Date())
+        let julianDay = now + simulatedOffsetDays
+        var frame = SkyFrameData.empty
+        frame.observerLocation = GeographicLocation(latitudeDegrees: 37.5, longitudeDegrees: -122.0)
+        frame.julianDay = julianDay
+        frame.nowJulianDay = now
+        frame.viewportSize = CGSize(width: 1600, height: 1000)
+        frame.cameraCenter = HorizontalCoordinate(altitudeDegrees: 90, azimuthDegrees: 0)
+        frame.cameraFieldOfViewDegrees = 90
+        frame.sunHorizontal = HorizontalCoordinate(altitudeDegrees: -40, azimuthDegrees: 0)
+
+        let observer = TopocentricTransform.observerPositionTEME(
+            observer: frame.observerLocation, julianDay: julianDay
+        )
+        let position = observer + simd_normalize(observer) * 400.0
+        let epoch = julianDay - elementAgeDays
+
+        frame.satelliteSnapshot = SatelliteSnapshot(
+            julianDay: julianDay,
+            samples: [
+                SatelliteSample(
+                    index: 0, catalogNumber: Satellite.issCatalogNumber,
+                    regime: .lowEarth, isNotable: true, epochJulianDay: epoch,
+                    position: position, velocity: SIMD3(0, 7.5, 0),
+                    illumination: .sunlit, altitudeDegreesAtSnapshot: 89
+                )
+            ],
+            propagationDuration: 0
+        )
+        frame.satelliteDescriptors = [
+            SatelliteDescriptor(
+                catalogNumber: Satellite.issCatalogNumber, name: "ISS (ZARYA)",
+                regime: .lowEarth, internationalDesignator: "98067A",
+                epochJulianDay: epoch, isNotable: true
+            )
+        ]
+        var builder = SkyGeometryBuilder(frameData: frame)
+        builder.run()
+        return builder.projectedObjects.filter { $0.object.kind == .satellite }.count
+    }
+
+    /// Eight days is roughly how stale the shipped snapshot had become when the
+    /// user reported the satellites missing. It must draw.
+    func testSatellitesAreDrawnAtTheShippedElementAge() {
+        XCTAssertEqual(drawnCount(elementAgeDays: 8.0), 1)
+        XCTAssertEqual(drawnCount(elementAgeDays: 20.0), 1, "old, but the sky is live")
+    }
+
+    /// And the time machine still refuses.
+    func testTheTimeMachineStillSuppresses() {
+        XCTAssertEqual(drawnCount(elementAgeDays: 8.0, simulatedOffsetDays: 30.0), 0)
+        XCTAssertEqual(drawnCount(elementAgeDays: 8.0, simulatedOffsetDays: -60.0), 0)
+    }
+}
+
+// MARK: - Fallback source parsing
+
+final class SatelliteFallbackSourceTests: XCTestCase {
+
+    /// SatNOGS serves JSON, with the name line in the NASA "0 NAME" form. It
+    /// has to come out the other side as text the normal TLE parser accepts.
+    func testSatnogsJSONBecomesParseableTLEText() throws {
+        let json = """
+        [{"tle0":"0 ISS (ZARYA)",
+          "tle1":"1 25544U 98067A   26237.66055539  .00007716  00000-0  14485-3 0  9995",
+          "tle2":"2 25544  51.6329 316.2335 0007673  83.1052 277.0809 15.49625410582525"}]
+        """
+        let text = try SatelliteCatalogService.tleText(fromSatnogsJSON: Data(json.utf8))
+        let elements = TwoLineElement.parseCatalog(text)
+        XCTAssertEqual(elements.count, 1)
+        XCTAssertEqual(elements.first?.catalogNumber, 25544)
+        XCTAssertEqual(elements.first?.name, "ISS (ZARYA)")
+        XCTAssertNotNil(Satellite(tle: try XCTUnwrap(elements.first)))
+    }
+
+    /// A partial fallback source must never cost the user the rest of the
+    /// catalogue: it is overlaid onto the full one, and only where it is newer.
+    func testOverlayKeepsTheFullCatalogueAndTakesOnlyFresherElements() throws {
+        let base = TwoLineElement.parseCatalog("""
+        ISS (ZARYA)
+        1 25544U 98067A   26229.66055539  .00007716  00000-0  14485-3 0  9995
+        2 25544  51.6329 316.2335 0007673  83.1052 277.0809 15.49625410582525
+        CALSPHERE 1
+        1 00900U 64063C   26229.88451900  .00000398  00000+0  39512-3 0  9996
+        2 00900  90.2179  73.2057 0027808 103.8625   3.2515 13.76679677 79914
+        """)
+        let supplement = TwoLineElement.parseCatalog("""
+        ISS (ZARYA)
+        1 25544U 98067A   26237.66055539  .00007716  00000-0  14485-3 0  9995
+        2 25544  51.6329 316.2335 0007673  83.1052 277.0809 15.49625410582525
+        """)
+        XCTAssertEqual(base.count, 2)
+        XCTAssertEqual(supplement.count, 1)
+
+        let merged = SatelliteCatalogService.overlay(supplement: supplement, onto: base)
+        XCTAssertEqual(merged.count, 2, "the object the supplement does not carry must survive")
+        let iss = try XCTUnwrap(merged.first { $0.catalogNumber == 25544 })
+        XCTAssertEqual(iss.epochJulianDay, supplement[0].epochJulianDay, accuracy: 1e-9,
+                       "the fresher element set must win")
+
+        // And the other way round: a stale supplement must not drag anything
+        // backwards.
+        let reversed = SatelliteCatalogService.overlay(supplement: base, onto: merged)
+        let stillFresh = try XCTUnwrap(reversed.first { $0.catalogNumber == 25544 })
+        XCTAssertEqual(stillFresh.epochJulianDay, supplement[0].epochJulianDay, accuracy: 1e-9)
+    }
+}
