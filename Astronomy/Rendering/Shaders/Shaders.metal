@@ -31,6 +31,11 @@ struct PointVertexIn {
     float param1;
     float param2;
     float param3;
+    // Orientation + surface-map slice. See `RenderTypes.PointVertex`.
+    float param4;
+    float param5;
+    float param6;
+    float param7;
 };
 
 struct LineVertexIn {
@@ -47,6 +52,10 @@ struct PointVaryings {
     float param1;
     float param2;
     float param3;
+    float param4;
+    float param5;
+    float param6;
+    float param7;
 };
 
 struct LineVaryings {
@@ -702,6 +711,10 @@ vertex PointVaryings starVertexShader(
     out.param1 = v.param1;
     out.param2 = v.param2;
     out.param3 = v.param3;
+    out.param4 = v.param4;
+    out.param5 = v.param5;
+    out.param6 = v.param6;
+    out.param7 = v.param7;
     return out;
 }
 
@@ -717,9 +730,101 @@ static inline float terminatorLit(float2 q, float k, float diskEdge, float softn
     return smoothstep(-softness, softness, q.x - terminatorX);
 }
 
+
+// MARK: - Bundled surface maps
+
+// Slice indices into the planet-map texture array. Keep in sync with
+// `PlanetSurfaceMaps.slice(objectID:)`.
+constant int kMapMars    = 0;
+constant int kMapJupiter = 1;
+constant int kMapMoon    = 2;
+
+// Mean colour of each bundled map, measured over the whole image at build
+// time. Used to normalise the map to an average of neutral grey so that what
+// it contributes is *structure and local colour departure*, not an absolute
+// brightness — see `surfaceModulation` below.
+constant float3 kMapMeanColor[3] = {
+    float3(0.602, 0.491, 0.493),   // Mars, Viking colorized MDIM 2.1
+    float3(0.606, 0.595, 0.566),   // Jupiter, Cassini cylindrical map
+    float3(0.749, 0.729, 0.716)    // Moon, LROC WAC colour
+};
+
+/// Multiplier the bundled surface map contributes at a point on the sprite.
+///
+/// Returns roughly 1.0 for an average patch of the body, above 1 for a bright
+/// or strongly-coloured feature and below 1 for a dark one. The caller
+/// multiplies its existing flat tint by this, which has three good
+/// consequences: the app's palette keeps control of the body's overall hue
+/// (so Mars stays the muted ochre the tint says it is, and the map cannot
+/// drag it anywhere garish), the result is continuous, and at `detail == 0`
+/// mixing this out returns *exactly* the old flat-disk look with no pop.
+///
+/// Geometry. The sprite disc is the orthographic projection of the visible
+/// hemisphere, so a sprite offset `n` (in units of the disc radius) lifts to
+/// the surface point `(n.x, n.y, sqrt(1 - |n|^2))` in a frame whose +z points
+/// at the viewer, +x is screen right and +y screen up — a right-handed triad.
+/// `poleAngle` is where the body's north pole lies on screen, so rotating the
+/// sprite by it first puts north up; the pole then has the components
+/// `(0, cos B, sin B)` where B is the sub-Earth latitude, because B is by
+/// definition the angle between the pole and the viewer direction. Latitude
+/// and longitude fall straight out of that basis.
+///
+/// The mip level is computed from the sprite diameter rather than left to the
+/// hardware. Screen-space UV derivatives go to infinity at the limb, where the
+/// sphere turns away from the viewer, and implicit LOD selection there
+/// collapses to the smallest mip and produces a shimmering ring. One level for
+/// the whole sprite is both correct on average and cheaper.
+static inline float3 surfaceModulation(
+    float2 p,
+    float diskEdge,
+    float poleAngle,
+    float subEarthLongitudeDegrees,
+    float subEarthLatitudeDegrees,
+    int slice,
+    float spriteDiameter,
+    texture2d_array<float> maps,
+    sampler mapSampler
+) {
+    float2 n = p / max(diskEdge, 1e-4);
+    float r2 = min(dot(n, n), 1.0);
+
+    // Rotate the sprite so the body's north pole points up.
+    float phi = poleAngle - M_PI_F * 0.5;
+    float c = cos(phi);
+    float s = sin(phi);
+    float2 m = float2(n.x * c + n.y * s, -n.x * s + n.y * c);
+
+    float3 point = float3(m.x, m.y, sqrt(max(0.0, 1.0 - r2)));
+
+    float b = subEarthLatitudeDegrees * (M_PI_F / 180.0);
+    float3 north = float3(0.0, cos(b), sin(b));
+    // The sub-Earth meridian direction within the equatorial plane, and east,
+    // which is north x meridian and works out to exactly screen-right.
+    float3 meridian = float3(0.0, -sin(b), cos(b));
+    float3 east = float3(1.0, 0.0, 0.0);
+
+    float latitude = asin(clamp(dot(point, north), -1.0, 1.0)) * (180.0 / M_PI_F);
+    float longitude = subEarthLongitudeDegrees
+        + atan2(dot(point, east), dot(point, meridian)) * (180.0 / M_PI_F);
+
+    // Every bundled map is equirectangular, 1024 x 512, spanning -180..+180
+    // east longitude left to right and +90..-90 latitude top to bottom. The
+    // sampler repeats in u, so the longitude wrap needs no special case.
+    float2 uv = float2(longitude / 360.0 + 0.5, (90.0 - latitude) / 180.0);
+
+    // A hemisphere covers half the map's width (512 texels) across
+    // `spriteDiameter` screen pixels.
+    float lod = max(0.0, log2(512.0 / max(spriteDiameter, 1.0)));
+    float3 sampled = maps.sample(mapSampler, uv, slice, level(lod)).rgb;
+
+    return sampled / max(kMapMeanColor[slice], float3(1e-3));
+}
+
 fragment float4 starFragmentShader(
     PointVaryings in [[stage_in]],
-    float2 pointCoord [[point_coord]]
+    float2 pointCoord [[point_coord]],
+    texture2d_array<float> surfaceMaps [[texture(0)]],
+    sampler surfaceMapSampler [[sampler(0)]]
 ) {
     // Sprite-local coordinates in -1...1, +y up.
     float2 p = float2(pointCoord.x, 1.0 - pointCoord.y) * 2.0 - 1.0;
@@ -757,6 +862,19 @@ fragment float4 starFragmentShader(
         float brightness = mix(0.055, 1.0, lit);
         float bloom = pow(saturate(1.0 - dist), 3.0) * 0.28 * (0.3 + 0.7 * k);
         alpha = saturate(disk * brightness + bloom);
+
+        // The real lunar surface — maria, highlands, ray systems — modulating
+        // the flat tint, fading in with the same `detail` ramp the planets
+        // use so the terminator is never fighting a texture on a small disk.
+        // `param2` carries the detail level, `param7` the map slice.
+        float moonDetail = saturate(in.param2);
+        if (in.param7 >= 0.0 && moonDetail > 0.0) {
+            float3 modulation = surfaceModulation(
+                q, diskEdge, in.param6 - in.param1, in.param4, in.param5,
+                int(in.param7 + 0.5), in.pointSize, surfaceMaps, surfaceMapSampler
+            );
+            rgb = in.color.rgb * mix(float3(1.0), modulation, moonDetail);
+        }
     } else if (in.shape == kShapeSunDisk) {
         // Solar disk: a clear limb, plus a bloom whose *relative* extent
         // shrinks as the sprite grows, so zooming in gives a bigger disk and
@@ -828,6 +946,22 @@ fragment float4 starFragmentShader(
             // Grey, airless, and mostly seen as a crescent — the terminator
             // above does all the work here.
             surface = mix(float3(1.0), float3(1.0, 0.99, 0.97), detail);
+        }
+
+        // A real photographic map, where one is bundled (Mars and Jupiter;
+        // see DATA_SOURCES.md for why the other planets are not). It replaces
+        // the procedural `surface` above rather than adding to it, and it is
+        // mixed in by `detail`, so a wide field is still a clean tinted dot
+        // and the map arrives continuously as the disk grows.
+        int slice = int(in.param7 + 0.5);
+        if (in.param7 >= 0.0 && detail > 0.0) {
+            float3 modulation = surfaceModulation(
+                // `q` is already rotated by the bright-limb angle, so the
+                // pole angle has to be expressed in that same rotated frame.
+                q, diskEdge, in.param6 - in.param1, in.param4, in.param5,
+                slice, in.pointSize, surfaceMaps, surfaceMapSampler
+            );
+            surface = mix(surface, modulation, detail);
         }
 
         // Subtle centre-to-limb brightening falloff for every planet.

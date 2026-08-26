@@ -58,6 +58,24 @@ struct PointVertex {
     var param1: Float = 0
     var param2: Float = 0
     var param3: Float = 0
+    /// Orientation triple, used only by `planetDisk` and `moon` and only for
+    /// the three bodies that carry a bundled surface map:
+    /// `param4` = sub-Earth longitude in degrees (east-positive),
+    /// `param5` = sub-Earth latitude in degrees,
+    /// `param6` = screen-space angle of the body's north pole, in radians,
+    /// measured the same way `param1` measures the bright limb.
+    ///
+    /// `param7` is the map slice to sample, as a float: -1 means "no map,
+    /// stay procedural". See `PlanetSurfaceMaps`.
+    ///
+    /// Three extra floats on every sprite is 12 bytes, and the point buffer
+    /// tops out around twenty thousand sprites, so this costs a fraction of a
+    /// megabyte per frame — measurably nothing next to the geometry pass it
+    /// rides along with.
+    var param4: Float = 0
+    var param5: Float = 0
+    var param6: Float = 0
+    var param7: Float = -1
 }
 
 /// One vertex of a constellation line segment.

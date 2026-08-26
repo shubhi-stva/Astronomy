@@ -38,7 +38,18 @@ final class SkyRenderer: NSObject, MTKViewDelegate {
     /// A 1x1 black stand-in, bound when the panorama is unavailable: a Metal
     /// fragment function's texture argument must always be bound.
     private let fallbackTexture: MTLTexture?
+    /// The same idea for the point pass, whose fragment function declares a
+    /// `texture2d_array` and so cannot be handed the 2D fallback above.
+    private let fallbackArrayTexture: MTLTexture?
     private let milkyWaySampler: MTLSamplerState?
+
+    /// Bundled planetary surface maps, as one array texture. Nil until the
+    /// background load finishes, and nil forever if it fails — the procedural
+    /// disks are a complete fallback. See `PlanetSurfaceMaps`.
+    private var surfaceMapTexture: MTLTexture?
+    /// Bound in the point pass. Same wrap rules as the panorama: longitude is
+    /// periodic, latitude is not.
+    private let surfaceMapSampler: MTLSamplerState?
 
     /// Supplies the latest frame data; set by the owning SwiftUI view.
     var frameDataProvider: (() -> SkyFrameData)?
@@ -144,6 +155,7 @@ final class SkyRenderer: NSObject, MTKViewDelegate {
         samplerDescriptor.sAddressMode = .repeat
         samplerDescriptor.tAddressMode = .clampToEdge
         milkyWaySampler = device.makeSamplerState(descriptor: samplerDescriptor)
+        surfaceMapSampler = device.makeSamplerState(descriptor: samplerDescriptor)
 
         let fallbackDescriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .rgba8Unorm, width: 1, height: 1, mipmapped: false
@@ -154,9 +166,41 @@ final class SkyRenderer: NSObject, MTKViewDelegate {
             region: MTLRegionMake2D(0, 0, 1, 1), mipmapLevel: 0, withBytes: &black, bytesPerRow: 4
         )
 
+        let fallbackArrayDescriptor = MTLTextureDescriptor()
+        fallbackArrayDescriptor.textureType = .type2DArray
+        fallbackArrayDescriptor.pixelFormat = .rgba8Unorm
+        fallbackArrayDescriptor.width = 1
+        fallbackArrayDescriptor.height = 1
+        fallbackArrayDescriptor.arrayLength = PlanetSurfaceMaps.entries.count
+        fallbackArrayDescriptor.usage = [.shaderRead]
+        fallbackArrayTexture = device.makeTexture(descriptor: fallbackArrayDescriptor)
+        for slice in 0..<PlanetSurfaceMaps.entries.count {
+            var grey: [UInt8] = [128, 128, 128, 255]
+            fallbackArrayTexture?.replace(
+                region: MTLRegionMake2D(0, 0, 1, 1), mipmapLevel: 0, slice: slice,
+                withBytes: &grey, bytesPerRow: 4, bytesPerImage: 4
+            )
+        }
+
         super.init()
 
         loadMilkyWayTexture()
+        loadSurfaceMaps()
+    }
+
+    /// Decodes and uploads the bundled planet maps off the first frame's
+    /// critical path, exactly like the panorama above: until it lands, the
+    /// planets and the Moon draw their procedural surfaces, which is what they
+    /// did before these existed.
+    private func loadSurfaceMaps() {
+        let device = self.device
+        let queue = self.commandQueue
+        Task.detached(priority: .utility) {
+            guard let texture = PlanetSurfaceMaps.makeTextureArray(
+                device: device, commandQueue: queue
+            ) else { return }
+            await MainActor.run { self.surfaceMapTexture = texture }
+        }
     }
 
     /// Loads the bundled panorama off the critical path of the first frame:
@@ -243,6 +287,11 @@ final class SkyRenderer: NSObject, MTKViewDelegate {
         if let pointBuffer, !build.pointVertices.isEmpty {
             encoder.setRenderPipelineState(pointPipelineState)
             encoder.setVertexBuffer(pointBuffer, offset: 0, index: 0)
+            // The fragment function's texture argument must always be bound,
+            // even when there are no maps yet; `param7` is -1 on every sprite
+            // in that case, so nothing samples it.
+            encoder.setFragmentTexture(surfaceMapTexture ?? fallbackArrayTexture, index: 0)
+            encoder.setFragmentSamplerState(surfaceMapSampler, index: 0)
             encoder.drawPrimitives(type: .point, vertexStart: 0, vertexCount: build.pointVertices.count)
         }
 

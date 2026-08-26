@@ -730,6 +730,57 @@ struct SkyGeometryBuilder {
         return atan2(d.y, d.x)
     }
 
+    /// Where a body's north pole and sub-Earth point are, packaged as the four
+    /// shader parameters the surface-map path needs.
+    ///
+    /// Returns nil for anything without a bundled map, in which case the
+    /// caller leaves `param7` at -1 and the shader stays procedural.
+    ///
+    /// The pole's *screen* angle is obtained by projecting a second point
+    /// offset from the body along the pole's position angle, exactly the trick
+    /// `majorAxisScreenAngle` already uses for deep-sky ellipses. Going through
+    /// the projection is what keeps the disk oriented correctly as the camera
+    /// pans and the sky rotates.
+    ///
+    /// Cost: one extra `PlanetaryOrientation.orientation` call and one extra
+    /// projection, for at most three bodies in the frame. Immeasurable.
+    private func surfaceMapParameters(
+        for object: CelestialObject, centerNDC: SIMD2<Double>
+    ) -> (longitude: Float, latitude: Float, poleScreenAngle: Float, slice: Float)? {
+        guard let slice = PlanetSurfaceMaps.slice(objectID: object.id),
+              let orientation = PlanetaryOrientation.orientation(
+                  objectID: object.id,
+                  equatorial: object.equatorial,
+                  julianDay: frameData.julianDay
+              ) else { return nil }
+
+        // Position angle of the pole on the sky: its angle east of north, in
+        // the local frame at the body's direction.
+        let bodyDirection = simd_normalize(Precession.unitVector(object.equatorial))
+        let z = SIMD3<Double>(0, 0, 1)
+        let eastVector = simd_cross(z, bodyDirection)
+        guard simd_length(eastVector) > 1e-9 else { return nil }
+        let east = simd_normalize(eastVector)
+        let north = simd_cross(bodyDirection, east)
+        let positionAngle = atan2(
+            simd_dot(orientation.poleDirection, east),
+            simd_dot(orientation.poleDirection, north)
+        ) * 180.0 / .pi
+
+        guard let poleScreenAngle = majorAxisScreenAngle(
+            equatorial: object.equatorial,
+            positionAngleDegrees: positionAngle,
+            centerNDC: centerNDC
+        ) else { return nil }
+
+        return (
+            longitude: Float(orientation.subEarthLongitudeDegrees),
+            latitude: Float(orientation.subEarthLatitudeDegrees),
+            poleScreenAngle: Float(poleScreenAngle),
+            slice: Float(slice)
+        )
+    }
+
     // MARK: - Satellites
 
     /// Artificial satellites, extrapolated from the last propagation tick.
@@ -1101,16 +1152,10 @@ struct SkyGeometryBuilder {
 
             switch object.kind {
             case .sun:
-                // The bloom is a *smooth* minimum of "3.4x the disk" and
-                // "a bounded offset from the disk", so it dominates at wide
-                // field and then stops growing instead of swallowing the view.
-                let glowSize = StarAppearance.smoothMin(
-                    Double(size) * 3.4,
-                    Double(size) * 1.25 + 110.0,
-                    softness: 40.0
+                appendAura(
+                    at: position, kind: .sun, magnitude: object.magnitude,
+                    tint: StarAppearance.sunColor, size: size, alpha: alpha
                 )
-                appendGlow(at: position, color: StarAppearance.sunColor,
-                           size: Float(glowSize), alpha: 0.40 * alpha)
                 var sunColor = StarAppearance.sunColor
                 sunColor.w *= alpha
                 coreVertices.append(
@@ -1121,14 +1166,14 @@ struct SkyGeometryBuilder {
 
             case .moon:
                 let k = object.illuminatedFraction ?? frameData.moonIlluminatedFraction
-                appendGlow(
-                    at: position,
-                    color: StarAppearance.moonColor,
-                    size: size * 2.6,
-                    alpha: Float(0.06 + 0.22 * k) * alpha
+                appendAura(
+                    at: position, kind: .moon, magnitude: object.magnitude,
+                    tint: StarAppearance.moonColor, size: size, alpha: alpha,
+                    illuminatedFraction: k
                 )
                 var moonColor = StarAppearance.moonColor
                 moonColor.w *= alpha
+                let moonMap = surfaceMapParameters(for: object, centerNDC: ndc)
                 coreVertices.append(
                     PointVertex(
                         positionNDC: position,
@@ -1136,19 +1181,27 @@ struct SkyGeometryBuilder {
                         pointSize: size,
                         shape: PointSpriteShape.moon.rawValue,
                         param0: Float(k),
-                        param1: Float(limbAngle)
+                        param1: Float(limbAngle),
+                        // The Moon's shader branch reads the detail level from
+                        // `param2` only to ramp its surface map in; the
+                        // terminator itself is unconditional, as before.
+                        param2: detail,
+                        param4: moonMap?.longitude ?? 0,
+                        param5: moonMap?.latitude ?? 0,
+                        param6: moonMap?.poleScreenAngle ?? 0,
+                        param7: moonMap?.slice ?? -1
                     )
                 )
 
             case .planet, .dwarfPlanet:
                 var color = StarAppearance.planetColor(id: object.id)
                 color.w = alpha
-                var glowColor = color
-                glowColor.w = 0.20 * alpha
-                glowVertices.append(
-                    PointVertex(positionNDC: position, color: glowColor,
-                                pointSize: min(200, size * 3.0),
-                                shape: PointSpriteShape.glow.rawValue)
+                // Brightness-driven: Venus and Jupiter bloom noticeably, Mars
+                // subtly and only when it is actually bright, Uranus and
+                // Neptune not at all. See `StarAppearance.aura`.
+                appendAura(
+                    at: position, kind: object.kind, magnitude: object.magnitude,
+                    tint: color, size: size, alpha: alpha
                 )
 
                 // Saturn's sprite widens to make room for its rings; the
@@ -1163,6 +1216,7 @@ struct SkyGeometryBuilder {
                     spriteRadius = Double(spriteSize) * 0.5
                 }
 
+                let planetMap = surfaceMapParameters(for: object, centerNDC: ndc)
                 coreVertices.append(
                     PointVertex(
                         positionNDC: position,
@@ -1172,7 +1226,11 @@ struct SkyGeometryBuilder {
                         param0: Float(object.illuminatedFraction ?? 1.0),
                         param1: Float(limbAngle),
                         param2: detail,
-                        param3: StarAppearance.planetShaderCode(id: object.id)
+                        param3: StarAppearance.planetShaderCode(id: object.id),
+                        param4: planetMap?.longitude ?? 0,
+                        param5: planetMap?.latitude ?? 0,
+                        param6: planetMap?.poleScreenAngle ?? 0,
+                        param7: planetMap?.slice ?? -1
                     )
                 )
 
@@ -1220,6 +1278,28 @@ struct SkyGeometryBuilder {
         }
 
         appendSelectionRing()
+    }
+
+    /// Emits the aura sprite for a solar-system body, if it has earned one.
+    ///
+    /// `alpha` here is the body's own visibility multiplier (twilight, terrain
+    /// dimming), applied on top of the aura's intrinsic opacity, so a halo
+    /// fades out with the body it belongs to rather than outliving it.
+    private mutating func appendAura(
+        at position: SIMD2<Float>,
+        kind: CelestialObjectKind,
+        magnitude: Double,
+        tint: SIMD4<Float>,
+        size: Float,
+        alpha: Float,
+        illuminatedFraction: Double = 1.0
+    ) {
+        guard let aura = StarAppearance.aura(
+            kind: kind, magnitude: magnitude, tint: tint,
+            pointSize: size, illuminatedFraction: illuminatedFraction
+        ) else { return }
+        appendGlow(at: position, color: aura.color,
+                   size: aura.size, alpha: aura.alpha * alpha)
     }
 
     private mutating func appendGlow(at position: SIMD2<Float>, color: SIMD4<Float>, size: Float, alpha: Float) {

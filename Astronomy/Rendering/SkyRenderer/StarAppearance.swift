@@ -184,19 +184,183 @@ enum StarAppearance {
     static let sunColor = SIMD4<Float>(1.0, 0.92, 0.70, 1.0)
     static let moonColor = SIMD4<Float>(0.93, 0.93, 0.90, 1.0)
 
-    /// Subtly distinct per-planet tints — enough to separate them from the
-    /// star field at a glance without looking like coloured markers.
+    /// Per-planet tints, chosen to match how each body actually looks rather
+    /// than to be maximally distinguishable.
+    ///
+    /// Two things are going on at once and they pull in opposite directions.
+    /// At a wide field a planet is a handful of pixels and the tint is *all*
+    /// the information there is, so it has to be legible. Zoomed in the tint
+    /// multiplies the surface texture (see `Shaders.metal`), so an
+    /// over-saturated tint would stain a real photographic map. Every value
+    /// below is therefore the honest colour of the body, not a boosted one.
+    ///
+    /// Mars specifically: Mars is **not** red. Its integrated colour, from the
+    /// Viking and MRO colour mosaics and from every naked-eye description, is
+    /// a muted ochre — closer to butterscotch or dried terracotta than to
+    /// anything fire-engine. `marsSaturationRange` pins that so a future edit
+    /// cannot quietly crank it; `AstronomyTests` asserts it.
+    ///
+    /// - mercury: grey, faintly warm — an airless basalt world.
+    /// - venus: pale cream-white — a featureless sulphuric cloud deck.
+    /// - mars: muted ochre-red (see above).
+    /// - jupiter: warm tan, the mean of its belts and zones.
+    /// - saturn: pale gold, a shade less contrasty than Jupiter.
+    /// - uranus: pale cyan, from methane absorption in the red.
+    /// - neptune: deeper blue — the same chemistry, a deeper atmosphere.
     static func planetColor(id: String) -> SIMD4<Float> {
         switch id {
-        case "mercury": return SIMD4(0.86, 0.84, 0.79, 1.0)
-        case "venus":   return SIMD4(1.00, 0.97, 0.86, 1.0)
-        case "mars":    return SIMD4(1.00, 0.72, 0.58, 1.0)
-        case "jupiter": return SIMD4(1.00, 0.92, 0.78, 1.0)
-        case "saturn":  return SIMD4(0.98, 0.91, 0.72, 1.0)
-        case "uranus":  return SIMD4(0.74, 0.92, 0.95, 1.0)
-        case "neptune": return SIMD4(0.68, 0.80, 0.98, 1.0)
+        case "mercury": return SIMD4(0.78, 0.77, 0.74, 1.0)
+        case "venus":   return SIMD4(1.00, 0.98, 0.91, 1.0)
+        case "mars":    return SIMD4(0.86, 0.59, 0.44, 1.0)
+        case "jupiter": return SIMD4(0.94, 0.86, 0.72, 1.0)
+        case "saturn":  return SIMD4(0.94, 0.87, 0.68, 1.0)
+        case "uranus":  return SIMD4(0.68, 0.87, 0.90, 1.0)
+        case "neptune": return SIMD4(0.48, 0.60, 0.86, 1.0)
         default:        return SIMD4(0.88, 0.92, 0.96, 1.0)
         }
+    }
+
+    /// The band Mars's tint saturation is allowed to occupy, as
+    /// `(max - min) / max` over the RGB channels.
+    ///
+    /// Below the floor Mars stops reading as the distinctly warm object it is
+    /// and becomes another beige dot. Above the ceiling it becomes the
+    /// cartoon red planet the user explicitly rejected. Pinned as a constant
+    /// rather than as a bare number in a test so the intent lives next to the
+    /// colour it constrains.
+    static let marsSaturationRange: ClosedRange<Float> = 0.35...0.58
+
+    // MARK: - Aura
+
+    /// The soft halo drawn *behind* a solar-system body: size in points, alpha,
+    /// and the colour to draw it in.
+    struct Aura: Equatable {
+        var size: Float
+        var alpha: Float
+        var color: SIMD4<Float>
+    }
+
+    /// Apparent magnitude at or below which a solar-system body earns an aura.
+    ///
+    /// 3.0 is roughly where a planet stops being an obviously bright thing in
+    /// the sky. Saturn (~0.5) and everything brighter glow; Uranus (~5.7) and
+    /// Neptune (~7.8) get essentially nothing, which is correct — they are
+    /// telescopic objects and a halo would be a lie about how they read.
+    static let auraMagnitudeThreshold = 3.0
+
+    /// Ceiling on aura alpha for a planet. The Sun is allowed past this; a
+    /// planet never is.
+    static let planetAuraMaximumAlpha: Float = 0.30
+
+    /// How much of a body's aura is dissolved once its disk is fully resolved.
+    ///
+    /// This is the single most important number for taste. A halo is how a
+    /// body reads as *bright* when it is a few pixels across; once it is a
+    /// resolved disk with a terminator and a surface map on it, the same halo
+    /// is glare sitting on top of the thing you zoomed in to look at. So every
+    /// aura fades as `detailLevel` rises. The Moon's is the strongest damping
+    /// of the three because its terminator is the feature most easily washed
+    /// out, and the Sun's is the weakest because a Sun without glare is wrong
+    /// at any size.
+    private static func auraDetailDamping(kind: CelestialObjectKind) -> Float {
+        switch kind {
+        case .sun: return 0.35
+        case .moon: return 0.62
+        default: return 0.60
+        }
+    }
+
+    /// The aura for a solar-system body, or nil if it has not earned one.
+    ///
+    /// Deliberately derived from *measured* quantities — the body's apparent
+    /// magnitude and the diameter it is actually being drawn at — rather than
+    /// hard-coded per body. That means Mars near opposition (magnitude -2.9)
+    /// genuinely blooms more than Mars near conjunction (+1.6), Venus always
+    /// outshines everything, and adding a body needs no new case here.
+    ///
+    /// The size model mirrors the Sun's: a multiple of the disk, smooth-minned
+    /// against a bounded offset from it, so the halo dominates at wide field
+    /// and then *stops growing* instead of swallowing the frame as you zoom.
+    ///
+    /// The colour is the body's tint pulled part-way to white. A halo carries
+    /// far more pixels than the disk does, so drawing it in the body's full
+    /// saturation is what turns a subtle ochre Mars into a red smear. Pulling
+    /// it toward white keeps the hue and drops the intensity.
+    static func aura(
+        kind: CelestialObjectKind,
+        magnitude: Double,
+        tint: SIMD4<Float>,
+        pointSize size: Float,
+        illuminatedFraction: Double = 1.0
+    ) -> Aura? {
+        let detail = detailLevel(pointSize: size)
+        let damping = 1.0 - auraDetailDamping(kind: kind) * detail
+
+        let baseAlpha: Float
+        let haloSize: Float
+        let color: SIMD4<Float>
+
+        switch kind {
+        case .sun:
+            baseAlpha = 0.40
+            haloSize = Float(smoothMin(
+                Double(size) * 3.4, Double(size) * 1.25 + 110.0, softness: 40.0
+            ))
+            color = whitened(sunColor, by: 0.15)
+
+        case .moon:
+            // Scaled by the illuminated fraction: a new Moon has no halo
+            // because there is nothing lit to scatter, and a full Moon has a
+            // pronounced one. Kept well under the Sun's — the Moon glows, it
+            // does not glare.
+            let k = Float(max(0, min(1, illuminatedFraction)))
+            baseAlpha = 0.05 + 0.20 * k
+            haloSize = Float(smoothMin(
+                Double(size) * 2.6, Double(size) * 1.20 + 80.0, softness: 30.0
+            ))
+            color = whitened(moonColor, by: 0.25)
+
+        case .planet, .dwarfPlanet:
+            let excess = Float(max(0.0, auraMagnitudeThreshold - magnitude))
+            guard excess > 0 else { return nil }
+            // Linear in magnitude, i.e. logarithmic in flux, which is the
+            // right shape: it separates Venus from Jupiter without letting
+            // Venus be five times the halo of Mars.
+            //
+            // Note the absence of a constant term. The halo has to start at
+            // *zero* strength exactly at the threshold, or a planet brightening
+            // toward opposition pops a faint halo into existence the moment it
+            // crosses magnitude 3. The slope is then set so Venus lands on the
+            // ceiling and everything dimmer stays comfortably under it.
+            baseAlpha = min(planetAuraMaximumAlpha, 0.040 * excess)
+            // Brighter planets also get a slightly *wider* halo, not just a
+            // denser one, because that is how glare actually behaves.
+            let widthBoost = Double(min(1.0, excess / 6.0))
+            haloSize = Float(smoothMin(
+                Double(size) * (2.4 + 1.1 * widthBoost),
+                Double(size) * 1.20 + 55.0 + 25.0 * widthBoost,
+                softness: 22.0
+            ))
+            color = whitened(tint, by: 0.35)
+
+        case .star, .deepSky, .satellite, .constellation:
+            return nil
+        }
+
+        let alpha = baseAlpha * damping
+        guard alpha > 0.0005 else { return nil }
+        return Aura(size: min(200, haloSize), alpha: alpha, color: color)
+    }
+
+    /// Pulls a colour `amount` of the way toward white, preserving hue.
+    private static func whitened(_ c: SIMD4<Float>, by amount: Float) -> SIMD4<Float> {
+        let t = max(0, min(1, amount))
+        return SIMD4(
+            c.x + (1 - c.x) * t,
+            c.y + (1 - c.y) * t,
+            c.z + (1 - c.z) * t,
+            c.w
+        )
     }
 
     /// Mean equatorial radii in kilometres.
