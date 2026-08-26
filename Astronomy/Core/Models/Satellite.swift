@@ -209,24 +209,138 @@ nonisolated final class Satellite: @unchecked Sendable {
 /// a position drawn from it would be indistinguishable from a random point
 /// along the ground track.
 ///
-/// So the app refuses. Beyond the window the satellite is not drawn at all,
-/// and the UI says why rather than leaving the user to wonder where the
-/// satellites went. Silently propagating months out and drawing the result
-/// would be the single most dishonest thing this app could do.
+/// There are therefore **two different questions**, and the app answers them
+/// differently:
+///
+///  1. *"The user is looking at the real sky right now, and the newest elements
+///     the app could get hold of are a week old."* Hiding the satellites here
+///     is the wrong answer — the objects are up there, the app knows roughly
+///     where, and a marker that is a degree off is still the difference between
+///     "that moving dot is the ISS" and no answer at all. So they are drawn,
+///     **and the degradation is stated** (see `ElementSetStaleness`), never
+///     passed off as precision the app does not have.
+///  2. *"The user has scrubbed simulated time a month away."* Here there is
+///     nothing to be honest about: SGP4 genuinely does not know where the
+///     object is along its plane. The app refuses to draw it.
+///
+/// `isDrawable` is the one gate, and it encodes exactly that split.
 enum SatelliteAccuracy {
 
-    /// Maximum |simulated time - element epoch|, in days, at which a satellite
-    /// is still drawn. Five days is deliberately at the generous end of "a few
-    /// days": inside it a LEO object is typically within a few kilometres, so
-    /// the marker is in the right part of the sky even if the exact pass timing
-    /// has slipped by seconds.
+    /// Half-width, in days, of the window either side of an element-set epoch
+    /// in which a *simulated* instant is still worth propagating to. Five days
+    /// is deliberately at the generous end of "a few days": inside it a LEO
+    /// object is typically within a few kilometres, so the marker is in the
+    /// right part of the sky even if the exact pass timing has slipped by
+    /// seconds.
     static let maximumElementSetAgeDays: Double = 5.0
 
-    /// Whether a propagation at `julianDay` from `epochJulianDay` is worth
-    /// drawing. Symmetric: elements are no more valid five days *before* their
-    /// epoch than five days after.
+    /// Half-width, in days, of the window around *real* time in which the app
+    /// draws satellites whatever the age of its elements.
+    ///
+    /// This is the "problem 1" case above. Within ±5 days of now the user is
+    /// looking at something they can actually check against the sky, so the
+    /// app shows its best estimate and labels how good it is, rather than
+    /// showing nothing.
+    static let realTimeWindowDays: Double = 5.0
+
+    /// Whether a propagation at `julianDay` from `epochJulianDay` is close
+    /// enough to the epoch to be worth drawing on its own merits. Symmetric:
+    /// elements are no more valid five days *before* their epoch than after.
     static func isReliable(julianDay: Double, epochJulianDay: Double) -> Bool {
         abs(julianDay - epochJulianDay) <= maximumElementSetAgeDays
+    }
+
+    /// Whether the displayed instant counts as "real time" — i.e. the user is
+    /// looking at the sky as it is now, not scrubbing the time machine.
+    static func isNearRealTime(julianDay: Double, nowJulianDay: Double) -> Bool {
+        abs(julianDay - nowJulianDay) <= realTimeWindowDays
+    }
+
+    /// **The single gate.** A satellite is drawn when either
+    ///
+    ///  * the displayed instant is within `realTimeWindowDays` of real time —
+    ///    aging elements degrade the answer but do not delete it, and the UI
+    ///    says so; or
+    ///  * the displayed instant is within `maximumElementSetAgeDays` of the
+    ///    element epoch, which is the case that keeps short scrubs working with
+    ///    fresh elements.
+    ///
+    /// Scrubbing far from *both* — the month-out time machine — draws nothing.
+    static func isDrawable(
+        julianDay: Double, nowJulianDay: Double, epochJulianDay: Double
+    ) -> Bool {
+        isNearRealTime(julianDay: julianDay, nowJulianDay: nowJulianDay)
+            || isReliable(julianDay: julianDay, epochJulianDay: epochJulianDay)
+    }
+
+    /// Classifies element-set age for display. See `ElementSetStaleness`.
+    static func staleness(ageDays: Double) -> ElementSetStaleness {
+        let age = abs(ageDays)
+        if age <= ElementSetStaleness.freshLimitDays { return .fresh }
+        if age <= ElementSetStaleness.agingLimitDays { return .aging }
+        return .unreliable
+    }
+}
+
+/// How much to trust a drawn satellite position, as a function of how old its
+/// element set is.
+///
+/// The thresholds come from how SGP4 error actually grows. The dominant term in
+/// low orbit is along-track: the object is in very nearly the right *plane* but
+/// increasingly wrong about *where along it*, because the drag term in the two
+/// lines was fitted to a past atmosphere. The operational rule of thumb is of
+/// order one to three kilometres of along-track error per day for a typical LEO
+/// object, growing faster than linearly and much faster through a geomagnetic
+/// storm.
+///
+/// Turning that into what a user sees, for a 400–600 km pass at a few hundred
+/// to ~1500 km slant range:
+///
+///  * **≤ 2 days — fresh.** A few kilometres at worst. A LEO object moves at
+///    ~7.7 km/s, so that is well under a second of pass timing; on the sky it
+///    is a few tenths of a degree, comparable to the marker itself. Drawn with
+///    no warning, because there is nothing worth warning about.
+///  * **2–10 days — aging.** Of order 10–30 km along-track. That is seconds of
+///    timing error and, at a close overhead pass, up to a few degrees of sky
+///    position — enough to matter when you are pointing at the thing, not
+///    enough to make the identification wrong. Drawn, and labelled as aging.
+///  * **> 10 days — unreliable.** Tens to hundreds of kilometres, growing
+///    non-linearly, and a pass may be minutes early or late. The orbital
+///    *plane* is still about right, so the track across the sky still means
+///    something; the position along it does not. Drawn, and plainly flagged.
+///
+/// The boundaries are judgement calls at the edges of a spread that depends on
+/// solar activity and on the individual object's ballistic coefficient. They
+/// are chosen to be conservative: an object called "fresh" here really is
+/// pixel-accurate, and one called "aging" really is still useful.
+enum ElementSetStaleness: Comparable, Sendable {
+    case fresh
+    case aging
+    case unreliable
+
+    static let freshLimitDays: Double = 2.0
+    static let agingLimitDays: Double = 10.0
+
+    /// Short qualifier for the info panel's element-set row.
+    var shortLabel: String? {
+        switch self {
+        case .fresh: return nil
+        case .aging: return "aging"
+        case .unreliable: return "unreliable"
+        }
+    }
+
+    /// One sentence saying what this staleness means for what is on screen.
+    /// `nil` for fresh elements, where there is nothing to say.
+    var caveat: String? {
+        switch self {
+        case .fresh:
+            return nil
+        case .aging:
+            return "Positions are approximate: pass times may be off by seconds and positions by up to a degree or so."
+        case .unreliable:
+            return "Positions are unreliable: the orbit is about right, but where the satellite is along it may be minutes — and many degrees — out."
+        }
     }
 }
 

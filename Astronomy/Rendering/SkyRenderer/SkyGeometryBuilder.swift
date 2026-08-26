@@ -765,6 +765,7 @@ struct SkyGeometryBuilder {
         let fov = frameData.cameraFieldOfViewDegrees
         let observer = frameData.observerLocation
         let julianDay = frameData.julianDay
+        let nowJulianDay = frameData.nowJulianDay
         // Where the observer is and how they are oriented is a per-frame
         // constant; it used to be recomputed inside every single look-angle
         // call, twice per candidate satellite.
@@ -832,13 +833,17 @@ struct SkyGeometryBuilder {
 
         for position in band {
             let sample = snapshot.samples[hasOrdering ? Int(ordered[position]) : position]
-            // ACCURACY GATE. An SGP4 propagation more than a few days from its
-            // element-set epoch is not a position, it is a guess along an
-            // orbital plane. The time machine can put the clock a month out
-            // with one click, so this has to be a hard refusal rather than a
-            // caveat: see `SatelliteAccuracy`.
-            guard SatelliteAccuracy.isReliable(
-                julianDay: julianDay, epochJulianDay: sample.epochJulianDay
+            // ACCURACY GATE. Two different cases, one gate: at (or near) real
+            // time the satellite is drawn whatever the age of its elements and
+            // the UI states how stale they are; scrubbed far from both real
+            // time and the epoch — the month-out time machine — SGP4 has no
+            // idea where the object is along its plane, and the app refuses
+            // rather than inventing a confident position. See
+            // `SatelliteAccuracy`.
+            guard SatelliteAccuracy.isDrawable(
+                julianDay: julianDay,
+                nowJulianDay: nowJulianDay,
+                epochJulianDay: sample.epochJulianDay
             ) else { continue }
 
             // Tier gate: a couple of comparisons on already-loaded fields,

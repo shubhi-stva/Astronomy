@@ -44,6 +44,18 @@ struct SkyFrameData {
     var observerLocation: GeographicLocation
     var julianDay: Double
 
+    /// *Real* time as a Julian Day, as distinct from `julianDay`, which is the
+    /// instant being displayed and may have been scrubbed anywhere by the time
+    /// machine.
+    ///
+    /// The satellite layer is the one thing that needs to tell the two apart:
+    /// aging elements at real time are drawn and labelled, while a scrub far
+    /// from now is refused outright. See `SatelliteAccuracy.isDrawable`.
+    /// Defaults to the wall clock, so a hand-built frame behaves as if the user
+    /// were scrubbing to whatever `julianDay` it sets — which is exactly what
+    /// such a frame is modelling.
+    var nowJulianDay: Double = JulianDate.julianDay(from: Date())
+
     var cameraCenter: HorizontalCoordinate
     var cameraFieldOfViewDegrees: Double
 

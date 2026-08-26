@@ -60,6 +60,7 @@ final class SkyViewModel {
 
     private nonisolated(unsafe) var ephemerisRefreshTask: Task<Void, Never>?
     private nonisolated(unsafe) var satelliteTask: Task<Void, Never>?
+    private nonisolated(unsafe) var satelliteRefreshTask: Task<Void, Never>?
 
     init() {
         Task { await loadCatalog() }
@@ -70,6 +71,7 @@ final class SkyViewModel {
     deinit {
         ephemerisRefreshTask?.cancel()
         satelliteTask?.cancel()
+        satelliteRefreshTask?.cancel()
     }
 
     /// Loads the satellite catalogue, then propagates it forever at the
@@ -96,7 +98,7 @@ final class SkyViewModel {
             await self.satelliteTracker.load()
             await self.updateSatelliteDescriptors()
 
-            var didAttemptRefresh = false
+            var didStartRefreshLoop = false
             while !Task.isCancelled {
                 let tickStart = ContinuousClock.now
 
@@ -117,9 +119,9 @@ final class SkyViewModel {
                 }
                 await self.publish(snapshot: snapshot, visibleCount: visible)
 
-                if !didAttemptRefresh {
-                    didAttemptRefresh = true
-                    await self.refreshSatelliteElements()
+                if !didStartRefreshLoop {
+                    didStartRefreshLoop = true
+                    await self.startSatelliteRefreshLoop()
                 }
 
                 // Sleep for whatever is left of the tick rather than a fixed
@@ -226,14 +228,42 @@ final class SkyViewModel {
         medianElementEpochJulianDay = epochs.isEmpty ? 0 : epochs[epochs.count / 2]
     }
 
-    /// Fetches fresh element sets, at most once a day (the interval is enforced
-    /// by the catalogue service). A failure is silent by design: the bundled
-    /// snapshot keeps working, which is the whole point of bundling it.
-    private func refreshSatelliteElements() async {
-        let didRefresh = await SatelliteCatalogService.shared.refreshIfStale()
-        guard didRefresh else { return }
-        await satelliteTracker.reload()
-        await updateSatelliteDescriptors()
+    /// Keeps trying to fetch fresh element sets for as long as the app runs.
+    ///
+    /// This used to be a single attempt per launch, and that is precisely why
+    /// the app spent months on its bundled snapshot without anyone noticing:
+    /// one source, one try, a silent failure, and no way back short of a
+    /// relaunch. Now a failure schedules a retry (a minute, doubling to half an
+    /// hour) so a transient outage heals inside the session, a success settles
+    /// back to the polite one-a-day cadence, and the outcome is published for
+    /// the satellite control to show.
+    ///
+    /// Detached, and never awaited by the propagation loop: a slow or hanging
+    /// fetch must not delay a single satellite tick.
+    private func startSatelliteRefreshLoop() {
+        satelliteRefreshTask?.cancel()
+        satelliteRefreshTask = Task.detached(priority: .background) { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                let didRefresh = await SatelliteCatalogService.shared.refreshIfStale()
+                if didRefresh {
+                    await self.satelliteTracker.reload()
+                    await self.updateSatelliteDescriptors()
+                }
+                await self.publishSatelliteRefreshStatus()
+                let delay = await SatelliteCatalogService.shared.nextRefreshDelay()
+                    ?? SatelliteCatalogService.minimumRefreshInterval
+                try? await Task.sleep(for: .seconds(max(delay, 30)))
+            }
+        }
+    }
+
+    /// The last refresh attempt's outcome, mirrored onto the main actor so the
+    /// satellite control can show it. Failure is no longer silent.
+    private(set) var satelliteRefreshStatus = SatelliteCatalogService.RefreshStatus()
+
+    private func publishSatelliteRefreshStatus() async {
+        satelliteRefreshStatus = await SatelliteCatalogService.shared.refreshStatus
     }
 
     private func loadCatalog() async {
@@ -328,6 +358,10 @@ final class SkyViewModel {
         frame.satelliteSnapshot = satelliteSnapshot
         frame.satelliteDescriptors = satelliteDescriptors
         frame.satellitesEnabled = satellitesEnabled
+        // Real time, as opposed to the possibly-scrubbed instant above. Only
+        // the satellite gate uses it, to tell "aging elements, live sky" from
+        // "the time machine is a month out". See `SatelliteAccuracy`.
+        frame.nowJulianDay = JulianDate.julianDay(from: Date())
         frame.showAllSatellites = showAllSatellites
         return frame
     }
