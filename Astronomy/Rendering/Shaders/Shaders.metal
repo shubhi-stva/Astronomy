@@ -376,16 +376,67 @@ static inline float terrainDimming(float coverage) {
     return 1.0f - coverage * kTerrainCoverageDimming;
 }
 
+/// Minimum luminance each layer must sit *below* the sky behind it, in
+/// absolute display units, far to near. See the long note in
+/// `TerrainProfile.swift`: the multiplicative darkening below is a fraction of
+/// the sky's own brightness, and at night the sky's own brightness is about
+/// 0.02, so a fraction of it is nothing. This floor is what stops the dunes
+/// from converging onto the night sky. It never binds by day.
+/// MIRRORS `TerrainProfile.layerMinimumLuminanceDrop`.
+constant float kTerrainMinLuminanceDrop[5] = { 0.050, 0.065, 0.080, 0.095, 0.110 };
+
+/// Additive lift along the crest of the *furthest* ridge, at full night, and
+/// how far above the crest it reaches. This is the silhouette edge that makes
+/// the horizon read in the dark — with the skyline layer at alpha 0.16, no
+/// amount of darkening can separate dune from night sky by even one 8-bit
+/// level, but an edge can. MIRRORS `TerrainProfile.skylineRimLift`.
+constant float3 kSkylineRimLift = float3(0.034, 0.040, 0.052);
+constant float kSkylineRimWidthDeg = 0.8;
+/// The rim fades out between these sky luminances: full at night, gone by day.
+constant float kRimFadeStartLum = 0.02;
+constant float kRimFadeEndLum = 0.25;
+
 /// Colour of one dune layer, derived from the sky itself so it tracks the time
 /// of day automatically: take the local horizon/zenith blend, pull it most of
 /// the way toward its own luminance (dunes are a desaturated relative of the
 /// sky, never a fixed brown), then darken by the layer's factor. By day this
-/// lands on the muted blue-grey of the reference; at night it goes near-black
-/// but the layers still separate because the darkness factors differ.
+/// lands on the muted blue-grey of the reference; at night the absolute floor
+/// takes over so the layers still separate from the sky and from each other.
+/// MIRRORS `TerrainProfile.layerColor`.
 static inline float3 terrainLayerColor(int i, float3 skyColor) {
     float lum = dot(skyColor, float3(0.2126, 0.7152, 0.0722));
+    // Mixing toward the luminance is luminance-preserving, so the darkness
+    // factor is the only thing that darkens the result.
     float3 desaturated = mix(skyColor, float3(lum), 0.62);
-    return desaturated * kTerrainLayerDarkness[i];
+    float3 color = desaturated * kTerrainLayerDarkness[i];
+    float target = max(0.0f, lum - kTerrainMinLuminanceDrop[i]);
+    float current = dot(color, float3(0.2126, 0.7152, 0.0722));
+    if (current > target) {
+        // Toward black, which takes brightness away without touching the hue
+        // the dune inherited from the sky.
+        color *= target / max(current, 1e-6f);
+    }
+    return color;
+}
+
+/// Strength of the skyline rim: 0 below the crest, rising across it, decaying
+/// over `kSkylineRimWidthDeg` above. MIRRORS `TerrainProfile.skylineRimMask`.
+static inline float skylineRimMask(float altDeg, float azDeg) {
+    float crest = terrainLayerCrestDegrees(0, azDeg);
+    float rise = smoothstep(crest - kTerrainEdgeSoftnessDeg,
+                            crest + kTerrainEdgeSoftnessDeg, altDeg);
+    float decay = 1.0f - smoothstep(crest + kTerrainEdgeSoftnessDeg,
+                                    crest + kTerrainEdgeSoftnessDeg + kSkylineRimWidthDeg,
+                                    altDeg);
+    return rise * decay;
+}
+
+/// The rim's contribution to the sky at this direction.
+/// MIRRORS `TerrainProfile.skylineRim`.
+static inline float3 skylineRim(float3 skyColor, float altDeg, float azDeg) {
+    float lum = dot(skyColor, float3(0.2126, 0.7152, 0.0722));
+    float fade = 1.0f - smoothstep(kRimFadeStartLum, kRimFadeEndLum, lum);
+    return kSkylineRimLift * (fade * skylineRimMask(altDeg, azDeg));
 }
 
 /// Analytic Milky Way. Purely procedural: a Gaussian band around the galactic
@@ -619,6 +670,13 @@ fragment float4 backgroundFragmentShader(
     // ridgeline read. Total opacity here is at most about 0.75, so whatever is
     // behind the dunes — stars, the Milky Way, constellation labels — is only
     // dimmed, never erased.
+    //
+    // The rim goes on first, and only *above* the crest, so it lifts the sky
+    // the ridge is silhouetted against rather than the ridge itself. It is
+    // added to `color` and not to `skyReference`, so the dunes keep taking
+    // their hue from the sky proper.
+    color += skylineRim(skyReference, altDeg, azDeg);
+
     for (int i = 0; i < kTerrainLayerCount; ++i) {
         float a = terrainLayerOpacity(i, altDeg, azDeg);
         if (a <= 0.0f) { continue; }

@@ -23,6 +23,7 @@
 //
 
 import Foundation
+import simd
 
 enum TerrainProfile {
 
@@ -191,6 +192,155 @@ enum TerrainProfile {
     /// MIRRORED IN `Shaders.metal` as `terrainDimming`.
     static func dimming(altitudeDegrees: Double, azimuthDegrees: Double) -> Double {
         1.0 - coverage(altitudeDegrees: altitudeDegrees, azimuthDegrees: azimuthDegrees) * coverageDimmingFactor
+    }
+
+    // MARK: - Colour, and the night-legibility guarantee
+    //
+    //  Everything below mirrors the colour half of the terrain block in
+    //  `Shaders.metal`. It exists in Swift for one reason: the skyline has to
+    //  be *provably* readable at every time of day, and that is a statement
+    //  about colours, which means it has to be testable without a GPU.
+    //
+    //  The problem it solves: dune colour is derived from the sky (desaturated
+    //  toward its own luminance, then darkened per layer). By day that reads
+    //  beautifully. At full night the sky is only about (0.008, 0.020, 0.047),
+    //  so the furthest dune — the one *at* the skyline, painted at alpha 0.16 —
+    //  came out within about 1/255 of the sky behind it. The skyline simply
+    //  disappeared.
+    //
+    //  Two things fix it, and only one of them could:
+    //
+    //   1. **An absolute floor on how dark each layer is** relative to the sky
+    //      (`layerMinimumLuminanceDrop`). Stated in absolute units rather than
+    //      as a fraction, so it bites hardest exactly where the multiplicative
+    //      rule fails. By day the multiplicative colour is already far darker
+    //      than the floor requires, so the floor never binds and the approved
+    //      daytime look is untouched, byte for byte.
+    //
+    //   2. **A rim of sky along the crest of the furthest ridge**
+    //      (`skylineRimLift`) — a narrow additive lift in the degree or so
+    //      *above* the skyline. This is what actually makes the horizon read at
+    //      night, and it is the honest fix: with the furthest layer at alpha
+    //      0.16, darkening the dune can move it by at most 16% of the sky's own
+    //      brightness, which at night is a fifth of one 8-bit level. No amount
+    //      of darkening can win that; a silhouette edge can. It reads as the
+    //      last of the skyglow hugging the ridgeline, which is exactly how a
+    //      real night skyline is legible.
+    //
+    //  The rim is *inversely* scaled by sky brightness — full strength at the
+    //  darkest sky, gone by daylight — which is what "floored so it survives
+    //  the darkest sky" means in practice.
+    //
+    //  Note on units: the drawable is `bgra8Unorm`, not an sRGB format, so the
+    //  numbers the shader writes are already display-encoded. Contrast is
+    //  therefore reckoned directly in these units, where a difference of about
+    //  0.02 is five 8-bit levels and is comfortably visible on a dark screen.
+    //
+    //  MIRRORED IN `Shaders.metal`.
+
+    /// How far each layer's colour is pulled toward its own luminance before
+    /// being darkened. Dunes are a desaturated relative of the sky, never a
+    /// fixed brown. MIRRORED as the 0.62 in `terrainLayerColor`.
+    static let desaturation = 0.62
+
+    /// Rec. 709 luminance, the same weights the shader uses.
+    static func luminance(_ colour: SIMD3<Double>) -> Double {
+        colour.x * 0.2126 + colour.y * 0.7152 + colour.z * 0.0722
+    }
+
+    /// Minimum luminance each layer must sit *below* the sky it is painted
+    /// over, in absolute display units, far to near. Only binds when the
+    /// multiplicative rule fails to produce this much separation, which is to
+    /// say only at night.
+    ///
+    /// MIRRORED IN `Shaders.metal` as `kTerrainMinLuminanceDrop`.
+    static let layerMinimumLuminanceDrop: [Double] = [0.050, 0.065, 0.080, 0.095, 0.110]
+
+    /// Additive lift applied to the sky in the narrow band just above the
+    /// skyline crest, at full night. Absolute, not proportional: this is the
+    /// floor that survives the darkest sky.
+    ///
+    /// MIRRORED IN `Shaders.metal` as `kSkylineRimLift`.
+    static let skylineRimLift = SIMD3<Double>(0.034, 0.040, 0.052)
+
+    /// How far above the crest the rim reaches, in degrees. A rim, not a glow.
+    static let skylineRimWidthDegrees = 0.8
+
+    /// The rim fades out as the sky brightens, between these two sky
+    /// luminances. Below the first it is at full strength (night); above the
+    /// second it is absent entirely (day), so the approved daytime sky is
+    /// untouched.
+    static let rimFadeStartLuminance = 0.02
+    static let rimFadeEndLuminance = 0.25
+
+    /// Colour of one dune layer over the given sky colour.
+    ///
+    /// MIRRORED IN `Shaders.metal` as `terrainLayerColor`.
+    static func layerColor(index: Int, skyColor: SIMD3<Double>) -> SIMD3<Double> {
+        let skyLuminance = luminance(skyColor)
+        // Mixing toward the luminance is luminance-preserving, so the
+        // desaturated colour has exactly `skyLuminance` and the darkness factor
+        // is the only thing that darkens it.
+        let desaturated = skyColor * (1.0 - desaturation) + SIMD3(repeating: skyLuminance) * desaturation
+        var colour = desaturated * layers[index].darkness
+        let target = max(0.0, skyLuminance - layerMinimumLuminanceDrop[index])
+        let current = luminance(colour)
+        if current > target {
+            // Scale toward black, which preserves the hue the dune inherited
+            // from the sky and only takes brightness away.
+            colour *= target / max(current, 1e-6)
+        }
+        return colour
+    }
+
+    /// Strength of the skyline rim at this direction, 0...1 before the
+    /// brightness fade: 0 below the crest (where the dunes are), rising across
+    /// the crest and decaying over `skylineRimWidthDegrees` above it.
+    ///
+    /// MIRRORED IN `Shaders.metal` as `skylineRimMask`.
+    static func skylineRimMask(altitudeDegrees: Double, azimuthDegrees: Double) -> Double {
+        let crest = layerCrestDegrees(index: 0, azimuthDegrees: azimuthDegrees)
+        let rise = smoothstep(crest - edgeSoftnessDegrees, crest + edgeSoftnessDegrees, altitudeDegrees)
+        let decay = 1.0 - smoothstep(
+            crest + edgeSoftnessDegrees,
+            crest + edgeSoftnessDegrees + skylineRimWidthDegrees,
+            altitudeDegrees
+        )
+        return rise * decay
+    }
+
+    /// The rim's contribution to the sky at this direction.
+    ///
+    /// MIRRORED IN `Shaders.metal` as `skylineRim`.
+    static func skylineRim(
+        skyColor: SIMD3<Double>, altitudeDegrees: Double, azimuthDegrees: Double
+    ) -> SIMD3<Double> {
+        let fade = 1.0 - smoothstep(rimFadeStartLuminance, rimFadeEndLuminance, luminance(skyColor))
+        let mask = skylineRimMask(altitudeDegrees: altitudeDegrees, azimuthDegrees: azimuthDegrees)
+        return skylineRimLift * (fade * mask)
+    }
+
+    /// What the background shader finally paints at this direction, given the
+    /// sky colour it computed there: the rim added, then the five dune layers
+    /// composited far to near.
+    ///
+    /// MIRRORED IN `Shaders.metal` — this is the tail of
+    /// `backgroundFragmentShader`.
+    static func composite(
+        skyColor: SIMD3<Double>, altitudeDegrees: Double, azimuthDegrees: Double
+    ) -> SIMD3<Double> {
+        var colour = skyColor + skylineRim(
+            skyColor: skyColor, altitudeDegrees: altitudeDegrees, azimuthDegrees: azimuthDegrees
+        )
+        for index in layers.indices {
+            let alpha = layerOpacity(
+                index: index, altitudeDegrees: altitudeDegrees, azimuthDegrees: azimuthDegrees
+            )
+            guard alpha > 0 else { continue }
+            let layerColour = layerColor(index: index, skyColor: skyColor)
+            colour = colour * (1.0 - alpha) + layerColour * alpha
+        }
+        return colour
     }
 
     /// Same cubic smoothstep Metal's built-in uses, so the two sides match.
