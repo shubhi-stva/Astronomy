@@ -14,22 +14,28 @@ struct InfoPanelView: View {
 
     var body: some View {
         GlassPanel {
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: SkyMetrics.rowSpacing) {
                 HStack {
                     Text(object.name)
-                        .font(.title3.weight(.semibold))
+                        .font(SkyType.panelTitle)
                         .foregroundStyle(SkyPalette.chromeText)
                     Spacer()
                     Button(action: onDismiss) {
                         Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 13))
                             .foregroundStyle(SkyPalette.chromeSecondaryText)
                     }
                     .buttonStyle(.plain)
                 }
 
-                Text(kindLabel)
-                    .font(.caption)
-                    .foregroundStyle(SkyPalette.accentBlue)
+                // The kind is a category, not a sentence, so it is set as a
+                // tracked section label in caps rather than as caption text.
+                // At 9pt with 0.7 of tracking it reads as a tag under the name
+                // instead of as a second, competing line of prose.
+                Text(kindLabel.uppercased())
+                    .font(SkyType.sectionLabel)
+                    .tracking(SkyType.sectionLabelSpec.tracking)
+                    .foregroundStyle(SkyPalette.accentBlue.opacity(0.9))
 
                 Divider().overlay(SkyPalette.panelStroke)
 
@@ -95,7 +101,7 @@ struct InfoPanelView: View {
         // same confidence as an hour-old one would not be.
         if let caveat = SatelliteAccuracy.staleness(ageDays: satellite.elementSetAgeDays).caveat {
             Text(caveat)
-                .font(.system(size: 9))
+                .font(SkyType.footnoteNumeric)
                 .foregroundStyle(
                     SatelliteAccuracy.staleness(ageDays: satellite.elementSetAgeDays) == .unreliable
                         ? SkyPalette.warningAmber
@@ -155,13 +161,18 @@ struct InfoPanelView: View {
     }
 
     private func infoRow(_ label: String, _ value: String) -> some View {
-        HStack {
+        HStack(spacing: SkyMetrics.paddingSnug) {
             Text(label)
-                .font(.caption)
+                .font(SkyType.caption)
                 .foregroundStyle(SkyPalette.chromeSecondaryText)
-            Spacer()
+            Spacer(minLength: SkyMetrics.paddingSnug)
+            // Every value in this panel is or contains a number — RA, Dec,
+            // magnitude, altitude, range, NORAD ID, element age — so the value
+            // column is uniformly monospaced-digit. It is also a half-step
+            // heavier than its label, which is what makes the panel scan as
+            // two columns rather than as a block of grey text.
             Text(value)
-                .font(.caption.monospacedDigit())
+                .font(SkyType.captionNumeric)
                 .foregroundStyle(SkyPalette.chromeText)
         }
     }

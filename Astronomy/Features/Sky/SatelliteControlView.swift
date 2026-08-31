@@ -28,8 +28,9 @@ struct SatelliteControlView: View {
     var body: some View {
         GlassPanel {
             VStack(alignment: .leading, spacing: 0) {
-                HStack(spacing: 8) {
+                HStack(spacing: SkyMetrics.paddingSnug) {
                     Image(systemName: "antenna.radiowaves.left.and.right")
+                        .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(
                             viewModel.satellitesEnabled
                                 ? SkyPalette.satelliteLabel
@@ -39,9 +40,9 @@ struct SatelliteControlView: View {
 
                     if isExpanded {
                         Text("Satellites")
-                            .font(.caption.weight(.medium))
+                            .font(SkyType.body)
                             .foregroundStyle(SkyPalette.chromeText)
-                        Spacer(minLength: 12)
+                        Spacer(minLength: SkyMetrics.clusterSpacing)
                         Toggle("", isOn: $viewModel.satellitesEnabled)
                             .labelsHidden()
                             .toggleStyle(.switch)
@@ -52,13 +53,13 @@ struct SatelliteControlView: View {
                 if isExpanded {
                     Divider()
                         .overlay(SkyPalette.panelStroke)
-                        .padding(.vertical, 8)
+                        .padding(.vertical, SkyMetrics.paddingSnug)
 
                     HStack {
                         Text("Show all")
-                            .font(.caption)
+                            .font(SkyType.body)
                             .foregroundStyle(SkyPalette.chromeSecondaryText)
-                        Spacer(minLength: 12)
+                        Spacer(minLength: SkyMetrics.clusterSpacing)
                         Toggle("", isOn: $viewModel.showAllSatellites)
                             .labelsHidden()
                             .toggleStyle(.switch)
@@ -66,10 +67,14 @@ struct SatelliteControlView: View {
                             .disabled(!viewModel.satellitesEnabled)
                     }
 
+                    // Monospaced-digit and it earns it: the visible count
+                    // recomputes as the sky moves, so "142 visible of 16,079
+                    // tracked" would otherwise re-flow every few seconds under
+                    // a control nobody is touching.
                     Text(statusText)
-                        .font(.system(size: 9))
+                        .font(SkyType.footnoteNumeric)
                         .foregroundStyle(SkyPalette.chromeSecondaryText.opacity(0.75))
-                        .padding(.top, 6)
+                        .padding(.top, SkyMetrics.rowSpacing)
                         .fixedSize(horizontal: false, vertical: true)
 
                     // Element staleness, stated rather than implied. Drawn
@@ -78,9 +83,9 @@ struct SatelliteControlView: View {
                     // left to trust a marker that may be degrees out.
                     if let staleness = stalenessText {
                         Text(staleness)
-                            .font(.system(size: 9))
+                            .font(SkyType.footnoteNumeric)
                             .foregroundStyle(stalenessColor)
-                            .padding(.top, 4)
+                            .padding(.top, SkyMetrics.paddingTight)
                             .fixedSize(horizontal: false, vertical: true)
                     }
 
@@ -89,9 +94,9 @@ struct SatelliteControlView: View {
                     // for weeks on elements it shipped with.
                     if let failure = refreshFailureText {
                         Text(failure)
-                            .font(.system(size: 9))
+                            .font(SkyType.footnoteNumeric)
                             .foregroundStyle(SkyPalette.chromeSecondaryText.opacity(0.75))
-                            .padding(.top, 4)
+                            .padding(.top, SkyMetrics.paddingTight)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }

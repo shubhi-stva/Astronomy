@@ -33,8 +33,8 @@ struct TimeBarView: View {
 
     var body: some View {
         GlassPanel {
-            VStack(spacing: 8) {
-                HStack(spacing: 12) {
+            VStack(spacing: SkyMetrics.paddingSnug) {
+                HStack(spacing: SkyMetrics.clusterSpacing) {
                     // Isolated deliberately. The clock text changes once a
                     // second; the controls beside it do not. Reading
                     // `currentDate` in *this* body would make the whole bar --
@@ -53,7 +53,7 @@ struct TimeBarView: View {
 
                 if let caveat = viewModel.timeAccuracyCaveat {
                     Text(caveat)
-                        .font(.system(size: 9))
+                        .font(SkyType.footnoteNumeric)
                         .foregroundStyle(SkyPalette.warningAmber.opacity(0.85))
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: 520, alignment: .leading)
@@ -68,10 +68,12 @@ struct TimeBarView: View {
             viewModel.time.resetToNow()
         }
         .buttonStyle(.plain)
-        .font(.callout.weight(.medium))
+        // `.control` — the rounded design. This is a soft affordance you press,
+        // one of the three places in the app that earns Rounded.
+        .font(SkyType.control)
         .foregroundStyle(isLive ? SkyPalette.chromeSecondaryText : SkyPalette.accentBlue)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 4)
+        .padding(.horizontal, SkyMetrics.paddingSnug)
+        .padding(.vertical, SkyMetrics.paddingTight)
         .background(
             Capsule().fill(SkyPalette.accentBlue.opacity(isLive ? 0.08 : 0.22))
         )
@@ -107,7 +109,7 @@ private struct TimeStepControl: View {
     @State private var granularity: Granularity = .day
 
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: SkyMetrics.paddingTight) {
             stepButton(-1, symbol: "chevron.left")
 
             Menu {
@@ -116,7 +118,7 @@ private struct TimeStepControl: View {
                 }
             } label: {
                 Text(granularity.label)
-                    .font(.caption.weight(.medium))
+                    .font(SkyType.control)
                     .foregroundStyle(SkyPalette.chromeText)
                     .frame(width: 44)
             }
@@ -140,7 +142,7 @@ private struct TimeStepControl: View {
             Image(systemName: symbol)
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(SkyPalette.chromeText)
-                .frame(width: 20, height: 20)
+                .frame(width: SkyMetrics.iconButtonSize, height: SkyMetrics.iconButtonSize)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -155,14 +157,14 @@ private struct TimeTransportControl: View {
     let time: TimeController
 
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: SkyMetrics.rowSpacing) {
             Button {
                 time.togglePlaying()
             } label: {
                 Image(systemName: time.isPlaying ? "pause.fill" : "play.fill")
                     .font(.system(size: 11))
                     .foregroundStyle(SkyPalette.chromeText)
-                    .frame(width: 20, height: 20)
+                    .frame(width: SkyMetrics.iconButtonSize, height: SkyMetrics.iconButtonSize)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -174,7 +176,10 @@ private struct TimeTransportControl: View {
                 }
             } label: {
                 Text(time.playbackRate.label)
-                    .font(.caption.monospacedDigit().weight(.medium))
+                    // Monospaced digits, and this one matters visibly: the rate
+                    // chip is fixed-width, so "60x" and "1x" would otherwise
+                    // sit at different optical centres inside the same frame.
+                    .font(SkyType.readout)
                     .foregroundStyle(
                         time.playbackRate == .realTime
                             ? SkyPalette.chromeSecondaryText
@@ -207,7 +212,7 @@ private struct TimeJumpControl: View {
             Image(systemName: "calendar")
                 .font(.system(size: 12))
                 .foregroundStyle(SkyPalette.chromeText)
-                .frame(width: 20, height: 20)
+                .frame(width: SkyMetrics.iconButtonSize, height: SkyMetrics.iconButtonSize)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -223,7 +228,7 @@ private struct TimeJumpControl: View {
                 .datePickerStyle(.field)
 
                 Text("Planetary positions are modelled for \(EphemerisService.validYearRange.lowerBound)–\(EphemerisService.validYearRange.upperBound); the picker is limited to that range.")
-                    .font(.system(size: 9))
+                    .font(SkyType.footnoteNumeric)
                     .foregroundStyle(SkyPalette.chromeSecondaryText)
                     .frame(maxWidth: 260, alignment: .leading)
                     .fixedSize(horizontal: false, vertical: true)
@@ -237,7 +242,7 @@ private struct TimeJumpControl: View {
                     .keyboardShortcut(.defaultAction)
                 }
             }
-            .padding(14)
+            .padding(SkyMetrics.paddingPanel)
         }
     }
 }
@@ -266,24 +271,34 @@ private struct TimeClockReadout: View {
     }
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: SkyMetrics.paddingSnug) {
             Image(systemName: isLive ? "clock" : "clock.badge.exclamationmark")
+                .font(.system(size: 12))
                 .foregroundStyle(isLive ? SkyPalette.accentBlue : SkyPalette.warningAmber)
 
+            // `SkyType.clock` is monospaced-digit, which is the single most
+            // important instance of it in the app: this text redraws once a
+            // second, and with proportional digits every "1" that ticks past
+            // shifts the seconds field — and therefore the whole time bar's
+            // layout — by a fraction of a point. It reads as the bar breathing.
             Text(time.currentDate, format: .dateTime.year().month().day().hour().minute().second())
-                .font(.callout.monospacedDigit())
+                .font(SkyType.clock)
                 .foregroundStyle(isLive ? SkyPalette.chromeText : SkyPalette.warningAmber)
 
+            // The zone abbreviation is a fixed tag beside a live number, so it
+            // is set as a quiet section label: caps-height letters, tracked,
+            // clearly subordinate to the time it qualifies.
             Text(timeZoneAbbreviation)
-                .font(.caption.weight(.medium))
+                .font(SkyType.sectionLabel)
+                .tracking(SkyType.sectionLabelSpec.tracking)
                 .foregroundStyle(SkyPalette.chromeSecondaryText)
 
             if !isLive {
                 Text("OFF REAL TIME")
-                    .font(.system(size: 9, weight: .semibold))
-                    .tracking(0.8)
+                    .font(SkyType.badge)
+                    .tracking(SkyType.badgeSpec.tracking)
                     .foregroundStyle(SkyPalette.warningAmber)
-                    .padding(.horizontal, 7)
+                    .padding(.horizontal, SkyMetrics.rowSpacing)
                     .padding(.vertical, 3)
                     .background(Capsule().fill(SkyPalette.warningAmber.opacity(0.16)))
                     .overlay(Capsule().strokeBorder(SkyPalette.warningAmber.opacity(0.35), lineWidth: 1))

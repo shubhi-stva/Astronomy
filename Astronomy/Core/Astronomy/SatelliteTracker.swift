@@ -55,6 +55,39 @@ actor SatelliteTracker {
     private(set) var descriptors: [SatelliteDescriptor] = []
     private(set) var isLoaded = false
 
+    /// The most recent propagation, kept so the refresh scheduler can ask what
+    /// is actually overhead without propagating anything itself.
+    ///
+    /// Storing it costs one reference assignment per tick on an array the
+    /// tracker has just built and is about to hand out anyway — no copy, no
+    /// scan, and nothing at all on the frame path. The alternative (deriving
+    /// the list every tick, 2.5 times a second, for a consumer that reads it
+    /// once a day) would be exactly the kind of per-frame CPU work this
+    /// renderer has spent a lot of effort not doing.
+    private var lastSnapshot: SatelliteSnapshot?
+
+    /// Catalogue numbers of the objects that were sunlit and above the horizon
+    /// at the last tick, brightest prospects first — highest in the sky first,
+    /// which is the best proxy this app has for "most likely to be looked at".
+    ///
+    /// Used to decide which element sets a refresh should fetch *first*, so a
+    /// pass that is happening now is current within seconds rather than after
+    /// the whole catalogue has been walked.
+    func aboveHorizonCatalogNumbers(limit: Int) -> [Int] {
+        guard let snapshot = lastSnapshot, limit > 0 else { return [] }
+        // `altitudeOrder` is ascending, so the end of it is the top of the sky.
+        var out: [Int] = []
+        out.reserveCapacity(limit)
+        for orderIndex in snapshot.altitudeOrder.reversed() {
+            let sample = snapshot.samples[Int(orderIndex)]
+            guard sample.altitudeDegreesAtSnapshot > 0 else { break }
+            guard sample.illumination.isSunlit else { continue }
+            out.append(sample.catalogNumber)
+            if out.count == limit { break }
+        }
+        return out
+    }
+
     // MARK: - Loading
 
     /// Loads the catalogue and initialises every propagator. Safe to call more
@@ -176,13 +209,15 @@ actor SatelliteTracker {
         }
 
         let duration = start.duration(to: .now)
-        return SatelliteSnapshot(
+        let snapshot = SatelliteSnapshot(
             julianDay: julianDay,
             samples: samples,
             propagationDuration: TimeInterval(duration.components.seconds)
                 + Double(duration.components.attoseconds) * 1e-18,
             altitudeOrder: altitudeOrder
         )
+        lastSnapshot = snapshot
+        return snapshot
     }
 
     /// The observer's rotation into the topocentric frame, precomputed once per

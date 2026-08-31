@@ -52,8 +52,9 @@ struct SearchBarView: View {
     var body: some View {
         GlassPanel {
             VStack(alignment: .leading, spacing: 0) {
-                HStack(spacing: 8) {
+                HStack(spacing: SkyMetrics.paddingSnug) {
                     Image(systemName: "magnifyingglass")
+                        .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(showsField ? SkyPalette.accentBlue : SkyPalette.chromeSecondaryText)
                         .onTapGesture {
                             isExpanded = true
@@ -64,6 +65,10 @@ struct SearchBarView: View {
                         TextField("Search the sky", text: $viewModel.searchText)
                             .textFieldStyle(.plain)
                             .focused($isFocused)
+                            // Numeric-capable body: people type catalogue
+                            // designations here ("M42", "NGC 7000", "25544"),
+                            // and the field should not re-flow as they do.
+                            .font(SkyType.bodyNumeric)
                             .foregroundStyle(SkyPalette.chromeText)
                             .onChange(of: viewModel.searchText) { _, _ in
                                 viewModel.updateSearchResults()
@@ -80,6 +85,7 @@ struct SearchBarView: View {
                                 viewModel.searchResults = []
                             } label: {
                                 Image(systemName: "xmark.circle.fill")
+                                    .font(.system(size: 12))
                                     .foregroundStyle(SkyPalette.chromeSecondaryText)
                             }
                             .buttonStyle(.plain)
@@ -90,7 +96,7 @@ struct SearchBarView: View {
                 if showsField && !viewModel.searchResults.isEmpty {
                     Divider()
                         .overlay(SkyPalette.panelStroke)
-                        .padding(.vertical, 8)
+                        .padding(.vertical, SkyMetrics.paddingSnug)
 
                     VStack(alignment: .leading, spacing: 2) {
                         ForEach(viewModel.searchResults.prefix(8)) { object in
@@ -99,25 +105,35 @@ struct SearchBarView: View {
                                 isExpanded = false
                                 isFocused = false
                             } label: {
-                                HStack(spacing: 8) {
+                                HStack(spacing: SkyMetrics.paddingSnug) {
                                     // A category icon *and* a word. With
                                     // stars, deep-sky objects, satellites and
                                     // constellations all in one list, "M42"
                                     // and "ISS" and "Ori" are otherwise three
                                     // indistinguishable rows of text.
                                     Image(systemName: Self.symbol(for: object.kind))
-                                        .font(.caption)
+                                        .font(SkyType.caption)
                                         .frame(width: 14)
-                                        .foregroundStyle(SkyPalette.accentBlue)
+                                        .foregroundStyle(SkyPalette.accentBlue.opacity(0.85))
+                                    // Monospaced-digit: a result list mixing
+                                    // "Betelgeuse", "M42" and "NGC 7000" has a
+                                    // digit in most rows, and proportional
+                                    // figures make the list look ragged.
                                     Text(object.name)
+                                        .font(SkyType.bodyNumeric)
                                         .foregroundStyle(SkyPalette.chromeText)
                                         .lineLimit(1)
-                                    Spacer(minLength: 8)
-                                    Text(Self.categoryLabel(for: object))
-                                        .font(.caption2)
-                                        .foregroundStyle(SkyPalette.chromeSecondaryText)
+                                    Spacer(minLength: SkyMetrics.paddingSnug)
+                                    // The category is a tag on the row, set in
+                                    // the same tracked caps as every other tag
+                                    // in the app so the eye learns one form.
+                                    Text(Self.categoryLabel(for: object).uppercased())
+                                        .font(SkyType.sectionLabel)
+                                        .tracking(SkyType.sectionLabelSpec.tracking)
+                                        .foregroundStyle(SkyPalette.chromeSecondaryText.opacity(0.85))
+                                        .lineLimit(1)
                                 }
-                                .padding(.vertical, 4)
+                                .padding(.vertical, SkyMetrics.paddingTight)
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)

@@ -1298,8 +1298,18 @@ struct SkyGeometryBuilder {
             kind: kind, magnitude: magnitude, tint: tint,
             pointSize: size, illuminatedFraction: illuminatedFraction
         ) else { return }
+        // A planet's halo fades more slowly than its disk — see
+        // `StarAppearance.planetAuraVisibility` for why an additive halo needs
+        // that to survive a bright twilight sky. Sun and Moon are unchanged.
+        let auraAlpha: Float
+        switch kind {
+        case .planet, .dwarfPlanet:
+            auraAlpha = Float(StarAppearance.planetAuraVisibility(bodyVisibility: Double(alpha)))
+        default:
+            auraAlpha = alpha
+        }
         appendGlow(at: position, color: aura.color,
-                   size: aura.size, alpha: aura.alpha * alpha)
+                   size: aura.size, alpha: aura.alpha * auraAlpha)
     }
 
     private mutating func appendGlow(at position: SIMD2<Float>, color: SIMD4<Float>, size: Float, alpha: Float) {

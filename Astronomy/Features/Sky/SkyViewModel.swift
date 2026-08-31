@@ -8,6 +8,7 @@
 //  selection.
 //
 
+import AppKit
 import CoreGraphics
 import Foundation
 import Observation
@@ -264,7 +265,18 @@ final class SkyViewModel {
         satelliteRefreshTask = Task.detached(priority: .background) { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                let didRefresh = await SatelliteCatalogService.shared.refreshIfStale()
+                // What is actually over the user's head right now, asked once
+                // per refresh cycle rather than per tick, so the sweep can put
+                // those objects first. A pass in progress is made current in
+                // seconds instead of after the whole catalogue is walked.
+                let priority = await self.satelliteTracker.aboveHorizonCatalogNumbers(
+                    limit: SatelliteCatalogService.maximumTargetedRequests
+                )
+                let ageDays = await self.satelliteElementAgeDays
+                let didRefresh = await SatelliteCatalogService.shared.refreshIfStale(
+                    priorityCatalogNumbers: priority,
+                    elementAgeDays: ageDays
+                )
                 if didRefresh {
                     await self.satelliteTracker.reload()
                     await self.updateSatelliteDescriptors()
@@ -272,10 +284,69 @@ final class SkyViewModel {
                 await self.publishSatelliteRefreshStatus()
                 let delay = await SatelliteCatalogService.shared.nextRefreshDelay()
                     ?? SatelliteCatalogService.minimumRefreshInterval
-                try? await Task.sleep(for: .seconds(max(delay, 30)))
+                // The floor is what stops a permanently-failing refresh turning
+                // into a poll. It used to be 30 seconds, which — combined with
+                // a freshness clock that never ticked (see
+                // `SatelliteCatalogService.lastRefreshAge`) — is exactly what it
+                // became. The backoff schedule already starts at a minute.
+                try? await Task.sleep(
+                    for: .seconds(max(delay, SatelliteCatalogService.initialRetryInterval))
+                )
             }
         }
+        startSatelliteWakeObservers()
     }
+
+    /// Kicks the refresh loop when the machine comes back from sleep or the
+    /// app returns to the foreground after a long idle.
+    ///
+    /// Without this, "refresh once a day" means "refresh once a day *while the
+    /// app is awake*", and a laptop that is shut at midnight and opened at
+    /// eight is a laptop whose satellite loop slept through its own schedule
+    /// and then waited out the remainder of a timer that was measured against
+    /// a clock that had stopped. Waking is precisely the moment the elements
+    /// are most likely to be stale and the network most likely to be back.
+    ///
+    /// Both notifications are cheap and rare. Neither does any work itself: it
+    /// cancels the sleeping task and restarts the loop, which re-evaluates the
+    /// gates from scratch.
+    private func startSatelliteWakeObservers() {
+        guard satelliteWakeObservers.isEmpty else { return }
+        let center = NSWorkspace.shared.notificationCenter
+        satelliteWakeObservers.append(
+            center.addObserver(
+                forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.kickSatelliteRefresh() }
+            }
+        )
+        satelliteWakeObservers.append(
+            NotificationCenter.default.addObserver(
+                forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.kickSatelliteRefresh() }
+            }
+        )
+    }
+
+    private var satelliteWakeObservers: [NSObjectProtocol] = []
+    private var lastSatelliteRefreshKick: Date?
+
+    /// Restarts the refresh loop so its gates are re-evaluated immediately.
+    ///
+    /// Rate-limited to `wakeKickInterval`: `didBecomeActive` fires every time
+    /// the user cmd-tabs back, and that must not become a way to hammer the
+    /// sources. The one-day floor inside the service is the real guard; this
+    /// is belt and braces so we do not even ask.
+    private func kickSatelliteRefresh() {
+        let now = Date()
+        if let last = lastSatelliteRefreshKick,
+           now.timeIntervalSince(last) < Self.wakeKickInterval { return }
+        lastSatelliteRefreshKick = now
+        startSatelliteRefreshLoop()
+    }
+
+    static let wakeKickInterval: TimeInterval = 5 * 60
 
     /// The last refresh attempt's outcome, mirrored onto the main actor so the
     /// satellite control can show it. Failure is no longer silent.

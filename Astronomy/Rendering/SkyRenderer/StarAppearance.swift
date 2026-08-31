@@ -250,7 +250,32 @@ enum StarAppearance {
 
     /// Ceiling on aura alpha for a planet. The Sun is allowed past this; a
     /// planet never is.
-    static let planetAuraMaximumAlpha: Float = 0.30
+    ///
+    /// Lifted from 0.30 to 0.34 along with the slope below. Deliberately still
+    /// well under the brightest star's 0.58: a planet's glow is a steady
+    /// wash, not the hard spike of a scintillating point source, and the
+    /// planets' advantage over the stars is carried by halo *size* rather than
+    /// by density. That keeps the look restrained, which is the standing
+    /// instruction for this app.
+    static let planetAuraMaximumAlpha: Float = 0.34
+
+    /// Aura alpha earned per magnitude of brightness past
+    /// `auraMagnitudeThreshold`.
+    ///
+    /// Raised from 0.040 so the planets between Venus and the threshold
+    /// actually read as glowing rather than as dots with a faint smudge —
+    /// Jupiter goes 0.21 -> 0.29, Mars 0.14 -> 0.19, Saturn 0.10 -> 0.14. The
+    /// user's ask was that *all* the planets glow, not only the one at the
+    /// ceiling.
+    static let planetAuraAlphaPerMagnitude: Float = 0.055
+
+    /// Halo diameter in points earned per magnitude past the threshold, on top
+    /// of the disk-proportional term. See the size model in `aura`.
+    ///
+    /// 9.0 puts Venus (7.2 magnitudes of excess) at about 65 points before the
+    /// growth cap, which lands it just above the brightest star's 58 — the
+    /// right ordering, and the one that was inverted before.
+    static let planetAuraSizePerMagnitude: Float = 9.0
 
     /// How much of a body's aura is dissolved once its disk is fully resolved.
     ///
@@ -332,12 +357,37 @@ enum StarAppearance {
             // toward opposition pops a faint halo into existence the moment it
             // crosses magnitude 3. The slope is then set so Venus lands on the
             // ceiling and everything dimmer stays comfortably under it.
-            baseAlpha = min(planetAuraMaximumAlpha, 0.040 * excess)
+            baseAlpha = min(planetAuraMaximumAlpha, planetAuraAlphaPerMagnitude * excess)
             // Brighter planets also get a slightly *wider* halo, not just a
             // denser one, because that is how glare actually behaves.
             let widthBoost = Double(min(1.0, excess / 6.0))
+            // The halo has two size terms and it needs both.
+            //
+            // The first is proportional to the drawn disk. That is what makes
+            // the halo behave sensibly as you zoom: it grows with the body and
+            // stays in proportion to it.
+            //
+            // The second is proportional to the body's *brightness*, and its
+            // absence was the actual defect behind "Venus is not glowing".
+            // Venus is up and well placed and its aura alpha was already at
+            // the ceiling — but at a wide field a planet's disk is pinned to a
+            // floor of at most 11 points, so the halo was 11 x 3.5 = about 40
+            // points across. Sirius, eight magnitudes fainter, was getting 58.
+            // The brightest object in the night sky after the Moon was
+            // rendering a smaller halo than a first-magnitude star, and next
+            // to that comparison it read as a flat dot. The complaint was
+            // right and it was about size, not opacity.
+            //
+            // So brightness gets its own term, on the same footing as the
+            // disk, and `smoothMax` takes whichever is currently larger:
+            // brightness dominates at a wide field where the disk is a floor,
+            // the disk dominates once you have zoomed in and it is a real
+            // measured angular size. Zero at the threshold, like the alpha, so
+            // nothing pops into existence as a planet brightens past it.
+            let brightnessHalo = Double(planetAuraSizePerMagnitude * excess)
+            let diskHalo = Double(size) * (2.4 + 1.1 * widthBoost)
             haloSize = Float(smoothMin(
-                Double(size) * (2.4 + 1.1 * widthBoost),
+                smoothMax(diskHalo, brightnessHalo, softness: 12.0),
                 Double(size) * 1.20 + 55.0 + 25.0 * widthBoost,
                 softness: 22.0
             ))
@@ -350,6 +400,33 @@ enum StarAppearance {
         let alpha = baseAlpha * damping
         guard alpha > 0.0005 else { return nil }
         return Aura(size: min(200, haloSize), alpha: alpha, color: color)
+    }
+
+    /// The visibility multiplier a *planet's* aura fades by, given the
+    /// multiplier its disk fades by.
+    ///
+    /// The disk and the halo should not fade at the same rate, and the reason
+    /// is perceptual rather than physical. The halo is drawn additively over
+    /// the sky; against a bright twilight sky, adding a small amount of light
+    /// to something already bright produces far less visible contrast than
+    /// adding the same amount to a dark sky. Fading it at the same rate as the
+    /// disk therefore takes it away twice — once by the multiplier and once by
+    /// the background it is competing with — and it disappears exactly at
+    /// dusk, which is when Venus is at its most prominent and when the user is
+    /// most likely to be looking at it.
+    ///
+    /// A square root is the right shape and not merely a fudge: it is
+    /// monotonic, it is *exactly* 1 at full visibility so the approved
+    /// night-time look is untouched, and it is *exactly* 0 at zero visibility,
+    /// which is the property that matters. A flat floor would have left a halo
+    /// glowing over the terrain after the planet behind it had been dimmed
+    /// away. The halo is the last thing to fade, but it still fades.
+    ///
+    /// Applied to planets only. The Sun and Moon keep their existing
+    /// behaviour: they *are* the daylight, and their haloes have never had
+    /// this problem.
+    static func planetAuraVisibility(bodyVisibility: Double) -> Double {
+        max(0.0, min(1.0, bodyVisibility)).squareRoot()
     }
 
     /// Pulls a colour `amount` of the way toward white, preserving hue.

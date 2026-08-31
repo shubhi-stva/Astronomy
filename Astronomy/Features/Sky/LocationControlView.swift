@@ -18,7 +18,7 @@ struct LocationControlView: View {
 
     var body: some View {
         GlassPanel {
-            VStack(alignment: .trailing, spacing: 10) {
+            VStack(alignment: .trailing, spacing: SkyMetrics.paddingSnug) {
                 Button {
                     if !isExpanded {
                         latitudeText = String(format: "%.4f", viewModel.location.currentLocation.latitudeDegrees)
@@ -26,10 +26,18 @@ struct LocationControlView: View {
                     }
                     isExpanded.toggle()
                 } label: {
-                    HStack(spacing: 6) {
+                    HStack(spacing: SkyMetrics.rowSpacing) {
                         Image(systemName: "location")
+                            .font(.system(size: 11, weight: .medium))
+                        // Always monospaced-digit now, rather than only when
+                        // the summary happens to be coordinates. The previous
+                        // conditional meant the control changed typeface the
+                        // moment reverse-geocoding resolved, which was a
+                        // visible flicker on a control the user was not
+                        // interacting with. One face, and the coordinate case
+                        // still gets its stable columns.
                         Text(locationSummary)
-                            .font(viewModel.location.placeName == nil ? .callout.monospacedDigit() : .callout)
+                            .font(SkyType.bodyNumeric)
                     }
                     .foregroundStyle(SkyPalette.chromeText)
                 }
@@ -38,11 +46,12 @@ struct LocationControlView: View {
                 if isExpanded {
                     Divider().overlay(SkyPalette.panelStroke)
 
-                    VStack(alignment: .leading, spacing: 8) {
+                    VStack(alignment: .leading, spacing: SkyMetrics.paddingSnug) {
                         if let statusNote {
                             Text(statusNote)
-                                .font(.caption2)
+                                .font(SkyType.footnote)
                                 .foregroundStyle(SkyPalette.chromeSecondaryText)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
 
                         labeledField("Latitude", text: $latitudeText)
@@ -54,7 +63,7 @@ struct LocationControlView: View {
                                 isExpanded = false
                             }
                             .buttonStyle(.plain)
-                            .font(.caption)
+                            .font(SkyType.control)
                             .foregroundStyle(SkyPalette.chromeSecondaryText)
 
                             Spacer()
@@ -63,7 +72,7 @@ struct LocationControlView: View {
                                 applyManualLocation()
                             }
                             .buttonStyle(.plain)
-                            .font(.callout.weight(.medium))
+                            .font(SkyType.control)
                             .foregroundStyle(SkyPalette.accentBlue)
                         }
                     }
@@ -104,14 +113,27 @@ struct LocationControlView: View {
     }
 
     private func labeledField(_ label: String, text: Binding<String>) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(label)
-                .font(.caption2)
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label.uppercased())
+                .font(SkyType.sectionLabel)
+                .tracking(SkyType.sectionLabelSpec.tracking)
                 .foregroundStyle(SkyPalette.chromeSecondaryText)
+            // Latitude and longitude to four decimal places: the one place in
+            // the app where the user *edits* a number, so a stable digit width
+            // matters while typing as much as while reading.
             TextField(label, text: text)
                 .textFieldStyle(.plain)
-                .padding(6)
-                .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.06)))
+                .font(SkyType.bodyNumeric)
+                .padding(.horizontal, SkyMetrics.rowSpacing)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: SkyMetrics.radiusInner, style: .continuous)
+                        .fill(Color.white.opacity(0.05))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: SkyMetrics.radiusInner, style: .continuous)
+                        .strokeBorder(SkyPalette.panelStroke, lineWidth: SkyMetrics.strokeWidth)
+                )
                 .foregroundStyle(SkyPalette.chromeText)
         }
     }

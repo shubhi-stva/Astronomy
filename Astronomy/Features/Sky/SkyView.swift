@@ -51,8 +51,11 @@ struct SkyView: View {
                 SkyLabelsLayer(viewModel: viewModel)
                     .allowsHitTesting(false)
 
-                VStack {
-                    HStack(alignment: .top) {
+                VStack(spacing: 0) {
+                    // One gap between the top controls and one inset from the
+                    // window edge, both from `SkyMetrics`, so the two right-hand
+                    // pills sit in the same rhythm as everything inside them.
+                    HStack(alignment: .top, spacing: SkyMetrics.paddingSnug) {
                         SearchBarView(viewModel: viewModel)
 
                         Spacer()
@@ -61,7 +64,7 @@ struct SkyView: View {
 
                         LocationControlView(viewModel: viewModel, isExpanded: $showLocationControl)
                     }
-                    .padding(20)
+                    .padding(SkyMetrics.paddingScreen)
 
                     Spacer()
 
@@ -69,11 +72,11 @@ struct SkyView: View {
                         InfoPanelView(object: selected) {
                             viewModel.selectedObject = nil
                         }
-                        .padding(.bottom, 8)
+                        .padding(.bottom, SkyMetrics.paddingSnug)
                     }
 
                     TimeBarView(viewModel: viewModel)
-                        .padding(.bottom, 6)
+                        .padding(.bottom, SkyMetrics.rowSpacing)
 
                     // Required attribution. The Milky Way panorama is ESO's
                     // under CC BY 4.0, which obliges the credit to be shown
@@ -82,17 +85,18 @@ struct SkyView: View {
                     // never see the repository. Kept deliberately quiet so it
                     // does not compete with the sky.
                     Text("Milky Way: ESO/S. Brunier (CC BY 4.0) · Catalogues: HYG, OpenNGC (CC BY-SA 4.0) · Satellite elements: CelesTrak")
-                        .font(.system(size: 9))
-                        .foregroundStyle(SkyPalette.chromeSecondaryText.opacity(0.55))
-                        .padding(.bottom, 10)
+                        .font(SkyType.footnote)
+                        .foregroundStyle(SkyPalette.chromeSecondaryText.opacity(0.5))
+                        .padding(.bottom, SkyMetrics.paddingSnug)
                 }
 
                 if viewModel.isLoadingCatalog {
-                    VStack(spacing: 8) {
+                    VStack(spacing: SkyMetrics.paddingSnug) {
                         ProgressView()
+                            .controlSize(.small)
                             .tint(SkyPalette.chromeText)
                         Text("Loading star catalog…")
-                            .font(.caption)
+                            .font(SkyType.caption)
                             .foregroundStyle(SkyPalette.chromeSecondaryText)
                     }
                 }
