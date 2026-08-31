@@ -45,10 +45,115 @@ actor SatelliteCatalogService {
     /// pure functions — the parsers, the merge — and none of them ever put a
     /// byte on a disk. A test that only checks the code path is not evidence
     /// that the code path works.
-    let supportDirectory: URL?
+    let store: ElementSetStore
 
     init(supportDirectory: URL? = SatelliteCatalogService.defaultSupportDirectory) {
-        self.supportDirectory = supportDirectory
+        self.store = ElementSetStore(directory: supportDirectory)
+    }
+
+    var supportDirectory: URL? { store.directory }
+    var cacheFileURL: URL? { store.cacheURL }
+    var supplementFileURL: URL? { store.supplementURL }
+
+    // MARK: - The files on disk
+
+    /// The two files the refresh writes and the loader reads, and every
+    /// operation on them.
+    ///
+    /// Deliberately a plain synchronous value type rather than part of the
+    /// actor. None of this is asynchronous — it is `Data(contentsOf:)` and
+    /// `write(to:)` — and pulling it out means a test can drive the *real*
+    /// write-then-read-back path against a scratch directory, synchronously,
+    /// with no actor hop and no expectation to wait on.
+    ///
+    /// That matters more here than it usually would. This app's satellite
+    /// refresh failed silently from the day it was written, through three
+    /// separate rounds of "the satellites are stale again", and it survived
+    /// every one because the tests all stopped at the parsers and the merge.
+    /// They proved the pure functions were correct. They never once proved a
+    /// byte reached a disk, which was the thing that was broken.
+    struct ElementSetStore: Sendable {
+        let directory: URL?
+
+        var cacheURL: URL? { directory?.appendingPathComponent("satellites.txt") }
+        var supplementURL: URL? { directory?.appendingPathComponent("satellites-supplement.txt") }
+
+        /// Full-catalogue text if a cache has been downloaded, else nil.
+        /// The length check rejects a truncated or half-written file rather
+        /// than letting it stand in for 16,000 element sets.
+        func cachedCatalogText() -> String? {
+            guard let cacheURL,
+                  let data = try? Data(contentsOf: cacheURL),
+                  let text = String(data: data, encoding: .utf8),
+                  text.count > 1000 else { return nil }
+            return text
+        }
+
+        func supplementText() -> String? {
+            guard let supplementURL,
+                  let data = try? Data(contentsOf: supplementURL),
+                  let text = String(data: data, encoding: .utf8) else { return nil }
+            return text
+        }
+
+        func supplementElements() -> [TwoLineElement] {
+            guard let text = supplementText() else { return [] }
+            return TwoLineElement.parseCatalog(text)
+        }
+
+        @discardableResult
+        func writeCache(_ text: String) throws -> Bool {
+            guard let cacheURL else { return false }
+            try write(text, to: cacheURL)
+            return true
+        }
+
+        /// Folds fresher element sets into the supplement, newest epoch wins.
+        /// Returns true only when the bytes on disk actually changed, so a
+        /// caller can tell "we fetched the same thing again" from "there is
+        /// something new to reload".
+        @discardableResult
+        func mergeIntoSupplement(_ text: String) throws -> Bool {
+            guard let supplementURL else { return false }
+            let existing = supplementText() ?? ""
+            let merged = SatelliteCatalogService.mergeElementSetText(
+                supplement: text, onto: existing
+            )
+            guard merged != existing, !merged.isEmpty else { return false }
+            try write(merged, to: supplementURL)
+            return true
+        }
+
+        private func write(_ text: String, to destination: URL) throws {
+            try FileManager.default.createDirectory(
+                at: destination.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try Data(text.utf8).write(to: destination, options: .atomic)
+        }
+
+        /// Seconds since *anything* was last written here — the full cache or
+        /// the supplement, whichever is newer. Nil when neither exists.
+        ///
+        /// This is the freshness measure the refresh gate uses, and making it
+        /// span both files fixed a live bug. It used to read only the cache,
+        /// which is written only by a *complete* source; with CelesTrak
+        /// unreachable that file never existed, the age was always nil, the
+        /// computed delay was always zero, and the refresh loop re-ran every
+        /// thirty seconds for the life of the process. The one-day floor was
+        /// never in force, because the thing it measured was never there.
+        func lastRefreshAge(now: Date = Date()) -> TimeInterval? {
+            [age(of: cacheURL, now: now), age(of: supplementURL, now: now)]
+                .compactMap { $0 }
+                .min()
+        }
+
+        private func age(of url: URL?, now: Date) -> TimeInterval? {
+            guard let url,
+                  let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+                  let modified = attributes[.modificationDate] as? Date else { return nil }
+            return now.timeIntervalSince(modified)
+        }
     }
 
     /// A place element sets can be fetched from.
@@ -266,10 +371,7 @@ actor SatelliteCatalogService {
 
     /// Cached-then-bundled text, with no network access.
     private func loadCatalogText() throws -> String {
-        if let cacheURL = cacheFileURL,
-           let data = try? Data(contentsOf: cacheURL),
-           let text = String(data: data, encoding: .utf8),
-           text.count > 1000 {
+        if let text = store.cachedCatalogText() {
             loadedFromCache = true
             return text
         }
@@ -281,10 +383,7 @@ actor SatelliteCatalogService {
     }
 
     private func loadSupplementElements() -> [TwoLineElement] {
-        guard let url = supplementFileURL,
-              let data = try? Data(contentsOf: url),
-              let text = String(data: data, encoding: .utf8) else { return [] }
-        return TwoLineElement.parseCatalog(text)
+        store.supplementElements()
     }
 
     /// Merges a partial, fresher element set over a complete, older one.
@@ -331,34 +430,10 @@ actor SatelliteCatalogService {
         return max(0, Self.minimumRefreshInterval - age)
     }
 
-    /// Seconds since the full cache was written, or nil if there is no cache.
-    private func cacheAge() -> TimeInterval? {
-        Self.age(of: cacheFileURL)
-    }
-
-    /// Seconds since *anything* was last written by a refresh — the full cache
-    /// or the supplement, whichever is newer.
-    ///
-    /// This is the freshness measure `refreshIfStale` actually uses, and
-    /// replacing `cacheAge` with it fixes a live bug. `cacheAge` reads the
-    /// mtime of the full-catalogue file, which is only ever written by a
-    /// *complete* source. With CelesTrak unreachable that file never existed,
-    /// so `cacheAge()` returned nil, so `nextRefreshDelay()` returned 0, so the
-    /// refresh loop re-ran every thirty seconds for the life of the process —
-    /// re-downloading AMSAT's element sets roughly 2,800 times a day. The
-    /// one-day floor was never in force, because the thing it was measuring
-    /// was never there.
-    func lastRefreshAge() -> TimeInterval? {
-        let ages = [Self.age(of: cacheFileURL), Self.age(of: supplementFileURL)].compactMap { $0 }
-        return ages.min()
-    }
-
-    private static func age(of url: URL?) -> TimeInterval? {
-        guard let url,
-              let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
-              let modified = attributes[.modificationDate] as? Date else { return nil }
-        return Date().timeIntervalSince(modified)
-    }
+    /// Seconds since anything was last written by a refresh. See
+    /// `ElementSetStore.lastRefreshAge`, which is where the logic and the
+    /// explanation live.
+    func lastRefreshAge() -> TimeInterval? { store.lastRefreshAge() }
 
     /// Fetches fresh element sets if the cache is older than a day, trying each
     /// source in turn. Returns true when something on disk actually changed.
@@ -516,30 +591,19 @@ actor SatelliteCatalogService {
         // HTML error page on rate limiting, and a 300-byte "slow down" must not
         // replace 16,000 good element sets.
         guard elements.count >= source.minimumElementSets else { return false }
+        let stored: Bool
         if source.isComplete {
-            guard let destination = cacheFileURL else { return false }
-            try write(text, to: destination)
+            stored = try store.writeCache(text)
         } else {
             // Merged, not overwritten: two partial sources cover different
             // objects and each must be able to add to what the other left.
-            guard let destination = supplementFileURL else { return false }
-            let existing = (try? String(contentsOf: destination, encoding: .utf8)) ?? ""
-            let merged = Self.mergeElementSetText(supplement: text, onto: existing)
-            guard merged != existing else { return false }
-            try write(merged, to: destination)
+            stored = try store.mergeIntoSupplement(text)
         }
+        guard stored else { return false }
         Self.logger.info(
             "Refreshed \(elements.count) satellite element sets from \(source.name)"
         )
         return true
-    }
-
-    private func write(_ text: String, to destination: URL) throws {
-        try FileManager.default.createDirectory(
-            at: destination.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try Data(text.utf8).write(to: destination, options: .atomic)
     }
 
     /// Which objects the priority sweep covers: whatever the caller says is
@@ -574,7 +638,7 @@ actor SatelliteCatalogService {
     ///  * **It is bounded.** `maximumPages` and the page-size cap put a hard
     ///    ceiling on the traffic a single sweep can generate.
     private func refreshPaged(_ source: PagedSource) async throws -> Bool {
-        guard let destination = supplementFileURL else { return false }
+        guard supplementFileURL != nil else { return false }
 
         var pending: [String] = []
         var fetchedElementSets = 0
@@ -584,14 +648,9 @@ actor SatelliteCatalogService {
 
         func flush() throws {
             guard !pending.isEmpty else { return }
-            let existing = (try? String(contentsOf: destination, encoding: .utf8)) ?? ""
-            let merged = Self.mergeElementSetText(
-                supplement: pending.joined(), onto: existing
-            )
+            let text = pending.joined()
             pending.removeAll(keepingCapacity: true)
-            guard merged != existing else { return }
-            try write(merged, to: destination)
-            changedOnDisk = true
+            if try store.mergeIntoSupplement(text) { changedOnDisk = true }
         }
 
         pageLoop: for page in 1...source.maximumPages {
@@ -685,7 +744,7 @@ actor SatelliteCatalogService {
     /// response is to go away rather than to finish the loop.
     @discardableResult
     func refreshTargeted(catalogNumbers: [Int]) async -> Bool {
-        guard let destination = supplementFileURL, !catalogNumbers.isEmpty else { return false }
+        guard supplementFileURL != nil, !catalogNumbers.isEmpty else { return false }
 
         var fetched: [String] = []
         for (index, number) in catalogNumbers.prefix(Self.maximumTargetedRequests).enumerated() {
@@ -697,20 +756,7 @@ actor SatelliteCatalogService {
         }
         guard !fetched.isEmpty else { return false }
 
-        let existingText = (try? String(contentsOf: destination, encoding: .utf8)) ?? ""
-        let text = Self.mergeElementSetText(
-            supplement: fetched.joined(), onto: existingText
-        )
-        do {
-            try FileManager.default.createDirectory(
-                at: destination.deletingLastPathComponent(), withIntermediateDirectories: true
-            )
-            let existing = try? String(contentsOf: destination, encoding: .utf8)
-            guard existing != text else { return false }
-            try Data(text.utf8).write(to: destination, options: .atomic)
-        } catch {
-            return false
-        }
+        guard (try? store.mergeIntoSupplement(fetched.joined())) == true else { return false }
 
         refreshStatus.lastSuccess = Date()
         refreshStatus.lastSuccessfulSource = Self.targetedSourceName
@@ -907,13 +953,4 @@ actor SatelliteCatalogService {
         return base.appendingPathComponent("Astronomy", isDirectory: true)
     }
 
-    var cacheFileURL: URL? {
-        supportDirectory?.appendingPathComponent("satellites.txt")
-    }
-
-    /// Partial, fresher element sets from a fallback source, overlaid onto
-    /// whatever the full catalogue is.
-    var supplementFileURL: URL? {
-        supportDirectory?.appendingPathComponent("satellites-supplement.txt")
-    }
 }

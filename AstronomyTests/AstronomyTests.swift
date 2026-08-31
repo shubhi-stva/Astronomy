@@ -1315,10 +1315,21 @@ final class TimeContinuityTests: XCTestCase {
 
         XCTAssertGreaterThan(second, first, "the render clock stalled between display ticks")
 
-        // Sanity: it advanced by roughly the elapsed wall time, not a whole
-        // second and not zero.
+        // Bounded on one side only, deliberately. The property under test is
+        // that the clock is *continuous* — that it advances between the
+        // one-second display ticks rather than in one-second steps. The exact
+        // amount is scheduler jitter, and `Thread.sleep` overshoots freely on a
+        // loaded machine, so an upper bound near the sleep duration measures
+        // the test runner rather than the clock. (It did exactly that: this
+        // assertion failed under the full suite while the behaviour was fine.)
+        //
+        // The ceiling that *is* meaningful is the staircase this test exists to
+        // catch: if `julianDay` ever went back to being republished on the
+        // one-second tick, a 0.05 s sleep would show either no advance at all
+        // or a jump of a whole second.
         let elapsedSeconds = (second - first) * 86_400.0
-        XCTAssertEqual(elapsedSeconds, 0.05, accuracy: 0.04)
+        XCTAssertGreaterThanOrEqual(elapsedSeconds, 0.04, "advanced by less than the sleep")
+        XCTAssertLessThan(elapsedSeconds, 0.9, "looks like a one-second staircase, not a continuous clock")
     }
 
     /// Distinct reads must give distinct instants — the value is computed, not
