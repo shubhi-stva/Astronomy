@@ -292,27 +292,32 @@ struct SkyGeometryBuilder {
         projectedObjects.reserveCapacity(2048)
 
         let plan = starScanPlan()
+        // The scan walks `samples` — plain POD — and only reaches for the full
+        // `Star` (four refcounted optionals) once a star has actually landed on
+        // screen. See `StarIndex.Sample`.
+        let scan = plan.samples
         for range in plan.ranges {
         for i in range {
-            let star = plan.stars[i]
+            let magnitude = scan[i].magnitude
             // Magnitude is the cheapest possible rejection, and within a cell
             // the stars are magnitude-ascending, so this ends the cell rather
             // than skipping one star.
-            if star.magnitude >= magnitudeLimit { break }
+            if magnitude >= magnitudeLimit { break }
 
             // Cheap pre-reject against the *above-horizon* limit only when the
             // two limits agree; otherwise the star has to be projected before
             // its limit is known, since the limit depends on which hemisphere
             // it falls in.
-            if !subHorizonSkyDiffers && star.magnitude >= aboveHorizonLimit { break }
+            if !subHorizonSkyDiffers && magnitude >= aboveHorizonLimit { break }
 
             // Projection first, alt/az only for what survives. The terrain
             // dimming and the sub-horizon sky model both need alt/az, and both
             // are irrelevant for a star that is not on screen — which, after a
             // cull tuned to be conservative, is most of what arrives here.
-            let starDirection = projector.direction(j2000: star.equatorial)
+            let starDirection = projector.direction(j2000Unit: scan[i].direction)
             guard let ndc = projector.project(direction: starDirection) else { continue }
             guard isOnScreen(ndc) else { continue }
+            let star = plan.stars[i]
             let starHorizontal = projector.horizontal(direction: starDirection)
             let shaded = (
                 ndc: ndc,
@@ -397,9 +402,24 @@ struct SkyGeometryBuilder {
     /// Without an index — catalogue still loading, or a hand-built snapshot in
     /// a test — it degrades to one range covering the whole catalogue, which
     /// produces byte-identical geometry, just slower.
-    private func starScanPlan() -> (stars: [Star], ranges: [Range<Int>]) {
+    private func starScanPlan()
+        -> (stars: [Star], samples: [StarIndex.Sample], ranges: [Range<Int>])
+    {
         guard let index = frameData.starIndex else {
-            return (frameData.stars, frameData.stars.isEmpty ? [] : [0..<frameData.stars.count])
+            // No index means either the catalogue has not finished loading (in
+            // which case `stars` is empty and this costs nothing) or a
+            // hand-built snapshot in a test, which is a handful of stars. The
+            // samples are synthesised here rather than duplicating the scan
+            // loop, so there is exactly one star pass to reason about.
+            let stars = frameData.stars
+            guard !stars.isEmpty else { return ([], [], []) }
+            let samples = stars.map {
+                StarIndex.Sample(
+                    direction: StarIndex.direction(raDegrees: $0.ra, decDegrees: $0.dec),
+                    magnitude: $0.magnitude
+                )
+            }
+            return (stars, samples, [0..<stars.count])
         }
 
         let theta = StarIndex.fieldAngularRadiusRadians(
@@ -420,6 +440,7 @@ struct SkyGeometryBuilder {
 
         return (
             index.stars,
+            index.samples,
             index.visibleCellRanges(centerDirection: centerDirection, angularRadiusRadians: theta)
         )
     }

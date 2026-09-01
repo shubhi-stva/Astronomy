@@ -75,8 +75,29 @@ struct StarIndex {
         let count: Int
     }
 
+    /// The two fields the per-frame scan needs before it knows whether a star
+    /// is worth looking at properly, in a form that costs nothing to touch.
+    ///
+    /// `Star` carries four optional `String`s (name, spectral type, Gliese,
+    /// Bayer/Flamsteed), so every `stars[i]` in the frame loop is four retains
+    /// and four releases — paid for the ~8,500 candidates a wide dark field
+    /// hands over, of which only ~2,500 are ever drawn. This array is plain
+    /// POD: the scan reads it, and only the survivors pay for the real `Star`.
+    ///
+    /// `direction` is the J2000 equatorial unit vector, which is a function of
+    /// the catalogue position alone and so does not change from frame to
+    /// frame. It is computed by exactly the expression `SkyProjector.unitVector`
+    /// uses, so hoisting it here removes four trigonometric calls per candidate
+    /// per frame without moving any star by a single bit.
+    struct Sample {
+        let direction: SIMD3<Double>
+        let magnitude: Double
+    }
+
     /// The catalogue, reordered so every cell's stars are contiguous.
     let stars: [Star]
+    /// Parallel to `stars`, index for index.
+    let samples: [Sample]
     let cells: [Cell]
 
     // MARK: - Construction
@@ -127,6 +148,12 @@ struct StarIndex {
 
         self.stars = flattened
         self.cells = builtCells
+        self.samples = flattened.map {
+            Sample(
+                direction: Self.direction(raDegrees: $0.ra, decDegrees: $0.dec),
+                magnitude: $0.magnitude
+            )
+        }
     }
 
     /// Which cell a coordinate falls in. Clamped rather than trusted, so a

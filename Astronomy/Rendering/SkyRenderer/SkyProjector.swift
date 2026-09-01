@@ -135,6 +135,15 @@ nonisolated struct SkyProjector {
         j2000ToHorizontal * Self.unitVector(equatorial)
     }
 
+    /// Horizontal-frame unit vector for a J2000 catalogue position whose unit
+    /// vector has already been computed (see `StarIndex.Sample`). Identical to
+    /// `direction(j2000:)` minus the four trigonometric calls that turn RA/Dec
+    /// into that vector.
+    @inline(__always)
+    func direction(j2000Unit v: SIMD3<Double>) -> SIMD3<Double> {
+        j2000ToHorizontal * v
+    }
+
     /// Horizontal-frame unit vector for a position already referred to the
     /// equinox of date (Sun, Moon, planets).
     @inline(__always)
