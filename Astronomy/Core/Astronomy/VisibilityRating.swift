@@ -85,7 +85,7 @@
 //     is harder than many magnitude-9 galaxies. Mean surface brightness inside
 //     the ellipse:
 //
-//         SB = m + 2.5 * log10(2 * pi * a * b)      [a, b semi-axes in arcsec]
+//         SB = m + 2.5 * log10(pi * a * b)          [a, b semi-axes in arcsec]
 //
 //     and the constraint is the contrast against the sky, in mag/arcsec^2:
 //
@@ -105,7 +105,7 @@
 //
 //     with a default aperture of 80 mm — a small telescope or large binocular,
 //     which is what "what should I look at tonight" usually means. Under a dark
-//     sky that gives 10.9, which is the right order for an 80 mm instrument.
+//     sky that gives 11.8, which is the right order for an 80 mm instrument.
 //     The constraint is the margin `m_lim - (m + k_ext * X)`:
 //
 //         >= 2.0     Excellent

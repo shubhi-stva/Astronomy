@@ -156,20 +156,42 @@ enum TonightPlanner {
     /// Anchoring on the Sun's transit rather than on midnight is what makes the
     /// window unambiguous: between noon and the following noon there is exactly
     /// one sunset and one sunrise, in that order, so "tonight" needs no special
-    /// cases for a user scrubbing to 2am.
+    /// cases for a user scrubbing to 2am. The consequence, stated plainly, is
+    /// that before local noon the report describes the night now ending rather
+    /// than the one about to begin — which is the right answer for someone
+    /// still outside at 2am, and the price of having no ambiguous instants.
     static func anchorJulianDay(observer: GeographicLocation, julianDay: Double) -> Double {
-        // Search a day centred on the instant, so the transit found is the one
-        // nearest to it in either direction.
-        let nearby = RiseSetCalculator.sunEvents(
-            standardAltitudeDegrees: 0,
-            observer: observer,
-            startJulianDay: julianDay - 0.5,
-            durationDays: 1.0
-        )
-        let transit = nearby.transitJulianDay
-        // Before that transit means the night in progress started at the
-        // previous one.
-        return julianDay < transit ? transit - 1.0 : transit
+        let nearest = solarTransit(observer: observer, near: julianDay)
+        if nearest <= julianDay { return nearest }
+        // Before this transit, so the night in progress began at the previous
+        // one — found by the same solver rather than by subtracting a day, since
+        // successive solar transits are not exactly 24 hours apart.
+        return solarTransit(observer: observer, near: julianDay - 1.0)
+    }
+
+    /// The solar transit nearest `julianDay`, i.e. the instant the Sun's hour
+    /// angle is zero.
+    ///
+    /// A direct Newton iteration on the hour angle rather than a search for the
+    /// altitude maximum: hour angle has a single zero per day and a known,
+    /// almost constant rate (360.985647 deg/day, the sidereal rotation rate),
+    /// which makes this both unambiguous — the altitude maximum in a 24-hour
+    /// window is not, since such a window can contain two transits — and exact
+    /// to the millisecond in three iterations.
+    static func solarTransit(observer: GeographicLocation, near julianDay: Double) -> Double {
+        var t = julianDay
+        for _ in 0..<5 {
+            let lst = CoordinateTransformService.localSiderealTimeDegrees(
+                julianDay: t, longitudeDegrees: observer.longitudeDegrees
+            )
+            let ra = SunPosition.equatorialCoordinate(julianDay: t).rightAscensionDegrees
+            var hourAngle = Angle.normalizeDegrees(lst - ra)
+            if hourAngle > 180 { hourAngle -= 360 }
+            let correction = hourAngle / 360.985647
+            t -= correction
+            if abs(correction) < 1e-9 { break }
+        }
+        return t
     }
 
     private static func boundary(
