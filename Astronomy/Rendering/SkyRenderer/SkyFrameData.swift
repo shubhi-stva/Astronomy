@@ -104,7 +104,57 @@ struct SkyFrameData {
 /// A projected screen-space point plus the source object, produced by the
 /// renderer/hit-tester so selection logic can reuse the exact same
 /// projection math as drawing.
+/// Stars are carried as the catalogue row rather than as a built
+/// `CelestialObject`, and converted only when something actually asks for one.
+///
+/// Turning a `Star` into a `CelestialObject` allocates two strings — the
+/// `"star-<row>"` identity and the display name — and at a wide, dark field the
+/// builder produces ~2,500 of them per frame purely so that a *click*, which
+/// happens a few times a minute at most, can say what it hit. Measured on the
+/// real catalogue that was 0.69 ms of a 2.15 ms frame in Release: the single
+/// largest item left in the pipeline, and all of it thrown away unread.
+///
+/// The three things anyone asks of a `ProjectedObject` are its screen position
+/// (free), whether it is the selected one (`matches(id:)`, free), and — for the
+/// one element that answers yes — the whole object. Only the last converts.
 struct ProjectedObject {
-    let object: CelestialObject
+
+    private enum Source {
+        case resolved(CelestialObject)
+        case star(Star)
+    }
+
+    private let source: Source
     let ndcPosition: SIMD2<Double>
+
+    init(object: CelestialObject, ndcPosition: SIMD2<Double>) {
+        self.source = .resolved(object)
+        self.ndcPosition = ndcPosition
+    }
+
+    init(star: Star, ndcPosition: SIMD2<Double>) {
+        self.source = .star(star)
+        self.ndcPosition = ndcPosition
+    }
+
+    /// The object this point represents. For a star this builds the
+    /// `CelestialObject` on demand — identical to what the builder used to
+    /// store eagerly, so callers see no difference beyond when the work happens.
+    var object: CelestialObject {
+        switch source {
+        case .resolved(let object): return object
+        case .star(let star): return star.asCelestialObject
+        }
+    }
+
+    /// Whether this is the object with `id`, without building a
+    /// `CelestialObject` to find out. `starRowID` is the row id already parsed
+    /// out of the query by `Star.rowID(fromObjectID:)`, so the scan over a few
+    /// thousand points costs one integer compare each.
+    func matches(objectID id: String, starRowID: Int?) -> Bool {
+        switch source {
+        case .resolved(let object): return object.id == id
+        case .star(let star): return star.id == starRowID
+        }
+    }
 }

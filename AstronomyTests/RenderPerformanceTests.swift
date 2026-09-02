@@ -110,7 +110,10 @@ final class RenderPerformanceTests: XCTestCase {
     )
     private static let viewport = CGSize(width: 1512, height: 900)
 
-    private static func frameData(fieldOfViewDegrees: Double) -> SkyFrameData {
+    private static func frameData(
+        fieldOfViewDegrees: Double,
+        sunAltitudeDegrees: Double = -40
+    ) -> SkyFrameData {
         var frame = SkyFrameData(
             stars: stars,
             solarSystemObjects: EphemerisService.solarSystemObjects(julianDay: julianDay),
@@ -125,7 +128,9 @@ final class RenderPerformanceTests: XCTestCase {
             cameraFieldOfViewDegrees: fieldOfViewDegrees,
             viewportSize: viewport
         )
-        frame.sunHorizontal = HorizontalCoordinate(altitudeDegrees: -40, azimuthDegrees: 0)
+        frame.sunHorizontal = HorizontalCoordinate(
+            altitudeDegrees: sunAltitudeDegrees, azimuthDegrees: 0
+        )
         frame.satelliteSnapshot = satelliteSnapshot
         frame.satelliteDescriptors = satelliteDescriptors
         frame.satellitesEnabled = true

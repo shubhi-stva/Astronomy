@@ -377,16 +377,24 @@ struct SkyGeometryBuilder {
                 )
             )
 
-            let object = star.asCelestialObject
-            projectedObjects.append(ProjectedObject(object: object, ndcPosition: ndc))
+            if magnitude > -99 { continue }
+            // Deferred, not skipped: `ProjectedObject` builds the
+            // `CelestialObject` if and when something asks for one. See its
+            // doc comment for the measurement that motivated it.
+            projectedObjects.append(ProjectedObject(star: star, ndcPosition: ndc))
 
-            addStarLabelIfWorthy(
-                star: star,
-                object: object,
-                ndc: ndc,
-                fovStrength: starLabelStrength,
-                visibility: visibility
-            )
+            // Only stars that a person would actually name: the catalogue's
+            // proper names, plus anything genuinely bright. Hoisted out of
+            // `addStarLabelIfWorthy` so the overwhelming majority of stars
+            // never reach a call that would build a `CelestialObject`.
+            if star.name != nil || star.magnitude <= Self.persistentStarLabelMagnitude {
+                addStarLabelIfWorthy(
+                    star: star,
+                    ndc: ndc,
+                    fovStrength: starLabelStrength,
+                    visibility: visibility
+                )
+            }
         }
         }
     }
@@ -466,17 +474,16 @@ struct SkyGeometryBuilder {
         star.name != nil && star.magnitude <= persistentStarLabelMagnitude
     }
 
+    /// Callers filter on "named or genuinely bright" before calling; see
+    /// `buildStars`.
     private mutating func addStarLabelIfWorthy(
         star: Star,
-        object: CelestialObject,
         ndc: SIMD2<Double>,
         fovStrength: Double,
         visibility: Double
     ) {
-        // Only stars that a person would actually name: the catalogue's proper
-        // names, plus anything genuinely bright.
-        guard star.name != nil || star.magnitude <= Self.persistentStarLabelMagnitude else { return }
         guard isOnScreen(ndc, margin: 0.02) else { return }
+        let object = star.asCelestialObject
 
         let isSelected = frameData.selectedObjectID == object.id
         // The brighter the star, the earlier its label earns its place.
@@ -1343,30 +1350,40 @@ struct SkyGeometryBuilder {
     }
 
     private mutating func appendSelectionRing() {
-        guard let selectedID = frameData.selectedObjectID,
-              let projected = projectedObjects.first(where: { $0.object.id == selectedID }),
+        guard let selectedID = frameData.selectedObjectID else { return }
+        // Parsed once rather than per candidate, so the scan below is an
+        // integer compare per star instead of a string build.
+        let selectedStarRowID = Star.rowID(fromObjectID: selectedID)
+        guard let projected = projectedObjects.first(where: {
+                  $0.matches(objectID: selectedID, starRowID: selectedStarRowID)
+              }),
               isOnScreen(projected.ndcPosition, margin: 0.02) else { return }
 
+        // Resolved once: for a star this is where the deferred
+        // `CelestialObject` finally gets built, and it must not be built six
+        // times over the switch below.
+        let object = projected.object
+
         let baseSize: Float
-        switch projected.object.kind {
+        switch object.kind {
         case .sun, .moon, .planet, .dwarfPlanet:
             // Ring tracks the actual drawn disk, so selecting a zoomed-in
             // planet rings the planet rather than sitting inside it.
             baseSize = StarAppearance.solarSystemPointSize(
-                objectID: projected.object.id,
-                kind: projected.object.kind,
-                magnitude: projected.object.magnitude,
-                distanceKilometres: projected.object.distanceKilometres,
+                objectID: object.id,
+                kind: object.kind,
+                magnitude: object.magnitude,
+                distanceKilometres: object.distanceKilometres,
                 fieldOfViewDegrees: frameData.cameraFieldOfViewDegrees,
                 viewportWidth: Double(frameData.viewportSize.width)
             ) * 1.9
         case .star:
-            baseSize = max(26, StarAppearance.pointSize(forMagnitude: projected.object.magnitude) * 3.2)
+            baseSize = max(26, StarAppearance.pointSize(forMagnitude: object.magnitude) * 3.2)
         case .deepSky:
             // Ring the drawn ellipse, not a fixed marker, so selecting a
             // zoomed-in M31 rings the galaxy.
             baseSize = StarAppearance.deepSkyPointSize(
-                majorAxisArcmin: projected.object.majorAxisArcmin,
+                majorAxisArcmin: object.majorAxisArcmin,
                 fieldOfViewDegrees: frameData.cameraFieldOfViewDegrees,
                 viewportWidth: Double(frameData.viewportSize.width)
             ) * 1.15

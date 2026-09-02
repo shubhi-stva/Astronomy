@@ -93,6 +93,15 @@ struct Star: Identifiable, Codable, Hashable {
         return "HYG \(id)"
     }
 
+    /// The row id inside a `"star-<row>"` object identity, or nil if `objectID`
+    /// does not name a star. The inverse of the `id` `asCelestialObject` builds,
+    /// so a caller holding an object id can compare against catalogue rows
+    /// without building a `CelestialObject` per row.
+    static func rowID(fromObjectID objectID: String) -> Int? {
+        guard objectID.hasPrefix("star-") else { return nil }
+        return Int(objectID.dropFirst(5))
+    }
+
     var asCelestialObject: CelestialObject {
         CelestialObject(
             id: "star-\(id)",
