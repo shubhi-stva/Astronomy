@@ -13,7 +13,8 @@ Astronomy/
   Core/
     Time/               JulianDate, TimeController — no SwiftUI/Metal imports.
     Coordinates/         CoordinateTransformService, spherical coordinate types.
-    Astronomy/            SunPosition, MoonPosition, PlanetPosition, EphemerisService.
+    Astronomy/            SunPosition, MoonPosition, PlanetPosition, EphemerisService,
+                          RiseSetCalculator, VisibilityRating, TonightReport, SkyPath.
     Models/              CelestialObject, Star, SavedLocation (SwiftData).
   Data/
     Catalogs/            Bundled stars.json / constellations.json + CatalogService.
@@ -176,6 +177,134 @@ preserved, which matters for constellation shapes to look right). Click
 hit-testing reuses the exact same per-frame projected positions the
 renderer just drew (`SkyRenderer.lastProjectedObjects`), so selection is
 always pixel-consistent with what's on screen.
+
+## Rise, set and transit
+
+`Core/Astronomy/RiseSetCalculator.swift` solves `h(t) = h0` for the instant a
+body's altitude crosses a standard altitude, and locates its culmination.
+Standard altitudes are Meeus, *Astronomical Algorithms* 2nd ed., Ch. 15 (15.1):
+`-0.5667°` for a point source (horizon refraction), `-0.8333°` for the Sun (the
+same refraction plus the solar semidiameter, since sunrise is the upper limb),
+`-6 / -12 / -18°` for civil, nautical and astronomical twilight (definitions,
+so no refraction term), and `0.7275·π − 34'` for the Moon, whose ~57' of
+horizontal parallax makes its `h0` *positive*.
+
+**The method is not Meeus's own three-value interpolation, deliberately.**
+15.2 interpolates apparent positions from three printed almanac entries because
+that is all a 1990s reader had. Here the ephemeris is a function that can be
+evaluated at any instant in microseconds, so the interpolation is pure
+downside — it is the part carrying the error, and it degrades exactly where the
+body moves fastest (the Moon) and where the crossing is most oblique (high
+latitudes). Instead:
+
+1. `h(t)` is sampled on a 10-minute grid across the window, **re-evaluating the
+   body's position at every sample**, so the object's own motion over the night
+   is exact rather than assumed linear.
+2. Each grid interval straddling `h0` brackets a crossing, refined by
+   **bisection** to 1e-6 d (0.09 s). Bisection over Newton because it cannot
+   diverge, and the cases that make Newton diverge — a grazing circumpolar
+   object, a polar-circle Sun — are precisely the ones this has to get right.
+3. Transit is the maximum of `h(t)`, found by ternary search on the bracket
+   around the best grid sample (altitude is unimodal over one diurnal cycle).
+
+The awkward cases are *reported*, never invented. `Circumstance` distinguishes
+`risesAndSets`, `alwaysUp` (circumpolar, or polar day) and `neverUp`, and every
+time in `NightWindow` is optional: a Tromsø June has no sunset, and a Reykjavík
+June has a sunset but never reaches −18°, so there is no astronomical night at
+all and the panel says so rather than showing a dash.
+
+Verified against published values in `AstronomyTests/TonightTests.swift`: Meeus
+Example 15.a (Venus from Boston, 1988-03-20) to under a minute on all three of
+rise, transit and set, and the USNO sunrise/sunset for New York on the 2024 June
+solstice to under 36 seconds. Circumpolar, never-rising and high-latitude cases
+are asserted structurally rather than numerically, because the right answer
+there is "there is no such time".
+
+## The visibility model — why it is not a score
+
+The founding brief says: *avoid arbitrary scores; define the reasoning behind
+the visibility calculation.* `Core/Astronomy/VisibilityRating.swift` therefore
+contains **no weighted sum and no 0–100 number.** It evaluates four independent
+physical constraints and takes the **worst** of them — a limiting-factor model —
+and reports which constraint that was (`limitingFactor`). One fatal problem
+cannot be averaged away by three good numbers, and every band boundary is a
+statement about the sky rather than a tuning knob.
+
+| Constraint | Quantity | Excellent | Good | Difficult | Not visible |
+|---|---|---|---|---|---|
+| Altitude / airmass | peak altitude during darkness; airmass by Kasten & Young (1989) | ≥ 40° (X ≤ 1.56) | ≥ 25° (X ≤ 2.37) | ≥ 10° (X ≤ 5.6) | < 10° |
+| Time in darkness | hours above 25° while the Sun is below −18° | ≥ 2 h | ≥ 1 h | > 0 h | 0 h |
+| Moonlight | `impact = k^1.5 · sepFactor · upFraction` | < 0.25 | < 0.55 | ≥ 0.55 | — |
+| Contrast (extended) | `C = skySB − targetSB − k·X` | ≥ 1.5 | ≥ 0.5 | ≥ −1.0 | < −1.0 |
+| Brightness (point) | `m_lim − (m + k·X)` | ≥ 2.0 | ≥ 1.0 | ≥ 0 | < 0 |
+
+The supporting quantities, and where each number comes from:
+
+- **Airmass** `X = 1 / (sin h + 0.50572 (h + 6.07995)^-1.6364)` — Kasten & Young
+  (1989), better than 1% to the horizon where `sec z` diverges. Extinction is
+  `k·X` with `k = 0.28 mag/airmass`, a standard clear-site V-band value.
+- **Sky brightness** is a real surface brightness, not a penalty coefficient, so
+  it can be compared to the target's own. Two published anchors fix the scale: a
+  dark moonless V sky at **21.8 mag/arcsec²**, a high full Moon driving it to
+  about **18.5** near the target. The model interpolates:
+  `skySB = 21.8 − 3.5 · impact`, with
+  `impact = k^1.5 · (0.35 + 0.65·(1 − min(ρ,120)/120)) · upFraction`.
+  `k` is the illuminated fraction (the 1.5 power is why a quarter Moon costs so
+  much less than a full one); `ρ` is the Moon–target separation, with a 0.35
+  floor because moonlight scatters across the whole sky; `upFraction` is how much
+  of the dark window the Moon is actually above the horizon — a Moon that has set
+  costs nothing.
+- **Surface brightness** `SB = m + 2.5 log10(π a b)` (a, b semi-axes in arcsec).
+  Extended objects are limited by this, not by integrated magnitude, which is why
+  M33 at mag 5.7 is harder than many mag-9 galaxies.
+- **Limiting magnitude** for point sources assumes a stated instrument:
+  `m_lim = skySB − 15.3 + 5 log10(D/7mm)` with `D = 80 mm`, calibrated so a
+  21.8 sky gives the conventional 6.5 naked-eye limit at a 7 mm pupil. Under a
+  dark sky the 80 mm figure is 11.8.
+
+`TonightPlanner` assembles this into the dashboard: the night window anchored on
+solar noon (found by Newton iteration on the Sun's hour angle, so a 24-hour
+window containing two transits is never ambiguous), the Moon, the planets, and
+the deep-sky catalogue filtered to magnitude ≤ 12 and ranked best-band-first.
+The panel's second line per target is the derivation — peak altitude, airmass,
+hours in darkness, limiting factor — not decoration.
+
+## Object sky paths
+
+`Core/Astronomy/SkyPath.swift` samples the track a selected object traces across
+the observer's sky, in the **horizontal** frame. That choice is the feature: a
+path in RA/Dec is a dot for a star, whereas the horizontal-frame path is the
+composition of the object's motion with the Earth's rotation, which is what a
+person standing outside actually sees. A star therefore still has a useful path —
+its diurnal arc — rather than being a degenerate case.
+
+Cadence is per object class, chosen so consecutive samples are of order a degree
+apart: 1 s for satellites (a LEO pass moves at ~4°/s), 60 s for the Moon, 300 s
+for the Sun/planets and for fixed catalogue positions. The cadence then relaxes
+until the span fits `maximumSamples = 2000`, so no request can produce an
+unbounded track.
+
+Three properties are load-bearing:
+
+- **Drawn through the existing line pass.** `buildObjectPath` appends to the same
+  `lineVertices` the constellation figures use, so a path costs no extra pass,
+  pipeline state or draw call.
+- **Occluded like everything else.** Each vertex's alpha is multiplied by
+  `TerrainProfile.dimming` at its own alt/az, exactly as constellation segments
+  are, so a track dipping below the skyline fades into the dunes instead of
+  vanishing at the horizon or drawing over them.
+- **Gated by satellite accuracy.** A satellite path is clamped to one hour
+  (`satelliteMaximumSpanSeconds`, a little over one LEO revolution) and every
+  sample must pass the same `SatelliteAccuracy.isDrawable` gate the markers obey.
+  The first sample that fails **ends** the track — stopping rather than skipping
+  and resuming, which would read as two separate passes — and the info panel says
+  the track was cut short.
+
+Paths are recomputed only when the selection, the range or the location changes.
+`SkyViewModel` keys the held path on those plus a *quantised* anchor instant (one
+minute for "next hour", one hour for "24 hours", one day for "tonight"), so the
+per-frame cost is a string comparison and never a rebuild. Satellite tracks are
+one batched hop onto `SatelliteTracker`'s actor rather than one hop per sample.
 
 ## Separation of calculation vs. rendering vs. presentation
 

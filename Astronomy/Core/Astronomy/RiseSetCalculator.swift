@@ -50,7 +50,7 @@
 
 import Foundation
 
-enum RiseSetCalculator {
+nonisolated enum RiseSetCalculator {
 
     // MARK: - Standard altitudes (Meeus 15.1)
 

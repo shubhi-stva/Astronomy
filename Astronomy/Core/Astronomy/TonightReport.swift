@@ -22,7 +22,7 @@ import Foundation
 /// Reykjavik June has sunset but never reaches -18 degrees. Reporting `nil`
 /// with a `Circumstance` alongside is the only honest answer; inventing a time
 /// would be worse than saying nothing.
-struct TwilightBoundary {
+nonisolated struct TwilightBoundary {
     /// Evening crossing (Sun descending through the threshold).
     let eveningJulianDay: Double?
     /// Morning crossing (Sun ascending back through it).
@@ -33,7 +33,7 @@ struct TwilightBoundary {
     var occurs: Bool { eveningJulianDay != nil || circumstance == .neverUp }
 }
 
-struct NightWindow {
+nonisolated struct NightWindow {
     /// Local solar noon that anchors this night. The whole window is the day
     /// running noon-to-noon from here, which is the only anchor for which
     /// "sunset then sunrise" is unambiguously one night rather than two halves
@@ -65,7 +65,7 @@ struct NightWindow {
 
 // MARK: - The Moon
 
-struct MoonTonight {
+nonisolated struct MoonTonight {
     let illuminatedFraction: Double
     /// Waxing crescent, full, etc. — derived from the illuminated fraction and
     /// the sign of the elongation, never from a synodic-age lookup.
@@ -97,7 +97,7 @@ struct MoonTonight {
 
 /// One thing worth (or not worth) pointing at tonight, with the whole
 /// derivation attached.
-struct TonightTarget: Identifiable {
+nonisolated struct TonightTarget: Identifiable {
     let id: String
     let name: String
     let kind: CelestialObjectKind
@@ -120,7 +120,7 @@ struct TonightTarget: Identifiable {
 
 // MARK: - The report
 
-struct TonightReport {
+nonisolated struct TonightReport {
     let observer: GeographicLocation
     let night: NightWindow
     let moon: MoonTonight
@@ -133,7 +133,7 @@ struct TonightReport {
 
 // MARK: - Construction
 
-enum TonightPlanner {
+nonisolated enum TonightPlanner {
 
     /// How many deep-sky targets to surface. A list this size fits on screen
     /// without scrolling and is about as many objects as one session covers.

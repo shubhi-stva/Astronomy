@@ -120,7 +120,7 @@
 import Foundation
 
 /// The four bands. Ordered, so `min` means "worst constraint wins".
-enum VisibilityBand: Int, Comparable, CaseIterable {
+nonisolated enum VisibilityBand: Int, Comparable, CaseIterable {
     case notVisible = 0
     case difficult = 1
     case good = 2
@@ -141,7 +141,7 @@ enum VisibilityBand: Int, Comparable, CaseIterable {
 }
 
 /// Which physical constraint produced the band.
-enum VisibilityConstraint: String {
+nonisolated enum VisibilityConstraint: String {
     case altitude = "Altitude"
     case darkTime = "Time in darkness"
     case moonlight = "Moonlight"
@@ -152,7 +152,7 @@ enum VisibilityConstraint: String {
 /// The full, inspectable answer: the band, the constraint that set it, and
 /// every intermediate physical quantity, so the UI can explain itself and the
 /// tests can assert on the physics rather than on the verdict.
-struct VisibilityAssessment {
+nonisolated struct VisibilityAssessment {
     let band: VisibilityBand
     let limitingFactor: VisibilityConstraint
     /// Highest altitude the object reaches during the night, in degrees.
@@ -174,7 +174,7 @@ struct VisibilityAssessment {
     var isObservable: Bool { band > .notVisible }
 }
 
-enum VisibilityRating {
+nonisolated enum VisibilityRating {
 
     // MARK: - Documented constants
 

@@ -38,7 +38,7 @@
 import Foundation
 
 /// The spans the UI offers.
-enum SkyPathRange: Hashable {
+nonisolated enum SkyPathRange: Hashable {
     case nextHour
     case tonight
     case next24Hours
@@ -56,19 +56,19 @@ enum SkyPathRange: Hashable {
 }
 
 /// A time annotation attached to one sample of a path.
-struct SkyPathLabel {
+nonisolated struct SkyPathLabel {
     /// Index into `SkyPath.samples`.
     let sampleIndex: Int
     /// Local clock time, "14:05".
     let text: String
 }
 
-struct SkyPathSample {
+nonisolated struct SkyPathSample {
     let julianDay: Double
     let horizontal: HorizontalCoordinate
 }
 
-struct SkyPath {
+nonisolated struct SkyPath {
     /// Identity of the object this path belongs to, so the renderer can drop it
     /// the moment the selection changes.
     let objectID: String
@@ -92,7 +92,7 @@ struct SkyPath {
     var endJulianDay: Double? { samples.last?.julianDay }
 }
 
-enum SkyPathBuilder {
+nonisolated enum SkyPathBuilder {
 
     // MARK: - Cadence
 
