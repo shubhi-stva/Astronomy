@@ -231,6 +231,29 @@ enum TopocentricTransform {
         var isSunlit: Bool { self == .sunlit }
     }
 
+    /// The shadow test's full answer: the three-way state *and* how much of the
+    /// Sun is still uncovered, as a fraction from 1 (full sunlight) to 0 (fully
+    /// in the umbra).
+    ///
+    /// The fraction exists because the three-way state alone is not enough to
+    /// draw shadow entry honestly. Measured over the bundled catalogue, a
+    /// satellite spends a **median of about 22 propagation ticks — nine
+    /// seconds — in the penumbra**, and typically 8 to 12 s. That is not an
+    /// instant, it is the visible fade at the end of a pass, and it is the one
+    /// thing real satellites are famous for doing. A renderer that only knows
+    /// "sunlit / not sunlit" has to switch at the first non-sunlit tick, which
+    /// is a marker vanishing outright in the middle of a pass.
+    struct ShadowState: Sendable {
+        let illumination: Illumination
+        /// 1 in full sunlight, 0 in the umbra, linear in the satellite's
+        /// distance across the penumbral annulus in between. Linear rather
+        /// than smoothstepped on purpose: the physical quantity being
+        /// approximated is the *fraction of the solar disk still uncovered*,
+        /// which is very nearly linear in that crossing distance, and this is
+        /// meant to be an approximation of the sky, not a nice curve.
+        let sunlitFraction: Double
+    }
+
     /// Angular radius of the Sun as seen from Earth is not constant, but the
     /// shadow-cone half-angles vary by well under a percent over the year, so
     /// they are computed from mean values once.
@@ -258,9 +281,24 @@ enum TopocentricTransform {
         sunDirection: SIMD3<Double>,
         sunDistanceKm: Double
     ) -> Illumination {
+        shadowState(
+            satellitePositionTEME: satellite,
+            sunDirection: sunDirection,
+            sunDistanceKm: sunDistanceKm
+        ).illumination
+    }
+
+    /// The same conical shadow test, returning the continuous fraction as well
+    /// as the three-way state. The extra arithmetic is one subtraction and one
+    /// divide on values the test has already computed.
+    static func shadowState(
+        satellitePositionTEME satellite: SIMD3<Double>,
+        sunDirection: SIMD3<Double>,
+        sunDistanceKm: Double
+    ) -> ShadowState {
         // Sunward hemisphere: trivially lit, and the majority case.
         let alongSun = simd_dot(satellite, sunDirection)
-        if alongSun >= 0 { return .sunlit }
+        if alongSun >= 0 { return ShadowState(illumination: .sunlit, sunlitFraction: 1) }
 
         let earthRadius = earthMeanRadiusKm
         let sinUmbra = (sunRadiusKm - earthRadius) / sunDistanceKm
@@ -274,11 +312,23 @@ enum TopocentricTransform {
 
         let penumbraApexDistance = earthRadius / sinPenumbra
         let penumbraRadius = tan(penumbraAngle) * (penumbraApexDistance + horizontal)
-        guard vertical <= penumbraRadius else { return .sunlit }
+        guard vertical <= penumbraRadius else {
+            return ShadowState(illumination: .sunlit, sunlitFraction: 1)
+        }
 
         let umbraApexDistance = earthRadius / sinUmbra
         let umbraRadius = tan(umbraAngle) * (umbraApexDistance - horizontal)
-        return vertical <= umbraRadius ? .umbra : .penumbra
+        if vertical <= umbraRadius {
+            return ShadowState(illumination: .umbra, sunlitFraction: 0)
+        }
+        // Between the two cones. `penumbraRadius > umbraRadius` always holds
+        // here (the penumbra cone diverges where the umbra converges), so the
+        // divisor is safely positive.
+        let span = penumbraRadius - umbraRadius
+        let fraction = span > 0
+            ? min(1.0, max(0.0, (vertical - umbraRadius) / span))
+            : 0.0
+        return ShadowState(illumination: .penumbra, sunlitFraction: fraction)
     }
 
     /// Geocentric unit vector toward the Sun in the equatorial frame of date,

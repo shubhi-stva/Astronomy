@@ -117,7 +117,8 @@ final class SkyViewModel {
                     julianDay: inputs.julianDay,
                     observer: inputs.observer,
                     sunEquatorial: inputs.sunEquatorial,
-                    sunDistanceKilometres: inputs.sunDistanceKilometres
+                    sunDistanceKilometres: inputs.sunDistanceKilometres,
+                    subTickIntervalSeconds: inputs.subTickIntervalSeconds
                 )
                 // Counted here, off the main actor. It is a scan of sixteen
                 // thousand samples and has no business running on the thread
@@ -155,7 +156,8 @@ final class SkyViewModel {
         julianDay: Double,
         observer: GeographicLocation,
         sunEquatorial: EquatorialCoordinate,
-        sunDistanceKilometres: Double
+        sunDistanceKilometres: Double,
+        subTickIntervalSeconds: Double
     )? {
         guard satellitesEnabled else { return nil }
         let jd = time.julianDay
@@ -163,7 +165,16 @@ final class SkyViewModel {
             ?? SunPosition.equatorialCoordinate(julianDay: jd)
         let sunDistance = SunPosition.radiusVectorAU(julianDay: jd)
             * AstronomicalConstants.astronomicalUnitKilometres
-        return (jd, location.currentLocation, sunEquatorial, sunDistance)
+        // Zoomed in, the renderer needs the *end* of the coming tick as well
+        // as its start, so it can interpolate between snapshots instead of
+        // extrapolating past one and stepping when the next arrives. That
+        // doubles this pass, so it is asked for only at the fields of view
+        // where the difference is worth a pixel — which are also the fields at
+        // which almost nothing is on screen. See `SatelliteSubTick`.
+        let subTick = SatelliteSubTick.isWorthComputing(
+            fieldOfViewDegrees: camera.fieldOfViewDegrees
+        ) ? SatelliteTracker.tickInterval : 0
+        return (jd, location.currentLocation, sunEquatorial, sunDistance, subTick)
     }
 
     /// Publishes a finished snapshot. The visible-count reduction runs here

@@ -669,6 +669,23 @@ enum StarAppearance {
         }
     }
 
+    /// The same curve, driven by the *continuous* sunlit fraction instead of
+    /// the three-way state.
+    ///
+    /// This is the one the renderer uses, and the reason is that the fade at
+    /// shadow entry lasts eight to twelve seconds. Stepping between three fixed
+    /// values across that span produces two visible jumps in brightness; a
+    /// satellite crossing from full sun into the penumbra would drop to
+    /// 45 percent in a single tick, which is the sort of thing that reads as
+    /// "it disappeared". Interpolating between the same endpoints — 1.0 in full
+    /// sun, 0.18 in the umbra — keeps the three-way version's answers where the
+    /// fraction is 0 or 1 and fills in what happens in between.
+    static func satelliteIlluminationFactor(sunlitFraction: Double) -> Double {
+        let f = min(1.0, max(0.0, sunlitFraction))
+        let umbra = satelliteIlluminationFactor(.umbra)
+        return umbra + (1.0 - umbra) * f
+    }
+
     /// Local smoothstep helper for the size curves above; mirrors
     /// `SkyGeometryBuilder.fadeIn` so the two read alike.
     private static func fadeInSize(value: Double, over width: Double) -> Double {

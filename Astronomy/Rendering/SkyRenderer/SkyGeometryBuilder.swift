@@ -954,6 +954,20 @@ struct SkyGeometryBuilder {
         // worse than drawing the last known good position.
         let elapsedSeconds = min(2.0, max(-2.0, (julianDay - snapshot.julianDay) * 86_400.0))
 
+        // How much of the exact sub-tick interpolation to use. Zero at any
+        // ordinary field of view, where the straight line is already accurate
+        // to a hundredth of a pixel and this whole branch is skipped; one when
+        // zoomed in far enough that the correction at a tick boundary would
+        // otherwise be a visible jump. See `SatelliteSubTick` for the numbers.
+        //
+        // `hasSubTickStates` is checked as well as the weight because the
+        // tracker learns about a zoom one tick late: for up to 0.4 s after the
+        // user zooms in there is no end-of-interval state yet, and the honest
+        // answer is the old behaviour rather than a guess.
+        let subTickWeight = SatelliteSubTick.interpolationWeight(fieldOfViewDegrees: fov)
+        let usesSubTick = subTickWeight > 0 && snapshot.hasSubTickStates
+        let subTickInterval = snapshot.subTickIntervalSeconds
+
         // The long tail only appears once the user has both asked for it and
         // zoomed in enough for it to mean something.
         let tailStrength = frameData.showAllSatellites
@@ -1006,7 +1020,8 @@ struct SkyGeometryBuilder {
             : 0..<snapshot.samples.count
 
         for position in band {
-            let sample = snapshot.samples[hasOrdering ? Int(ordered[position]) : position]
+            let sampleIndex = hasOrdering ? Int(ordered[position]) : position
+            let sample = snapshot.samples[sampleIndex]
             // ACCURACY GATE. Two different cases, one gate: at (or near) real
             // time the satellite is drawn whatever the age of its elements and
             // the UI states how stale they are; scrubbed far from both real
@@ -1023,12 +1038,22 @@ struct SkyGeometryBuilder {
             // Tier gate: a couple of comparisons on already-loaded fields,
             // rejecting most of what survives above before any trigonometry.
             let isBelowHorizon = sample.altitudeDegreesAtSnapshot <= -1.0
-            let isGenuinelyVisible = sample.illumination.isSunlit && !isBelowHorizon
+            // Lit *at all*, not lit *fully*. A satellite crossing into the
+            // Earth's shadow spends eight to twelve seconds in the penumbra —
+            // measured over the bundled catalogue, a median of about 22
+            // propagation ticks — and that crossing is the fade at the end of
+            // a pass. Gating on `illumination.isSunlit` deleted the marker at
+            // the *first* non-sunlit tick, so a satellite being watched would
+            // simply vanish part-way through its pass rather than fading out
+            // of it. The fraction is what turns that cut back into the fade
+            // the illumination factor below was always written for.
+            let sunlitFraction = Double(sample.sunlitFraction)
+            let isGenuinelyVisible = sunlitFraction > 0 && !isBelowHorizon
             var tierStrength: Double
             if sample.isNotable {
                 tierStrength = 1.0
             } else if isGenuinelyVisible {
-                tierStrength = 1.0
+                tierStrength = sunlitFraction
             } else if isBelowHorizon {
                 // The see-through-Earth hemisphere shows *everything* orbiting
                 // that part of the sky, by default and without "Show all".
@@ -1046,7 +1071,21 @@ struct SkyGeometryBuilder {
                 continue
             }
 
-            let position = sample.position + sample.velocity * elapsedSeconds
+            var position = sample.position + sample.velocity * elapsedSeconds
+            if usesSubTick {
+                // Interpolate through the exact end-of-tick state rather than
+                // extrapolating past the start of it. Blended by `subTickWeight`
+                // so that zooming across the threshold is continuous; at weight
+                // 1 the drawn point reaches the next snapshot's own position
+                // exactly, which is what removes the step at the tick boundary.
+                let end = snapshot.subTickStates[sampleIndex]
+                let exact = SatelliteSubTick.position(
+                    start: sample.position, startVelocity: sample.velocity,
+                    end: end.position, endVelocity: end.velocity,
+                    interval: subTickInterval, elapsed: elapsedSeconds
+                )
+                position += (exact - position) * subTickWeight
+            }
             // Straight from the range vector to a projectable direction: the
             // south/east/zenith basis *is* the horizontal frame, so an
             // off-screen satellite is rejected without ever forming alt/az.
@@ -1061,7 +1100,9 @@ struct SkyGeometryBuilder {
                 altitudeDegrees: look.horizontal.altitudeDegrees,
                 azimuthDegrees: look.horizontal.azimuthDegrees
             )
-            let illuminationFactor = StarAppearance.satelliteIlluminationFactor(sample.illumination)
+            let illuminationFactor = StarAppearance.satelliteIlluminationFactor(
+                sunlitFraction: sunlitFraction
+            )
             let visibility = tierStrength * dimming * skyContrast * illuminationFactor
             guard visibility > 0.02 else { continue }
 

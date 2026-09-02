@@ -361,6 +361,21 @@ struct SatelliteSample: Sendable {
     let regime: OrbitalRegime
     let isNotable: Bool
 
+    /// How much of the Sun is still uncovered at this satellite, from 1 in full
+    /// sunlight to 0 in the umbra — the continuous form of `illumination`.
+    ///
+    /// This is what a pass fades out *along*. The three-way state alone forces
+    /// the renderer to switch a satellite off at the first non-sunlit tick,
+    /// which — since the penumbra crossing takes eight to twelve seconds —
+    /// deletes the marker at the start of the fade instead of during it. That
+    /// read, correctly, as satellites disappearing.
+    ///
+    /// A `Float`, and declared here rather than at the end, so it lands in the
+    /// padding that already followed `isNotable`: `SatelliteSample` is copied
+    /// sixteen thousand times per tick and walked every frame, and this must
+    /// not make the record any bigger. `SatelliteSampleLayoutTests` pins that.
+    let sunlitFraction: Float
+
     /// This object's element-set epoch as a Julian Day. Carried in the sample
     /// (a bare `Double`, so it costs nothing to copy) rather than looked up in
     /// the descriptor array, because `SatelliteAccuracy` has to gate *before*
@@ -382,6 +397,60 @@ struct SatelliteSample: Sendable {
     /// only as a *coarse* pre-filter by the geometry builder; the drawn
     /// position is always recomputed from the extrapolated state.
     let altitudeDegreesAtSnapshot: Double
+
+    /// Written out rather than left to the memberwise initialiser so
+    /// `sunlitFraction` can sit where the layout wants it (in the padding after
+    /// `isNotable`) while still being the *last* argument, defaulted from the
+    /// three-way state. Every caller that only knows the enum — the tests, and
+    /// anything hand-building a snapshot — keeps working and gets a fraction
+    /// consistent with it.
+    init(
+        index: Int,
+        catalogNumber: Int,
+        regime: OrbitalRegime,
+        isNotable: Bool,
+        epochJulianDay: Double,
+        position: SIMD3<Double>,
+        velocity: SIMD3<Double>,
+        illumination: TopocentricTransform.Illumination,
+        altitudeDegreesAtSnapshot: Double,
+        sunlitFraction: Float? = nil
+    ) {
+        self.index = index
+        self.catalogNumber = catalogNumber
+        self.regime = regime
+        self.isNotable = isNotable
+        self.epochJulianDay = epochJulianDay
+        self.position = position
+        self.velocity = velocity
+        self.illumination = illumination
+        self.altitudeDegreesAtSnapshot = altitudeDegreesAtSnapshot
+        self.sunlitFraction = sunlitFraction ?? {
+            switch illumination {
+            case .sunlit: return 1.0
+            case .penumbra: return 0.5
+            case .umbra: return 0.0
+            }
+        }()
+    }
+}
+
+/// The *end* of the interval a sample covers: where the propagator says the
+/// satellite will be one tick after the snapshot, propagated exactly rather
+/// than extrapolated.
+///
+/// Kept in a **parallel array** on the snapshot rather than as two more fields
+/// on `SatelliteSample`, and that is not a stylistic choice. The geometry
+/// builder walks the sample array every frame to find the few objects that
+/// could be on screen; widening that record by 64 bytes would slow the
+/// wide-field scan for the sake of data only a narrow field ever reads. As a
+/// side array it is allocated only when the camera is zoomed in far enough to
+/// need it, and touched only for the handful of satellites actually drawn.
+struct SatelliteSubTickState: Sendable {
+    /// Geocentric TEME position one sub-tick interval after the snapshot, km.
+    let position: SIMD3<Double>
+    /// Geocentric TEME velocity at that instant, km/s.
+    let velocity: SIMD3<Double>
 }
 
 /// The identity half of a satellite, as a plain value that can cross actor
@@ -454,16 +523,50 @@ struct SatelliteSnapshot: Sendable {
     /// keeps hand-built snapshots in tests working without having to sort.
     let altitudeOrder: [Int32]
 
+    /// Exact propagated state one `subTickIntervalSeconds` after `julianDay`,
+    /// parallel to `samples`.
+    ///
+    /// **This is what makes a zoomed-in satellite stop jumping.** Between ticks
+    /// the renderer normally draws `r + v·dt`, which is wrong by a few metres
+    /// by the end of a tick — nothing at a 90-degree field, several pixels at
+    /// the 0.15-degree limit the camera now allows. With the end of the
+    /// interval in hand as well, the renderer can interpolate on a cubic
+    /// Hermite through *both* endpoints instead of extrapolating from one, and
+    /// the drawn position then arrives at the next snapshot's own position
+    /// exactly. There is no correction left to make, so there is no step to
+    /// see.
+    ///
+    /// Empty means the pass was not run, which is the normal state: it is
+    /// computed only when the camera is zoomed in far enough for the
+    /// extrapolation error to be worth a pixel (see
+    /// `SatelliteSubTick.isWorthComputing`). At a wide field this costs
+    /// nothing anywhere — no second propagation on the tracker, no extra bytes
+    /// in the array the frame path scans, no branch taken in the draw loop.
+    let subTickStates: [SatelliteSubTickState]
+
+    /// Interval, in seconds, between `julianDay` and the instant
+    /// `subTickStates` were propagated to. Zero when there are none.
+    let subTickIntervalSeconds: Double
+
+    /// True when this snapshot carries a usable exact end-of-interval state.
+    var hasSubTickStates: Bool {
+        subTickIntervalSeconds > 0 && subTickStates.count == samples.count
+    }
+
     init(
         julianDay: Double,
         samples: [SatelliteSample],
         propagationDuration: TimeInterval,
-        altitudeOrder: [Int32] = []
+        altitudeOrder: [Int32] = [],
+        subTickStates: [SatelliteSubTickState] = [],
+        subTickIntervalSeconds: Double = 0
     ) {
         self.julianDay = julianDay
         self.samples = samples
         self.propagationDuration = propagationDuration
         self.altitudeOrder = altitudeOrder
+        self.subTickStates = subTickStates
+        self.subTickIntervalSeconds = subTickIntervalSeconds
     }
 
     static let empty = SatelliteSnapshot(

@@ -150,11 +150,21 @@ actor SatelliteTracker {
     /// The observer position and Sun direction are passed in rather than
     /// recomputed per satellite: both are constants across the whole pass, and
     /// hoisting them out removes 16,000 redundant sidereal-time evaluations.
+    ///
+    /// When `subTickIntervalSeconds` is non-zero each satellite is propagated
+    /// *twice*: once to `julianDay` and once to the end of the tick. That
+    /// second state is what lets the renderer interpolate between snapshots
+    /// instead of extrapolating past one, which is the difference between a
+    /// satellite that steps at every tick boundary and one that does not — see
+    /// `SatelliteSubTick`. It doubles this pass, so the caller only asks for it
+    /// when the camera is zoomed in far enough for the difference to be worth a
+    /// pixel; at a wide field this parameter is zero and nothing changes.
     func propagate(
         julianDay: Double,
         observer: GeographicLocation,
         sunEquatorial: EquatorialCoordinate,
-        sunDistanceKilometres: Double
+        sunDistanceKilometres: Double,
+        subTickIntervalSeconds: Double = 0
     ) async -> SatelliteSnapshot {
         guard !satellites.isEmpty else { return .empty }
 
@@ -178,14 +188,22 @@ actor SatelliteTracker {
         // Each child owns a disjoint index range, so the propagators it mutates
         // are touched by exactly one task. That disjointness is the whole
         // justification for `Satellite` being `@unchecked Sendable`.
+        // The end of the tick, for the interpolation. Expressed in days once,
+        // outside the loop, because it is the same offset for every satellite.
+        let subTickDays = subTickIntervalSeconds / 86_400.0
+        let wantsSubTick = subTickIntervalSeconds > 0
+
         var chunks = [[SatelliteSample]](repeating: [], count: chunkCount)
-        await withTaskGroup(of: (Int, [SatelliteSample]).self) { group in
+        var subTickChunks = [[SatelliteSubTickState]](repeating: [], count: chunkCount)
+        await withTaskGroup(of: (Int, [SatelliteSample], [SatelliteSubTickState]).self) { group in
             for chunk in 0..<chunkCount {
                 let lower = chunk * chunkSize
                 let upper = min(lower + chunkSize, satellites.count)
                 group.addTask {
                     var samples: [SatelliteSample] = []
                     samples.reserveCapacity(upper - lower)
+                    var subTicks: [SatelliteSubTickState] = []
+                    if wantsSubTick { subTicks.reserveCapacity(upper - lower) }
                     for index in lower..<upper {
                         let satellite = satellites[index]
                         guard let state = satellite.propagate(julianDay: julianDay) else {
@@ -195,7 +213,21 @@ actor SatelliteTracker {
                             // would be worse than drawing nothing.
                             continue
                         }
-                        let illumination = TopocentricTransform.illumination(
+                        if wantsSubTick {
+                            // If the model refuses the *end* of the tick but
+                            // accepted the start, fall back to the straight
+                            // line for this one object: it then behaves exactly
+                            // as it did before, rather than vanishing.
+                            let end = satellite.propagate(julianDay: julianDay + subTickDays)
+                            subTicks.append(
+                                SatelliteSubTickState(
+                                    position: end?.position
+                                        ?? (state.position + state.velocity * subTickIntervalSeconds),
+                                    velocity: end?.velocity ?? state.velocity
+                                )
+                            )
+                        }
+                        let shadow = TopocentricTransform.shadowState(
                             satellitePositionTEME: state.position,
                             sunDirection: sunDirection,
                             sunDistanceKm: sunDistanceKilometres
@@ -209,25 +241,33 @@ actor SatelliteTracker {
                                 epochJulianDay: satellite.epochJulianDay,
                                 position: state.position,
                                 velocity: state.velocity,
-                                illumination: illumination,
+                                illumination: shadow.illumination,
                                 altitudeDegreesAtSnapshot: basis.altitudeDegrees(
                                     satellitePosition: state.position,
                                     observerPosition: observerPosition
-                                )
+                                ),
+                                sunlitFraction: Float(shadow.sunlitFraction)
                             )
                         )
                     }
-                    return (chunk, samples)
+                    return (chunk, samples, subTicks)
                 }
             }
-            for await (chunk, samples) in group {
+            for await (chunk, samples, subTicks) in group {
                 chunks[chunk] = samples
+                subTickChunks[chunk] = subTicks
             }
         }
 
         var samples: [SatelliteSample] = []
         samples.reserveCapacity(satellites.count)
         for chunk in chunks { samples.append(contentsOf: chunk) }
+
+        var subTickStates: [SatelliteSubTickState] = []
+        if wantsSubTick {
+            subTickStates.reserveCapacity(samples.count)
+            for chunk in subTickChunks { subTickStates.append(contentsOf: chunk) }
+        }
 
         // Altitude ordering for the renderer's band search. Built here, on this
         // actor, so the main thread never pays for it.
@@ -243,7 +283,9 @@ actor SatelliteTracker {
             samples: samples,
             propagationDuration: TimeInterval(duration.components.seconds)
                 + Double(duration.components.attoseconds) * 1e-18,
-            altitudeOrder: altitudeOrder
+            altitudeOrder: altitudeOrder,
+            subTickStates: subTickStates,
+            subTickIntervalSeconds: wantsSubTick ? subTickIntervalSeconds : 0
         )
         lastSnapshot = snapshot
         return snapshot
