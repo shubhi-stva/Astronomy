@@ -75,6 +75,11 @@ struct SkyFrameData {
     /// selection ring and boost that object's label priority.
     var selectedObjectID: String?
 
+    /// The selected object's track across the sky, when the user has asked for
+    /// one. Precomputed by the view model — never per frame — and drawn by the
+    /// existing line pass. See `SkyPath`.
+    var skyPath: SkyPath?
+
     /// Sun altitude in degrees, or a deep-night sentinel if the ephemeris has
     /// not been computed. Drives the sky-brightness / star-visibility model.
     var sunAltitudeDegrees: Double {

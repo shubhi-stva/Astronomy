@@ -88,6 +88,35 @@ actor SatelliteTracker {
         return out
     }
 
+    // MARK: - Tracks
+
+    /// Look angles for one satellite at each of `julianDays`, for the "Show
+    /// Path" feature.
+    ///
+    /// This lives on the actor for the same reason `propagate` does: the
+    /// propagator carries integration state and is only ever touched by one
+    /// task at a time. It is deliberately a *batch* call — one actor hop for a
+    /// whole track rather than one per sample — and it is called when the
+    /// selection or the range changes, never per frame.
+    ///
+    /// A `nil` entry means the propagator refused that instant (a decayed
+    /// object, or elements the model rejects); the caller stops the track
+    /// there rather than drawing through the gap.
+    func horizontalTrack(
+        index: Int, julianDays: [Double], observer: GeographicLocation
+    ) -> [HorizontalCoordinate?] {
+        guard index >= 0, index < satellites.count else { return [] }
+        let satellite = satellites[index]
+        return julianDays.map { jd in
+            guard let state = satellite.propagate(julianDay: jd) else { return nil }
+            return TopocentricTransform.lookAngles(
+                satellitePositionTEME: state.position,
+                observer: observer,
+                julianDay: jd
+            ).horizontal
+        }
+    }
+
     // MARK: - Loading
 
     /// Loads the catalogue and initialises every propagator. Safe to call more

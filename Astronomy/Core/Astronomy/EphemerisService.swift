@@ -114,4 +114,11 @@ enum EphemerisService {
         case .pluto: return 14.4
         }
     }
+
+    /// The same estimate, exposed for the "Tonight" planner, which needs a
+    /// planet's magnitude without building the whole solar-system object list
+    /// for an instant it is not otherwise drawing.
+    static func approximateMagnitudeForPlanning(_ planet: Planet) -> Double {
+        approximateMagnitude(for: planet)
+    }
 }

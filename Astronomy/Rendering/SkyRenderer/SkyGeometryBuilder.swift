@@ -509,6 +509,10 @@ struct SkyGeometryBuilder {
     // MARK: - Constellation lines
 
     private mutating func buildLines() {
+        // The object path shares this pass — and therefore the single line
+        // draw call — rather than adding a pass of its own. It is built first
+        // so the constellation figures overdraw it rather than the reverse.
+        buildObjectPath()
         guard !frameData.starsByID.isEmpty else { return }
         let color = StarAppearance.constellationLineColor(
             fieldOfViewDegrees: frameData.cameraFieldOfViewDegrees
@@ -537,6 +541,98 @@ struct SkyGeometryBuilder {
             c2.w *= Float(dimming(direction: d2))
             lineVertices.append(LineVertex(positionNDC: SIMD2(Float(ndc1.x), Float(ndc1.y)), color: c1))
             lineVertices.append(LineVertex(positionNDC: SIMD2(Float(ndc2.x), Float(ndc2.y)), color: c2))
+        }
+    }
+
+    // MARK: - Object path
+
+    /// Base colour of a drawn sky path: the chrome accent blue, at an alpha
+    /// that sits clearly above the constellation figures without competing with
+    /// the objects themselves.
+    static let pathColor = SIMD4<Float>(0.42, 0.62, 0.98, 0.55)
+
+    /// Draws the selected object's track as a polyline in the existing line
+    /// buffer.
+    ///
+    /// The two things this shares with everything else on screen are
+    /// deliberate:
+    ///
+    ///  * **occlusion.** Each vertex is dimmed by `TerrainProfile.dimming` at
+    ///    its own alt/az, exactly as constellation segments are, so a path
+    ///    dipping below the skyline fades into the dunes rather than vanishing
+    ///    at the horizon line or drawing over them.
+    ///  * **the draw call.** These vertices go into `lineVertices`, so a path
+    ///    costs no additional pass, pipeline state or buffer.
+    ///
+    /// The samples themselves are never computed here — `frameData.skyPath` is
+    /// built when the selection, range or location changes and is simply
+    /// projected each frame.
+    private mutating func buildObjectPath() {
+        guard let path = frameData.skyPath, !path.isEmpty else { return }
+
+        var previous: (ndc: SIMD2<Double>, alpha: Float)?
+        var projected: [SIMD2<Double>?] = []
+        projected.reserveCapacity(path.samples.count)
+
+        for sample in path.samples {
+            let ndc = project(horizontal: sample.horizontal)
+            projected.append(ndc)
+
+            guard let ndc else {
+                previous = nil
+                continue
+            }
+            let dimming = TerrainProfile.dimming(
+                altitudeDegrees: sample.horizontal.altitudeDegrees,
+                azimuthDegrees: sample.horizontal.azimuthDegrees
+            )
+            let alpha = Self.pathColor.w * Float(dimming)
+
+            defer { previous = (ndc, alpha) }
+            guard let start = previous else { continue }
+            // Same seam guard the constellation figures use: a segment that
+            // wraps most of the way across the screen is a projection artefact,
+            // not a track.
+            if simd_distance(start.ndc, ndc) > 1.5 { continue }
+            if !isOnScreen(start.ndc, margin: 1.0) && !isOnScreen(ndc, margin: 1.0) { continue }
+
+            var c1 = Self.pathColor
+            c1.w = start.alpha
+            var c2 = Self.pathColor
+            c2.w = alpha
+            lineVertices.append(
+                LineVertex(positionNDC: SIMD2(Float(start.ndc.x), Float(start.ndc.y)), color: c1)
+            )
+            lineVertices.append(
+                LineVertex(positionNDC: SIMD2(Float(ndc.x), Float(ndc.y)), color: c2)
+            )
+        }
+
+        // Time annotations. Lowest priority of anything on screen — the same
+        // tier as the compass rose — because a path label must never displace
+        // the name of a real object. The monospaced-digit satellite style is
+        // reused rather than adding a new one: these are clock readings, and
+        // that is the face the design system already has for them.
+        for label in path.timeLabels {
+            guard label.sampleIndex < projected.count,
+                  let ndc = projected[label.sampleIndex],
+                  isOnScreen(ndc, margin: 0.02) else { continue }
+            let sample = path.samples[label.sampleIndex]
+            let dimming = TerrainProfile.dimming(
+                altitudeDegrees: sample.horizontal.altitudeDegrees,
+                azimuthDegrees: sample.horizontal.azimuthDegrees
+            )
+            labelCandidates.append(
+                SkyLabelCandidate(
+                    id: "path-\(path.objectID)-\(label.sampleIndex)",
+                    text: label.text,
+                    ndc: CGPoint(x: ndc.x, y: ndc.y),
+                    priority: .cardinal,
+                    style: .satellite,
+                    strength: 0.85 * dimming,
+                    verticalOffsetPoints: 10
+                )
+            )
         }
     }
 

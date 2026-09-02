@@ -34,7 +34,16 @@ final class SkyViewModel {
 
     private(set) var solarSystemObjects: [CelestialObject] = []
 
-    var selectedObject: CelestialObject?
+    var selectedObject: CelestialObject? {
+        didSet {
+            guard selectedObject?.id != oldValue?.id else { return }
+            // A path belongs to one object. Changing the selection retires it
+            // rather than leaving a stale track behind the new selection.
+            skyPath = nil
+            pathRange = nil
+            pathKey = nil
+        }
+    }
     var viewportSize: CGSize = .zero
     var searchText: String = ""
     var searchResults: [CelestialObject] = []
@@ -401,12 +410,221 @@ final class SkyViewModel {
         solarSystemObjects = EphemerisService.solarSystemObjects(julianDay: time.julianDay)
     }
 
+    // MARK: - Object sky paths
+
+    /// The span the user asked to see the selected object's track over, or nil
+    /// when no path is showing.
+    private(set) var pathRange: SkyPathRange?
+    /// The computed track. Handed to the renderer in the frame snapshot.
+    private(set) var skyPath: SkyPath?
+
+    /// Identity of the track currently held, so `currentFrameData` can tell in
+    /// a couple of string comparisons whether anything needs recomputing. The
+    /// cost of *checking* is per frame; the cost of *building* is not.
+    private var pathKey: String?
+    private nonisolated(unsafe) var pathTask: Task<Void, Never>?
+
+    /// Turns the path on for `range`, or off if that range is already showing.
+    func togglePath(range: SkyPathRange) {
+        if pathRange == range {
+            pathRange = nil
+            skyPath = nil
+            pathKey = nil
+        } else {
+            pathRange = range
+            pathKey = nil
+            refreshSkyPathIfNeeded()
+        }
+    }
+
+    /// How finely the path's anchor instant is quantised, per range, in days.
+    ///
+    /// This is what stops "recompute when the time range changes" from turning
+    /// into "recompute every frame": a path anchored at *now* would otherwise
+    /// have a different key every frame. A next-hour track is rebuilt at most
+    /// once a minute (the far end moves by a quarter of a degree in that time);
+    /// a whole-night track at most once an hour; a `tonight` track only when
+    /// the night itself changes.
+    private static func anchorQuantumDays(for range: SkyPathRange) -> Double {
+        switch range {
+        case .nextHour: return 1.0 / 1440.0
+        case .next24Hours: return 1.0 / 24.0
+        case .tonight: return 1.0
+        case .custom: return .infinity
+        }
+    }
+
+    private func pathIdentity(
+        object: CelestialObject, range: SkyPathRange, julianDay: Double,
+        location: GeographicLocation
+    ) -> String {
+        let quantum = Self.anchorQuantumDays(for: range)
+        let anchor = quantum.isFinite ? (julianDay / quantum).rounded(.down) : 0
+        return "\(object.id)|\(range)|\(anchor)|\(location.latitudeDegrees),\(location.longitudeDegrees)"
+    }
+
+    /// Rebuilds the track if — and only if — the selection, the range, the
+    /// location or the quantised anchor instant has changed since the held one.
+    private func refreshSkyPathIfNeeded() {
+        guard let range = pathRange, let object = selectedObject else { return }
+        let julianDay = time.julianDay
+        let observer = location.currentLocation
+        let key = pathIdentity(
+            object: object, range: range, julianDay: julianDay, location: observer
+        )
+        guard key != pathKey else { return }
+        pathKey = key
+
+        if let details = object.satelliteDetails {
+            buildSatellitePath(
+                object: object, details: details, range: range,
+                observer: observer, julianDay: julianDay
+            )
+            return
+        }
+        skyPath = Self.buildPath(
+            object: object, range: range, observer: observer, julianDay: julianDay
+        )
+    }
+
+    /// Everything that is not a satellite: the position is a closed-form
+    /// function of time, so the whole track is a synchronous few hundred
+    /// coordinate transforms.
+    private static func buildPath(
+        object: CelestialObject, range: SkyPathRange,
+        observer: GeographicLocation, julianDay: Double
+    ) -> SkyPath {
+        switch object.kind {
+        case .sun:
+            return SkyPathBuilder.build(
+                objectID: object.id, kind: .sun, range: range,
+                equatorialAt: SunPosition.equatorialCoordinate(julianDay:),
+                observer: observer, julianDay: julianDay
+            )
+        case .moon:
+            return SkyPathBuilder.build(
+                objectID: object.id, kind: .moon, range: range,
+                equatorialAt: MoonPosition.equatorialCoordinate(julianDay:),
+                observer: observer, julianDay: julianDay
+            )
+        case .planet, .dwarfPlanet:
+            if let planet = Planet(rawValue: object.id) {
+                return SkyPathBuilder.build(
+                    objectID: object.id, kind: object.kind, range: range,
+                    equatorialAt: {
+                        PlanetPosition.equatorialCoordinate(planet: planet, julianDay: $0)
+                    },
+                    observer: observer, julianDay: julianDay
+                )
+            }
+            fallthrough
+        default:
+            // Stars, deep-sky objects, constellations: fixed on the celestial
+            // sphere, so the track is the diurnal arc. Precessed once to the
+            // equinox of date, exactly as the renderer does.
+            return SkyPathBuilder.build(
+                objectID: object.id, kind: object.kind, range: range,
+                fixedEquatorialOfDate: Precession.precess(
+                    object.equatorial, julianDay: julianDay
+                ),
+                observer: observer, julianDay: julianDay
+            )
+        }
+    }
+
+    /// A satellite track. The sample times (and both accuracy gates) are
+    /// resolved here; the propagation itself is one batched hop onto the
+    /// tracker's actor, off the main thread.
+    private func buildSatellitePath(
+        object: CelestialObject, details: SatelliteDetails, range: SkyPathRange,
+        observer: GeographicLocation, julianDay: Double
+    ) {
+        let epoch = satelliteDescriptors.indices.contains(details.descriptorIndex)
+            ? satelliteDescriptors[details.descriptorIndex].epochJulianDay
+            : julianDay
+        let nowJulianDay = JulianDate.julianDay(from: Date())
+        let (times, truncated) = SkyPathBuilder.satelliteSampleTimes(
+            range: range, observer: observer, julianDay: julianDay,
+            epochJulianDay: epoch, nowJulianDay: nowJulianDay
+        )
+        guard !times.isEmpty else {
+            skyPath = SkyPathBuilder.satellitePath(
+                objectID: object.id, range: range, times: [], horizontals: [],
+                truncatedForAccuracy: true
+            )
+            return
+        }
+        pathTask?.cancel()
+        let tracker = satelliteTracker
+        let index = details.descriptorIndex
+        pathTask = Task { [weak self] in
+            let horizontals = await tracker.horizontalTrack(
+                index: index, julianDays: times, observer: observer
+            )
+            guard !Task.isCancelled else { return }
+            let path = SkyPathBuilder.satellitePath(
+                objectID: object.id, range: range, times: times,
+                horizontals: horizontals, truncatedForAccuracy: truncated
+            )
+            await MainActor.run {
+                guard let self, self.selectedObject?.id == object.id else { return }
+                self.skyPath = path
+            }
+        }
+    }
+
+    // MARK: - Tonight
+
+    /// The dashboard's report, or nil while it is being computed.
+    private(set) var tonightReport: TonightReport?
+    private(set) var isComputingTonightReport = false
+    var isTonightPanelPresented = false {
+        didSet { if isTonightPanelPresented { refreshTonightReport() } }
+    }
+    private var tonightKey: String?
+    private nonisolated(unsafe) var tonightTask: Task<Void, Never>?
+
+    /// Recomputes the report when the night or the location changes.
+    ///
+    /// Keyed on the *night*, not the instant: scrubbing the time machine across
+    /// one evening does not change what is worth looking at that evening, and
+    /// rating nine hundred catalogue entries is not something to do per frame.
+    func refreshTonightReport(force: Bool = false) {
+        guard isTonightPanelPresented else { return }
+        let observer = location.currentLocation
+        let julianDay = time.julianDay
+        let anchor = (julianDay - 0.5).rounded(.down)
+        let key = "\(anchor)|\(observer.latitudeDegrees),\(observer.longitudeDegrees)"
+        guard force || key != tonightKey else { return }
+        tonightKey = key
+
+        let catalogue = deepSkyObjects
+        isComputingTonightReport = true
+        tonightTask?.cancel()
+        tonightTask = Task { [weak self] in
+            let report = await Task.detached(priority: .userInitiated) {
+                TonightPlanner.report(
+                    observer: observer, julianDay: julianDay, deepSkyCatalogue: catalogue
+                )
+            }.value
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard let self else { return }
+                self.tonightReport = report
+                self.isComputingTonightReport = false
+            }
+        }
+    }
+
     func currentFrameData() -> SkyFrameData {
         // Advance camera momentum/focus-flight in lockstep with the frame the
         // renderer is about to draw, so panning and flights stay smooth at
         // whatever refresh rate the display link is running.
         camera.tick()
         refreshSelectedSatellite()
+        // A key comparison, not a rebuild: see `refreshSkyPathIfNeeded`.
+        refreshSkyPathIfNeeded()
+        refreshTonightReport()
 
         // Sample the clock exactly once per frame. `time.julianDay` is
         // continuous — it reads the system clock on every access — so calling
@@ -453,6 +671,9 @@ final class SkyViewModel {
         // "the time machine is a month out". See `SatelliteAccuracy`.
         frame.nowJulianDay = JulianDate.julianDay(from: Date())
         frame.showAllSatellites = showAllSatellites
+        // Only ever the path of the object still selected — a stale track is
+        // worse than none.
+        frame.skyPath = skyPath?.objectID == selectedObject?.id ? skyPath : nil
         return frame
     }
 
