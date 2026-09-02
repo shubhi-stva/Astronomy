@@ -21,14 +21,24 @@
 //
 //  Measured over the standard verification set (see
 //  `testLinearExtrapolationOverOneTickStaysBelowAPixel`), the extrapolation
-//  error over one 0.4-second tick is a few metres for ordinary orbits: partly
-//  the neglected quadratic term, partly the fact that SGP4's reported velocity
-//  is an osculating two-body velocity rather than the exact derivative of its
-//  own position function. A few metres at typical viewing range is around
-//  0.0003 degrees — about a hundredth of a pixel at a 90-degree field.
+//  error over one 0.4-second tick is under a metre for ordinary low orbits and
+//  a hundred metres or so for the awkward eccentric cases: partly the neglected
+//  quadratic term, partly the fact that SGP4's reported velocity is an
+//  osculating two-body velocity rather than the exact derivative of its own
+//  position function. At a 90-degree field that is a hundredth of a pixel, and
+//  the straight line is the whole answer.
 //
-//  The result is motion that is both correct and perfectly smooth: the sky
-//  updates at the display's full rate, and nothing ever visibly steps.
+//  **It stops being the whole answer when the camera is zoomed in.** The zoom
+//  limit is now 0.15 degrees rather than 3, so the same error is worth up to
+//  about a pixel (measured over the bundled catalogue: median 0.2, worst 1.3),
+//  and it is applied as a *step* every time a snapshot lands. So at narrow
+//  fields the caller asks for `subTickIntervalSeconds` as well, this pass
+//  propagates the end of the tick too, and the renderer interpolates between
+//  the two instead of extrapolating past one — see `SatelliteSubTick`. That
+//  doubles this pass, which is why it is asked for only where it shows.
+//
+//  The result is motion that is both correct and smooth at every zoom: the sky
+//  updates at the display's full rate, and nothing visibly steps.
 //
 
 import Foundation

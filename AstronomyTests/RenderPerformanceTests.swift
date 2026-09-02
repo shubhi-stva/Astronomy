@@ -217,6 +217,83 @@ final class RenderPerformanceTests: XCTestCase {
         add(attachment)
     }
 
+    /// The sub-tick interpolation is supposed to be free at any ordinary zoom
+    /// and cheap at the tightest one. This measures the satellite stage in
+    /// three configurations to show that it is:
+    ///
+    ///  * wide field, no end-of-tick states in the snapshot — the shipping
+    ///    wide-field case, and the baseline;
+    ///  * wide field *with* the states present anyway — proves the extra data
+    ///    costs nothing when the field of view says not to use it, which is
+    ///    what makes the zoom threshold safe rather than merely well-intended;
+    ///  * the tightest field the camera allows, with the states in use.
+    func testSubTickInterpolationCostsNothingAtAWideField() throws {
+        try XCTSkipIf(Self.stars.isEmpty, "star catalogue unavailable in this bundle")
+
+        let iterations = 40
+        func satelliteMilliseconds(fov: Double, withSubTick: Bool) -> Double {
+            var frame = Self.frameData(fieldOfViewDegrees: fov)
+            if withSubTick { frame.satelliteSnapshot = Self.satelliteSnapshotWithSubTickStates }
+            let profiler = RenderProfiler()
+            var warm = SkyGeometryBuilder(frameData: frame)
+            warm.run()
+            for _ in 0..<iterations {
+                var builder = SkyGeometryBuilder(frameData: frame)
+                builder.profiler = profiler
+                builder.run()
+            }
+            return profiler.statistics(for: .satellites).meanMilliseconds
+        }
+
+        let wideBaseline = satelliteMilliseconds(fov: 90, withSubTick: false)
+        let wideWithData = satelliteMilliseconds(fov: 90, withSubTick: true)
+        let narrow = satelliteMilliseconds(fov: Camera.minFieldOfView, withSubTick: true)
+
+        let summary = String(
+            format: "\n=== satellite stage, 16,000 objects ===\n"
+                + "  FOV 90 deg, no sub-tick states:   %7.3f ms/frame\n"
+                + "  FOV 90 deg, states present:       %7.3f ms/frame  (unused at this zoom)\n"
+                + "  FOV %.2f deg, states in use:      %7.3f ms/frame",
+            wideBaseline, wideWithData, Camera.minFieldOfView, narrow
+        )
+        print(summary)
+        fputs(summary + "\n", stderr)
+        fflush(stderr)
+        let attachment = XCTAttachment(string: summary)
+        attachment.name = "satellite-subtick-cost"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+
+        // The wide-field case must be unaffected by the states merely existing.
+        // Generous because a Debug build on a shared machine is noisy; the point
+        // is that this is not a *different* amount of work, and a real per-object
+        // cost at 16,000 objects would blow well past this.
+        XCTAssertLessThan(wideWithData, max(wideBaseline * 1.5, wideBaseline + 0.5),
+                          "carrying end-of-tick states made the wide field slower: "
+                          + "\(wideBaseline) -> \(wideWithData) ms")
+        // And the narrow field, where the interpolation actually runs, is
+        // cheaper than the wide one regardless — almost nothing survives the
+        // altitude band at nine arcminutes.
+        XCTAssertLessThan(narrow, max(wideBaseline, 1.0))
+    }
+
+    /// The same synthetic snapshot, plus an exact end-of-tick state for every
+    /// sample — the shape the tracker produces when the camera is zoomed in.
+    private static let satelliteSnapshotWithSubTickStates: SatelliteSnapshot = {
+        let base = satelliteSnapshot
+        let tick = SatelliteTracker.tickInterval
+        let states = base.samples.map {
+            SatelliteSubTickState(
+                position: $0.position + $0.velocity * tick, velocity: $0.velocity
+            )
+        }
+        return SatelliteSnapshot(
+            julianDay: base.julianDay, samples: base.samples,
+            propagationDuration: 0, altitudeOrder: base.altitudeOrder,
+            subTickStates: states, subTickIntervalSeconds: tick
+        )
+    }()
+
     /// Building the frame snapshot must not copy the catalogues.
     ///
     /// `SkyFrameData` carries the 83,479-star array, the star-ID dictionary,

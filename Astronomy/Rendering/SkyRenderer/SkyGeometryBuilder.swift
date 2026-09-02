@@ -927,9 +927,13 @@ struct SkyGeometryBuilder {
     /// toggle, and even then its long tail fades in with zoom so a whole-sky
     /// view is never a swarm.
     ///
-    /// **Sunlight matters.** `SatelliteSample.illumination` carries the
-    /// shadow-cone result from the tick; an eclipsed satellite is drawn much
-    /// dimmer and loses its cross arms. That single detail is what makes the
+    /// **Sunlight matters, and it is not a switch.** `SatelliteSample` carries
+    /// both the three-way shadow state and the continuous fraction of the Sun
+    /// still uncovered. The fraction is what the brightness and the visibility
+    /// tier actually ride, because a satellite takes eight to twelve seconds to
+    /// cross the penumbra: gating on "is it sunlit" deleted the marker at the
+    /// first partly-shadowed tick, which is a pass disappearing in the middle
+    /// rather than fading out at the end of it. Fading it is what makes the
     /// layer read as real rather than as a scatter of markers.
     private mutating func buildSatellites() {
         guard frameData.satellitesEnabled else { return }
