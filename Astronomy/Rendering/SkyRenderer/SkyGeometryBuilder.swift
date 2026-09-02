@@ -377,7 +377,6 @@ struct SkyGeometryBuilder {
                 )
             )
 
-            if magnitude > -99 { continue }
             // Deferred, not skipped: `ProjectedObject` builds the
             // `CelestialObject` if and when something asks for one. See its
             // doc comment for the measurement that motivated it.
