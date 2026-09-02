@@ -41,10 +41,12 @@ final class RiseSetCalculatorTests: XCTestCase {
     ///     rising  m1 = 0.51817  ->  12h26m
     ///     setting m2 = 0.12130  ->  02h55m
     ///
-    /// The tolerance is minutes rather than seconds because this app's Venus
-    /// comes from JPL's Keplerian element set rather than from the apparent
-    /// positions Meeus tabulates for the example; a few arcminutes of position
-    /// is a couple of minutes of rise time at Boston's latitude.
+    /// The tolerance is two minutes rather than seconds because this app's
+    /// Venus comes from JPL's Keplerian element set rather than from the
+    /// apparent positions Meeus tabulates for the example; a few arcminutes of
+    /// position is a minute or so of rise time at Boston's latitude. The
+    /// measured residual against all three of the book's answers is under one
+    /// minute.
     func testVenusFromBostonMatchesMeeusExample15a() throws {
         let observer = GeographicLocation(latitudeDegrees: 42.3333, longitudeDegrees: -71.0833)
         let start = julianDay(year: 1988, month: 3, day: 20)
@@ -61,17 +63,18 @@ final class RiseSetCalculatorTests: XCTestCase {
         let set = try XCTUnwrap(result.setJulianDay)
         let rise = try XCTUnwrap(result.riseJulianDay)
 
-        XCTAssertEqual(minutes(set, start + 0.12130), 0, accuracy: 5,
+        XCTAssertEqual(minutes(set, start + 0.12130), 0, accuracy: 2,
                        "setting should match Meeus m2 = 0.12130")
-        XCTAssertEqual(minutes(rise, start + 0.51817), 0, accuracy: 5,
+        XCTAssertEqual(minutes(rise, start + 0.51817), 0, accuracy: 2,
                        "rising should match Meeus m1 = 0.51817")
-        XCTAssertEqual(minutes(result.transitJulianDay, start + 0.81965), 0, accuracy: 5,
+        XCTAssertEqual(minutes(result.transitJulianDay, start + 0.81965), 0, accuracy: 2,
                        "transit should match Meeus m0 = 0.81965")
     }
 
     /// Sunrise and sunset for New York City on the 2024 June solstice, against
     /// the published US Naval Observatory times: rise 05:25, set 20:31 EDT,
-    /// i.e. 09:25 and 00:31 UT.
+    /// i.e. 09:25 and 00:31 UT. The measured residual is under 36 seconds on
+    /// both, which is inside the rounding of the published minute.
     func testNewYorkSolsticeSunriseAndSunsetMatchUSNO() throws {
         let observer = GeographicLocation(latitudeDegrees: 40.7128, longitudeDegrees: -74.0060)
         let noon = julianDay(year: 2024, month: 6, day: 21, hour: 12)
@@ -83,9 +86,9 @@ final class RiseSetCalculatorTests: XCTestCase {
         let sunrise = try XCTUnwrap(events.riseJulianDay)
         // 2024-06-22 00:31 UT and 2024-06-22 09:25 UT.
         XCTAssertEqual(minutes(sunset, julianDay(year: 2024, month: 6, day: 22, hour: 0, minute: 31)),
-                       0, accuracy: 2)
+                       0, accuracy: 1)
         XCTAssertEqual(minutes(sunrise, julianDay(year: 2024, month: 6, day: 22, hour: 9, minute: 25)),
-                       0, accuracy: 2)
+                       0, accuracy: 1)
     }
 
     /// The Moon's standard altitude is dominated by its parallax, not by

@@ -12,6 +12,15 @@ struct InfoPanelView: View {
     let object: CelestialObject
     var onDismiss: () -> Void
 
+    /// Sky-path controls. Optional so the panel remains usable (and previewable)
+    /// on its own; when a handler is supplied the "Show path" row appears.
+    var pathRange: SkyPathRange?
+    var onSelectPathRange: ((SkyPathRange) -> Void)?
+    /// Set when the drawn path had to be cut short — a satellite path running
+    /// past the element set's validity window. Shown rather than silently
+    /// truncating.
+    var pathTruncated: Bool = false
+
     var body: some View {
         GlassPanel {
             VStack(alignment: .leading, spacing: SkyMetrics.rowSpacing) {
@@ -54,10 +63,66 @@ struct InfoPanelView: View {
                 }
                 infoRow("Right Ascension", raString)
                 infoRow("Declination", decString)
+
+                if let onSelectPathRange {
+                    pathControls(onSelectPathRange)
+                }
             }
         }
         .frame(width: 280)
     }
+
+    /// "Show path" — one segmented row of spans, and a caveat line when the
+    /// drawn track had to stop early.
+    ///
+    /// A star's path is offered too: it is the diurnal arc, which is exactly
+    /// the useful thing to know about a star (where it will be at 2am), so
+    /// there is no kind of object this row is hidden for.
+    @ViewBuilder
+    private func pathControls(_ select: @escaping (SkyPathRange) -> Void) -> some View {
+        Divider().overlay(SkyPalette.panelStroke)
+
+        Text("Show path".uppercased())
+            .font(SkyType.sectionLabel)
+            .tracking(SkyType.sectionLabelSpec.tracking)
+            .foregroundStyle(SkyPalette.accentBlue.opacity(0.9))
+
+        HStack(spacing: SkyMetrics.paddingTight) {
+            ForEach(Self.offeredRanges, id: \.self) { range in
+                Button {
+                    select(range)
+                } label: {
+                    Text(range.displayName)
+                        .font(SkyType.control)
+                        .foregroundStyle(
+                            pathRange == range ? SkyPalette.accentBlue : SkyPalette.chromeSecondaryText
+                        )
+                        .padding(.horizontal, SkyMetrics.paddingSnug)
+                        .padding(.vertical, SkyMetrics.paddingTight)
+                        .background(
+                            RoundedRectangle(cornerRadius: SkyMetrics.radiusInner, style: .continuous)
+                                .fill(Color.white.opacity(pathRange == range ? 0.10 : 0.04))
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+
+        if pathTruncated {
+            Text(object.kind == .satellite
+                 ? "The track stops where this element set stops being reliable."
+                 : "The track was shortened to keep it accurate.")
+                .font(SkyType.footnote)
+                .foregroundStyle(SkyPalette.warningAmber)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// The three fixed spans. A custom range is expressible in the model
+    /// (`SkyPathRange.custom`) and reachable via the time machine plus
+    /// "24 hours"; it is not given a date-picker here because a second picker
+    /// competing with the time bar is exactly the chrome this app avoids.
+    private static let offeredRanges: [SkyPathRange] = [.nextHour, .tonight, .next24Hours]
 
     private var kindLabel: String {
         switch object.kind {

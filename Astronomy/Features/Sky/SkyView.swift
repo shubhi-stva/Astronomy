@@ -60,6 +60,8 @@ struct SkyView: View {
 
                         Spacer()
 
+                        TonightToggleView(viewModel: viewModel)
+
                         SatelliteControlView(viewModel: viewModel)
 
                         LocationControlView(viewModel: viewModel, isExpanded: $showLocationControl)
@@ -69,9 +71,13 @@ struct SkyView: View {
                     Spacer()
 
                     if let selected = viewModel.selectedObject {
-                        InfoPanelView(object: selected) {
-                            viewModel.selectedObject = nil
-                        }
+                        InfoPanelView(
+                            object: selected,
+                            onDismiss: { viewModel.selectedObject = nil },
+                            pathRange: viewModel.pathRange,
+                            onSelectPathRange: { viewModel.togglePath(range: $0) },
+                            pathTruncated: viewModel.skyPath?.truncatedForAccuracy ?? false
+                        )
                         .padding(.bottom, SkyMetrics.paddingSnug)
                     }
 
@@ -88,6 +94,21 @@ struct SkyView: View {
                         .font(SkyType.footnote)
                         .foregroundStyle(SkyPalette.chromeSecondaryText.opacity(0.5))
                         .padding(.bottom, SkyMetrics.paddingSnug)
+                }
+
+                // The dashboard hangs under the pill that opens it, on the
+                // right, so the middle of the sky stays clear.
+                if viewModel.isTonightPanelPresented {
+                    VStack {
+                        HStack {
+                            Spacer()
+                            TonightPanelView(viewModel: viewModel)
+                        }
+                        Spacer()
+                    }
+                    .padding(SkyMetrics.paddingScreen)
+                    .padding(.top, 44)
+                    .transition(.opacity)
                 }
 
                 if viewModel.isLoadingCatalog {

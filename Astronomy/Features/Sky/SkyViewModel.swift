@@ -882,6 +882,21 @@ final class SkyViewModel {
 
     /// Smoothly flies the camera to an object (double-click), zooming in a
     /// little if the current field of view is very wide.
+    /// Selects and flies to a target the "Tonight" panel is offering.
+    ///
+    /// The panel deals in `TonightTarget`s, which carry only an id — deliberately,
+    /// so the planner stays free of rendering types. Resolving that id back to a
+    /// real object is this method's whole job.
+    func selectAndFocus(targetID id: String) {
+        if let object = solarSystemObjects.first(where: { $0.id == id }) {
+            flyToFocus(on: object)
+            return
+        }
+        if let deepSky = deepSkyObjects.first(where: { $0.id == id }) {
+            flyToFocus(on: deepSky.asCelestialObject)
+        }
+    }
+
     func flyToFocus(on object: CelestialObject?) {
         guard let object else { return }
         let horizontal = Self.horizontalForCamera(object: object, observer: location.currentLocation, julianDay: time.julianDay)
