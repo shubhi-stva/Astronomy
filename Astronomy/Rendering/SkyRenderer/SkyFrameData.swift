@@ -71,6 +71,12 @@ struct SkyFrameData {
     /// Overall Milky Way opacity multiplier (0 disables the layer).
     var milkyWayStrength: Double = 1.0
 
+    /// Night-vision ramp, 0...1, sampled once per frame from
+    /// `NightVisionController`. Handed to every pass as a uniform; the CPU
+    /// geometry is untouched by it, so turning the mode on costs nothing on
+    /// this side of the pipeline. See `NightVision.swift`.
+    var nightVisionStrength: Double = 0
+
     /// Identifier of the currently selected object, so the renderer can draw a
     /// selection ring and boost that object's label priority.
     var selectedObjectID: String?

@@ -276,10 +276,18 @@ final class SkyRenderer: NSObject, MTKViewDelegate {
         encoder.setFragmentSamplerState(milkyWaySampler, index: 0)
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
 
+        // The one uniform the other two passes need. Bound per pass rather than
+        // once, because a pipeline state change does not carry fragment
+        // arguments across.
+        var chrome = ChromeUniforms(
+            nightVisionStrength: Float(frameData.nightVisionStrength)
+        )
+
         // 2. Constellation lines.
         if let lineBuffer, !build.lineVertices.isEmpty {
             encoder.setRenderPipelineState(linePipelineState)
             encoder.setVertexBuffer(lineBuffer, offset: 0, index: 0)
+            encoder.setFragmentBytes(&chrome, length: MemoryLayout<ChromeUniforms>.stride, index: 1)
             encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: build.lineVertices.count)
         }
 
@@ -292,6 +300,7 @@ final class SkyRenderer: NSObject, MTKViewDelegate {
             // in that case, so nothing samples it.
             encoder.setFragmentTexture(surfaceMapTexture ?? fallbackArrayTexture, index: 0)
             encoder.setFragmentSamplerState(surfaceMapSampler, index: 0)
+            encoder.setFragmentBytes(&chrome, length: MemoryLayout<ChromeUniforms>.stride, index: 1)
             encoder.drawPrimitives(type: .point, vertexStart: 0, vertexCount: build.pointVertices.count)
         }
 

@@ -21,6 +21,9 @@ final class SkyViewModel {
     let time = TimeController()
     let camera = Camera()
     let location = LocationService()
+    /// Red-on-black observing mode. Its own object so a view reading the switch
+    /// does not thereby depend on everything else here — see `NightVision.swift`.
+    let nightVision = NightVisionController()
 
     private(set) var stars: [Star] = []
     private(set) var starsByID: [Int: Star] = [:]
@@ -685,6 +688,9 @@ final class SkyViewModel {
         // "the time machine is a month out". See `SatelliteAccuracy`.
         frame.nowJulianDay = JulianDate.julianDay(from: Date())
         frame.showAllSatellites = showAllSatellites
+        // Sampled per frame so the transition is a continuous wash at whatever
+        // rate the display runs at, rather than a step per SwiftUI update.
+        frame.nightVisionStrength = nightVision.strength
         // Only ever the path of the object still selected — a stale track is
         // worse than none.
         frame.skyPath = skyPath?.objectID == selectedObject?.id ? skyPath : nil

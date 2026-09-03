@@ -55,7 +55,10 @@ struct SkyBackgroundUniforms {
     /// analytic band). Set by `SkyRenderer` after `make`, since only the
     /// renderer knows whether the texture actually loaded.
     var milkyWayTextureStrength: Float = 0
-    var _padding1: Float = 0
+    /// Night-vision ramp, 0...1. The background is red-scaled by the fragment
+    /// shader rather than by a filter over the window, so the twilight gradient
+    /// keeps its shape instead of being flattened. See `NightVision.swift`.
+    var nightVisionStrength: Float = 0
     var _padding2: Float = 0
 
     static func make(frameData: SkyFrameData) -> SkyBackgroundUniforms {
@@ -97,7 +100,8 @@ struct SkyBackgroundUniforms {
             milkyWayStrength: Float(frameData.milkyWayStrength),
             sunDirectionX: Float(sunDirection.x),
             sunDirectionY: Float(sunDirection.y),
-            sunDirectionZ: Float(sunDirection.z)
+            sunDirectionZ: Float(sunDirection.z),
+            nightVisionStrength: Float(frameData.nightVisionStrength)
         )
     }
 

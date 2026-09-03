@@ -83,3 +83,13 @@ struct LineVertex {
     var positionNDC: SIMD2<Float>
     var color: SIMD4<Float>
 }
+
+/// The one uniform block the line and point passes take, bound at fragment
+/// buffer index 1. Everything else those passes need rides in the vertices, so
+/// this deliberately stays a single value rather than becoming a second
+/// per-frame struct that has to be kept in step with the shader.
+/// Mirrors `ChromeUniforms` in Shaders.metal.
+struct ChromeUniforms {
+    /// Night-vision ramp, 0...1. See `NightVision.swift`.
+    var nightVisionStrength: Float = 0
+}

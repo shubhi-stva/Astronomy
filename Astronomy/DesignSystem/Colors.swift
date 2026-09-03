@@ -109,6 +109,23 @@ extension View {
 /// Milky Way that turns the panel pale grey; the wash keeps it reading as night
 /// sky. It is kept at 30% so the panel is still obviously translucent — the sky
 /// dominates, and a control you cannot see through has stopped being an overlay.
+extension View {
+    /// `GlassPanel`'s treatment without its padding, for controls that own
+    /// their own insets — the toggle pills in the top-right cluster.
+    ///
+    /// This exists so those pills cannot drift from the panels. Each of them
+    /// previously spelled the same four-layer stack out by hand, which is three
+    /// copies of a decision that has to stay identical for the chrome to read
+    /// as one system.
+    func chromePill() -> some View {
+        let shape = RoundedRectangle(cornerRadius: SkyMetrics.radiusPanel, style: .continuous)
+        return self
+            .background(shape.fill(.ultraThinMaterial))
+            .background(shape.fill(SkyPalette.horizonHaze.opacity(SkyMetrics.panelTintOpacity)))
+            .overlay(shape.strokeBorder(SkyPalette.panelStroke, lineWidth: SkyMetrics.strokeWidth))
+    }
+}
+
 struct GlassPanel<Content: View>: View {
     @ViewBuilder var content: Content
 

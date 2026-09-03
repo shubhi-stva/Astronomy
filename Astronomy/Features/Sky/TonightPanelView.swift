@@ -38,18 +38,7 @@ struct TonightToggleView: View {
             .padding(.vertical, SkyMetrics.paddingSnug)
         }
         .buttonStyle(.plain)
-        .background(
-            RoundedRectangle(cornerRadius: SkyMetrics.radiusPanel, style: .continuous)
-                .fill(.ultraThinMaterial)
-        )
-        .background(
-            RoundedRectangle(cornerRadius: SkyMetrics.radiusPanel, style: .continuous)
-                .fill(SkyPalette.horizonHaze.opacity(SkyMetrics.panelTintOpacity))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: SkyMetrics.radiusPanel, style: .continuous)
-                .strokeBorder(SkyPalette.panelStroke, lineWidth: SkyMetrics.strokeWidth)
-        )
+        .chromePill()
     }
 }
 

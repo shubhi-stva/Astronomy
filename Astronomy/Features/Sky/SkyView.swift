@@ -48,10 +48,47 @@ struct SkyView: View {
                     viewModel.viewportSize = newSize
                 }
 
-                SkyLabelsLayer(viewModel: viewModel)
-                    .allowsHitTesting(false)
+                // Everything that is not the sky itself, tinted as one.
+                //
+                // The tint is applied here, at the root of the chrome, and
+                // nowhere else. Applying it per view would mean every control
+                // added later had to remember; applying it over the whole
+                // window would mean re-tinting the Metal view through a SwiftUI
+                // filter, which is both slower and wrong — the sky gets the
+                // same transform in its own fragment shaders, where the star
+                // brightness hierarchy can be preserved exactly.
+                chromeLayer
+                    .nightVision(strength: viewModel.nightVision.isEnabled ? 1 : 0)
+                    .animation(
+                        .easeInOut(duration: NightVision.transitionDuration),
+                        value: viewModel.nightVision.isEnabled
+                    )
+            }
+        }
+        .preferredColorScheme(.dark)
+        .background(SkyPalette.voidBackground)
+        .background(
+            KeyCommandMonitor { command in
+                switch command {
+                case .toggleNightVision:
+                    withAnimation(.easeInOut(duration: NightVision.transitionDuration)) {
+                        viewModel.nightVision.toggle()
+                    }
+                    return true
+                case .openCommandPalette, .dismiss:
+                    return false
+                }
+            }
+        )
+    }
 
-                VStack(spacing: 0) {
+    @ViewBuilder
+    private var chromeLayer: some View {
+        ZStack {
+            SkyLabelsLayer(viewModel: viewModel)
+                .allowsHitTesting(false)
+
+            VStack(spacing: 0) {
                     // One gap between the top controls and one inset from the
                     // window edge, both from `SkyMetrics`, so the two right-hand
                     // pills sit in the same rhythm as everything inside them.
@@ -61,6 +98,8 @@ struct SkyView: View {
                         Spacer()
 
                         TonightToggleView(viewModel: viewModel)
+
+                        NightVisionToggleView(controller: viewModel.nightVision)
 
                         SatelliteControlView(viewModel: viewModel)
 
@@ -121,10 +160,7 @@ struct SkyView: View {
                             .foregroundStyle(SkyPalette.chromeSecondaryText)
                     }
                 }
-            }
         }
-        .preferredColorScheme(.dark)
-        .background(SkyPalette.voidBackground)
     }
 }
 

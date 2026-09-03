@@ -84,9 +84,37 @@ struct BackgroundUniforms {
     float sunDirectionY;
     float sunDirectionZ;
     float milkyWayTextureStrength;
-    float _padding1;
+    /// Night-vision ramp, 0...1. See `NightVision.swift`.
+    float nightVisionStrength;
     float _padding2;
 };
+
+/// The one uniform the line and point passes need. Their vertices carry
+/// everything else, so this stays a single float rather than growing into a
+/// second uniform block that has to be kept in step with anything.
+struct ChromeUniforms {
+    float nightVisionStrength;
+};
+
+// MARK: - Night vision
+//
+// Luminance-preserving red-scale, the MSL half of `NightVision.redScale`. The
+// source colour's luminance goes into the red channel unchanged, so every
+// brightness ratio on screen survives the transform exactly — which is what
+// lets the star magnitude hierarchy and the twilight gradient still read once
+// the sky has gone red. Keep the two implementations in step;
+// `NightVisionTests` asserts the properties both must have.
+
+constant float3 kLumaWeights = float3(0.2126, 0.7152, 0.0722);
+constant float kNightGreenResidual = 0.10;
+constant float kNightBlueResidual  = 0.055;
+
+static inline float3 applyNightVision(float3 rgb, float strength) {
+    if (strength <= 0.0) { return rgb; }
+    float y = dot(rgb, kLumaWeights);
+    float3 red = float3(y, y * kNightGreenResidual, y * kNightBlueResidual);
+    return mix(rgb, red, saturate(strength));
+}
 
 // Shape selectors — keep in sync with `PointSpriteShape` in RenderTypes.swift.
 constant float kShapeStarCore     = 0.0;
@@ -692,7 +720,7 @@ fragment float4 backgroundFragmentShader(
         color = mix(color, terrainLayerColor(i, skyReference), a);
     }
 
-    return float4(color, 1.0);
+    return float4(applyNightVision(color, u.nightVisionStrength), 1.0);
 }
 
 // MARK: - Point sprite pass
@@ -824,7 +852,8 @@ fragment float4 starFragmentShader(
     PointVaryings in [[stage_in]],
     float2 pointCoord [[point_coord]],
     texture2d_array<float> surfaceMaps [[texture(0)]],
-    sampler surfaceMapSampler [[sampler(0)]]
+    sampler surfaceMapSampler [[sampler(0)]],
+    constant ChromeUniforms &chrome [[buffer(1)]]
 ) {
     // Sprite-local coordinates in -1...1, +y up.
     float2 p = float2(pointCoord.x, 1.0 - pointCoord.y) * 2.0 - 1.0;
@@ -1101,7 +1130,7 @@ fragment float4 starFragmentShader(
     if (alpha <= 0.002) {
         discard_fragment();
     }
-    return float4(rgb, alpha);
+    return float4(applyNightVision(rgb, chrome.nightVisionStrength), alpha);
 }
 
 // MARK: - Line pass
@@ -1117,6 +1146,9 @@ vertex LineVaryings lineVertexShader(
     return out;
 }
 
-fragment float4 lineFragmentShader(LineVaryings in [[stage_in]]) {
-    return in.color;
+fragment float4 lineFragmentShader(
+    LineVaryings in [[stage_in]],
+    constant ChromeUniforms &chrome [[buffer(1)]]
+) {
+    return float4(applyNightVision(in.color.rgb, chrome.nightVisionStrength), in.color.a);
 }
