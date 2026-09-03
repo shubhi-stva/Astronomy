@@ -951,3 +951,92 @@ What remains approximate, in decreasing order of how much it matters:
   whether the object is in sunlight, computed from a conical umbra/penumbra
   test against the Sun direction — which is the thing that actually determines
   whether you could see it.
+
+## Meteor shower table — `Core/Astronomy/Events/MeteorShowers.swift`
+
+**Source.** The International Meteor Organization's *Meteor Shower Calendar*
+working list of visual meteor showers (imo.net/resources/calendar/). The twelve
+entries in `MeteorShowers.all` are the majors from that list — those with a
+zenithal hourly rate of about 5 or better.
+
+**What is copied and what is not.** For each shower the app stores four
+published quantities: the solar longitude of the maximum (J2000, in degrees),
+the radiant's J2000 right ascension and declination at maximum, the ZHR, and the
+mean geocentric velocity. The activity period and the parent body are copied as
+text. Nothing else in the file is from the IMO.
+
+**Why this cannot be computed.** A shower's maximum is the moment Earth passes
+through the densest part of a debris stream. That density is a measured property
+of the stream, determined by counting meteors over many returns; it does not
+follow from any ephemeris, and no amount of orbital mechanics in this app could
+derive it. This is the one part of the calendar that is tabulated rather than
+solved, and the UI marks every such row "TABULATED" for exactly that reason.
+
+**What the app does compute.** The *date* of each maximum. The IMO tabulates the
+peak as a solar longitude rather than a calendar date, because the Earth reaches
+a given solar longitude at the same point in its orbit every year whereas the
+calendar date drifts by up to a day through the leap-year cycle. The app solves
+`EclipticLongitude.sunJ2000(julianDay:) == maximumSolarLongitudeDegrees` with the
+same root finder the equinoxes use, so peaks move correctly from year to year.
+The radiant is precessed from J2000 to the epoch of date exactly as a catalogue
+star is. The radiant's own drift across the activity period (roughly a degree a
+day) is not modelled; at the maximum, which is the only instant shown, that
+drift is by definition zero.
+
+**Terms.** IMO calendar content is published for free public use with
+attribution. The attribution is shown in the app, in the calendar panel's
+footer, not only here.
+
+**Accuracy.** The tabulated solar longitudes are quoted by the IMO to 0.01–0.1
+degrees, which is 15 minutes to 2.4 hours of Earth's orbital motion. Real showers
+also vary: the Perseids and Geminids have broad maxima lasting most of a night,
+the Quadrantids a sharp one only a few hours wide. The dates here should be
+trusted; the times of day should be read as the centre of a window, not an
+appointment.
+
+## Eclipses — deliberately absent
+
+The sky calendar does **not** list solar or lunar eclipses. This is a decision,
+not an omission, and it is the one place in this project where the honest answer
+was to ship less.
+
+**Why.** Eclipse prediction is not the same problem as the rest of the calendar.
+A lunar phase is a one-dimensional root find on an angle, and a few arcminutes of
+error in the Moon's position costs a few minutes in the answer — which is the
+regime `MoonPosition`'s truncated ELP series is built for. An eclipse is a
+*shadow-cone intersection test*, and its interesting outputs are the ones that
+degrade fastest:
+
+* **Local circumstances for a solar eclipse** — whether totality reaches a
+  particular town, and to the second when — require Besselian elements, a figure
+  of the Earth (not a sphere), ΔT, and lunar limb profile corrections. The Moon's
+  shadow travels at roughly 0.5 km per second at the ground, so *one arcsecond*
+  of lunar position error moves the path of totality by about two kilometres.
+  This app's lunar series is good to a few arcminutes — two orders of magnitude
+  short — and it applies no ΔT correction at all.
+* **Magnitude and contact times** for a lunar eclipse are less brutal but still
+  demand the Earth's penumbral and umbral cone geometry including the
+  atmosphere's enlargement of the shadow, which is itself an empirical
+  correction, not a derivation.
+
+**Why not ship an approximation.** Because of what people do with the answer.
+Nobody travels to see a first-quarter moon. People book flights and cross
+continents for a total solar eclipse, and a predicted contact time that is
+plausible but wrong by minutes — or a path of totality drawn a few kilometres
+off — is worse than no prediction, because it looks exactly as authoritative as
+a correct one. The rest of this app's numbers earn trust by being derived from
+stated methods with stated error bounds; an eclipse table computed this way could
+not honestly carry one.
+
+**What to use instead.** NASA's eclipse catalogues (eclipse.gsfc.nasa.gov) and
+Fred Espenak's *Five Millennium Canon of Solar Eclipses* are the standard
+references and are computed from JPL ephemerides with proper Besselian elements.
+The calendar panel's footer says eclipses are absent rather than leaving the user
+to notice.
+
+**If this is ever revisited**, the honest route is the same one the rest of the
+app took: bring in a real ephemeris (a JPL DE series rather than truncated
+analytic theory), implement Besselian elements from the *Explanatory Supplement
+to the Astronomical Almanac*, model ΔT, and then state the residual against the
+NASA canon — the way `SGP4` states its residual against the official test
+vectors. Anything less should stay out.

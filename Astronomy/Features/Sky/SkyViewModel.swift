@@ -85,6 +85,7 @@ final class SkyViewModel {
         ephemerisRefreshTask?.cancel()
         satelliteTask?.cancel()
         satelliteRefreshTask?.cancel()
+        calendarTask?.cancel()
     }
 
     /// Loads the satellite catalogue, then propagates it forever at the
@@ -633,6 +634,73 @@ final class SkyViewModel {
         }
     }
 
+    // MARK: - Sky calendar
+
+    /// Upcoming events, or empty while they are being computed.
+    private(set) var calendarEvents: [AstronomicalEvent] = []
+    private(set) var isComputingCalendar = false
+    var isCalendarPresented = false {
+        didSet { if isCalendarPresented { refreshCalendar() } }
+    }
+    private var calendarKey: String?
+    private nonisolated(unsafe) var calendarTask: Task<Void, Never>?
+
+    /// Rebuilds the calendar when the day or the location changes.
+    ///
+    /// Keyed on the day rather than the instant, for the same reason the
+    /// Tonight report is keyed on the night: scrubbing the time machine across
+    /// an afternoon does not change what is coming up, and solving a few
+    /// hundred root finds is not per-frame work. The search itself runs on a
+    /// detached task — it is several hundred thousand ephemeris evaluations,
+    /// and none of them belong on the thread drawing the sky.
+    func refreshCalendar(force: Bool = false) {
+        guard isCalendarPresented else { return }
+        let observer = location.currentLocation
+        let julianDay = time.julianDay
+        let key = "\(julianDay.rounded(.down))|\(observer.latitudeDegrees),\(observer.longitudeDegrees)"
+        guard force || key != calendarKey else { return }
+        calendarKey = key
+
+        isComputingCalendar = true
+        calendarTask?.cancel()
+        calendarTask = Task { [weak self] in
+            let events = await Task.detached(priority: .userInitiated) {
+                EventCalendar.events(fromJulianDay: julianDay, observer: observer)
+            }.value
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard let self else { return }
+                self.calendarEvents = events
+                self.isComputingCalendar = false
+            }
+        }
+    }
+
+    /// Opens a calendar event: moves the time machine to its instant and points
+    /// the camera at whatever there is to look at.
+    ///
+    /// The order matters. The ephemeris is refreshed after the jump and before
+    /// the camera is aimed, because "where is Jupiter" has a different answer at
+    /// the new instant, and aiming first would fly the camera to where Jupiter
+    /// was rather than where the event puts it.
+    func open(event: AstronomicalEvent) {
+        time.jump(to: event.date)
+        refreshEphemeris()
+
+        if let id = event.targetObjectID,
+           let object = solarSystemObjects.first(where: { $0.id == id }) {
+            flyToFocus(on: object)
+            return
+        }
+        // A meteor radiant or the midpoint of a pairing: somewhere to look, but
+        // nothing to select. The camera goes there; the selection is untouched.
+        guard let equatorial = event.targetEquatorial else { return }
+        let horizontal = CoordinateTransformService.horizontal(
+            from: equatorial, observer: location.currentLocation, julianDay: event.julianDay
+        )
+        camera.flyTo(horizontal, fieldOfViewDegrees: min(camera.fieldOfViewDegrees, 60))
+    }
+
     func currentFrameData() -> SkyFrameData {
         // Advance camera momentum/focus-flight in lockstep with the frame the
         // renderer is about to draw, so panning and flights stay smooth at
@@ -642,6 +710,7 @@ final class SkyViewModel {
         // A key comparison, not a rebuild: see `refreshSkyPathIfNeeded`.
         refreshSkyPathIfNeeded()
         refreshTonightReport()
+        refreshCalendar()
 
         // Sample the clock exactly once per frame. `time.julianDay` is
         // continuous — it reads the system clock on every access — so calling

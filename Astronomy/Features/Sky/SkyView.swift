@@ -97,6 +97,8 @@ struct SkyView: View {
 
                         Spacer()
 
+                        CalendarToggleView(viewModel: viewModel)
+
                         TonightToggleView(viewModel: viewModel)
 
                         NightVisionToggleView(controller: viewModel.nightVision)
@@ -135,13 +137,20 @@ struct SkyView: View {
                         .padding(.bottom, SkyMetrics.paddingSnug)
                 }
 
-                // The dashboard hangs under the pill that opens it, on the
-                // right, so the middle of the sky stays clear.
-                if viewModel.isTonightPanelPresented {
+                // The dashboards hang under the pills that open them, on the
+                // right, so the middle of the sky stays clear. Side by side
+                // when both are open, rather than stacked: two panels down the
+                // right edge would run off the bottom of a small window.
+                if viewModel.isTonightPanelPresented || viewModel.isCalendarPresented {
                     VStack {
-                        HStack {
+                        HStack(alignment: .top, spacing: SkyMetrics.paddingSnug) {
                             Spacer()
-                            TonightPanelView(viewModel: viewModel)
+                            if viewModel.isCalendarPresented {
+                                CalendarPanelView(viewModel: viewModel)
+                            }
+                            if viewModel.isTonightPanelPresented {
+                                TonightPanelView(viewModel: viewModel)
+                            }
                         }
                         Spacer()
                     }
