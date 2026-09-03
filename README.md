@@ -8,6 +8,11 @@ The project began from my interest in creating a desktop astronomy experience in
 
 > **Status:** Active development
 
+<p align="center">
+  <img src="screenshots/astronomy_image_6.png" width="48%">
+  <img src="screenshots/astronomy_image_3.png" width="48%">
+</p>
+
 ---
 
 ## Overview
