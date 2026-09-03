@@ -332,6 +332,10 @@ enum ElementSetStaleness: Comparable, Sendable {
 
     /// One sentence saying what this staleness means for what is on screen.
     /// `nil` for fresh elements, where there is nothing to say.
+    ///
+    /// Available for anywhere the user has *asked* about a satellite — the
+    /// info panel shows it on selection. It is not what the always-visible
+    /// chrome uses; see `persistentCaveat`.
     var caveat: String? {
         switch self {
         case .fresh:
@@ -341,6 +345,19 @@ enum ElementSetStaleness: Comparable, Sendable {
         case .unreliable:
             return "Positions are unreliable: the orbit is about right, but where the satellite is along it may be minutes — and many degrees — out."
         }
+    }
+
+    /// The caveat worth interrupting the user with, unprompted, on chrome that
+    /// is always on screen.
+    ///
+    /// Only `unreliable` qualifies. `aging` covers roughly two to ten days,
+    /// where a low-orbit position is still good to a few kilometres and pass
+    /// times to seconds — accurate enough that a permanent banner is noise
+    /// rather than information, and a warning shown constantly is a warning
+    /// that stops being read. The age has not stopped being tracked and is
+    /// still one click away in the info panel; it simply no longer nags.
+    var persistentCaveat: String? {
+        self == .unreliable ? caveat : nil
     }
 }
 

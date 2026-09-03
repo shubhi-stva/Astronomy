@@ -244,7 +244,10 @@ final class SkyViewModel {
             notes.append(
                 "Satellites hidden: orbital element sets are only meaningful within about \(days) days of their epoch, so positions at this time would be meaningless rather than merely imprecise."
             )
-        } else if satellitesEnabled, let caveat = satelliteStaleness.caveat {
+        } else if satellitesEnabled, let caveat = satelliteStaleness.persistentCaveat {
+            // `persistentCaveat`, not `caveat`: merely aging elements are
+            // accurate enough that a permanent line here is noise. The exact
+            // age stays available in the info panel on selection.
             notes.append("Satellite elements are \(satelliteElementAgeDays.formatted(.number.precision(.fractionLength(1)))) days old. \(caveat)")
         }
         let year = Calendar.current.component(.year, from: time.currentDate)

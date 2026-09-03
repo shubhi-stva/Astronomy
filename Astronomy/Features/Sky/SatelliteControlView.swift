@@ -131,7 +131,7 @@ struct SatelliteControlView: View {
     private var stalenessText: String? {
         guard !viewModel.satelliteDescriptors.isEmpty,
               !viewModel.satellitesSuppressedBySimulatedTime,
-              let caveat = viewModel.satelliteStaleness.caveat else { return nil }
+              let caveat = viewModel.satelliteStaleness.persistentCaveat else { return nil }
         let age = viewModel.satelliteElementAgeDays
         return String(format: "Elements %.1f days old. %@", age, caveat)
     }
