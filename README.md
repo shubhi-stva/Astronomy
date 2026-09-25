@@ -153,6 +153,51 @@ Celestial bodies become increasingly prominent as the camera field of view narro
 
 ---
 
+### Observation-Grade Positions
+
+Everything the app draws is an **apparent place** — where an object actually appears to an observer on the moving, spinning, atmosphere-wrapped Earth at that instant, not its catalogue position.
+
+The ephemeris is built on the **VSOP87D** planetary theory and the full lunar series from Meeus Chapter 47, reduced through a single shared frame that applies:
+
+* ΔT, the difference between clock time and the uniform time scale the theories use
+* precession and nutation
+* annual aberration
+* light-time — a planet is drawn where it *was* when the light now arriving left it
+* topocentric parallax — up to a full degree for the Moon, because where you stand changes where it is
+* atmospheric refraction, which is why the Sun sits on the horizon at the moment the app says it sets
+
+Accuracy is measured rather than asserted. Against **JPL Horizons** over 1850–2045:
+
+| Body | Worst residual |
+|---|---|
+| Sun | 0.35″ |
+| Mercury–Saturn | 0.5″ |
+| Uranus / Neptune | 1.1″ / 2.0″ |
+| Moon | 3.8″ |
+| Topocentric alt/az (full chain) | < 5″ |
+
+The comparison lives in `AstronomyTests/AccuracyTests.swift` and runs on every build.
+
+---
+
+### Sky Guide Features
+
+* **Constellation boundaries** — the official IAU (Delporte, 1930) borders, kept in their native B1875 frame so the region test is exact and the drawn curves bow correctly rather than reading as a clean staircase in the wrong place.
+* **Which constellation is this?** — every object's info panel names the constellation containing it, from those boundaries.
+* **Reference overlays** — equatorial grid, horizon (alt/az) grid, the ecliptic with longitude ticks, and the observer's meridian.
+* **Rise, transit and set** for the selected object, in the observer's own time zone.
+* **The Galilean moons** — Io, Europa, Ganymede and Callisto around Jupiter, with transits and occultations, verified against JPL Horizons.
+* **Saturn's rings** open and close over the 29-year cycle from the true ring-plane geometry, going edge-on at the crossings.
+* **Satellite passes** — when the ISS (or any selected satellite) crosses the sky, from which bearing to which, how high, and whether it will actually be visible.
+* **Meteor shower radiants**, shown while their shower is active.
+* **Angular measurement** — pick two objects and read the separation between them.
+* **Eyepiece and binocular field circles** at true field sizes.
+* **Light pollution** as a Bortle class, which changes how deep the drawn sky goes.
+* **Real apparent magnitudes** from the Astronomical Almanac's current formulae, so Mars running from +1.8 to −2.9 between conjunction and a perihelic opposition is something the sky shows.
+
+---
+
+
 ### Satellite Tracking
 
 The application also includes a satellite propagation and rendering system.
@@ -313,19 +358,12 @@ The goal is to keep visual experimentation separate from the mathematical correc
 
 Astronomy is actively being developed.
 
-Planned features include:
+Shipped since the first milestone: the **Observation Planner** (the Tonight
+dashboard, rise/set/transit, and a sky calendar), **Object Paths**, the
+**Time Machine**, **satellite pass prediction**, a **command palette**,
+**night vision**, and the apparent-place and sky-guide work described above.
 
-### Observation Planner
-
-Generate an observing itinerary based on location, time, object visibility, Moon conditions, and darkness.
-
-### Object Paths
-
-Visualize the path of planets, the Moon, satellites, and other moving objects across the sky.
-
-### Time Machine
-
-Scrub through hours, days, months, or years and watch the celestial sphere evolve.
+Still planned:
 
 ### Compare Skies
 

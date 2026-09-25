@@ -113,100 +113,181 @@
 ## Ephemeris (Sun / Moon / planets)
 
 All positions are computed at runtime in Swift — nothing is bundled as
-precomputed ephemeris data.
+precomputed ephemeris data, but the *series coefficients* for the planets are
+(see `vsop87d.json` below).
 
-- **Sun** (`Core/Astronomy/SunPosition.swift`): Jean Meeus, *Astronomical
-  Algorithms*, 2nd ed., Chapter 25, "reduced precision" method (accurate to
-  about 0.01° in longitude for dates near the present era).
-- **Moon** (`Core/Astronomy/MoonPosition.swift`): Meeus, Chapter 47,
-  truncated to the ~17 largest-amplitude periodic terms of the full
-  ELP2000-based series (the full series has dozens of terms per
-  coordinate). Accuracy with this truncation is roughly 0.2-0.3° —
-  sufficient for sky-chart visualization, not for precise
-  occultation/eclipse prediction.
-- **Planets, Mercury-Neptune** (`Core/Astronomy/PlanetPosition.swift`):
-  mean Keplerian orbital elements at J2000.0 plus linear secular rates,
-  from the JPL Solar System Dynamics Group's "Keplerian Elements for
-  Approximate Positions of the Major Planets" (E.M. Standish), the same
-  low-precision element set Meeus summarizes in Chapter 31. Positions are
-  computed via two-body Kepler-equation solutions (Newton-Raphson) with
-  **no planetary perturbations**, valid for roughly 1800-2050 with
-  accuracy on the order of a few arcminutes for the inner planets and
-  somewhat worse (tens of arcminutes) for the outer planets.
-- **Pluto** (same file, same table): the JPL table has a **ninth row** for
-  Pluto, valid over the same 1800-2050 span, and that is where Pluto's
-  elements come from — deliberately the same source as everything else here,
-  so the provenance stays consistent rather than mixing a second ephemeris in.
-  Two caveats belong with it:
-  - It is the **least accurate row in the table**. A steeply inclined (17°),
-    eccentric (e = 0.249) orbit modelled by a pure two-body Keplerian solution
-    with no perturbations is the hardest case in the set.
-  - The **1800-2050 validity window matters far more for Pluto** than for the
-    inner planets. Pluto's period is 248 years, so the window covers barely
-    one revolution; the linear element rates have almost no baseline to be
-    right over, and the residual grows toward the ends of the window rather
-    than staying flat the way Mercury's does. The app clamps the time machine
-    to that window anyway (below), which is what keeps this honest.
+Everything below produces **apparent** places: referred to the true equator and
+equinox of date, corrected for light-time where it applies, and for annual
+aberration. `Core/Coordinates/ApparentFrame.swift` owns that reduction and is
+the single place it happens, so no two bodies in a frame can be reduced
+differently. Measured residuals against JPL Horizons over 1850–2045 are in
+`AstronomyTests/AccuracyTests.swift` and quoted per body below.
 
-  Measured residual against **JPL Horizons** (target `999`, centre `500@399`,
-  `QUANTITIES=2`, i.e. apparent airless RA/Dec of date) for 2026-Jan-01
-  00:00 UTC: **0.0050°, about 18 arcseconds** — see
-  `AstronomyTests/PlutoTests.swift`, which pins this.
+### Time scale — ΔT (`Core/Time/DeltaT.swift`)
 
-  Pluto is classified `CelestialObjectKind.dwarfPlanet`, not `.planet`, and
-  that distinction is load-bearing at render time. The major planets are
-  **exempt** from the limiting-magnitude cutoff (a planetarium has to be able
-  to answer "where is Neptune"); Pluto, at magnitude ~14.4, is **not** — it
-  goes through the same `StarAppearance.visibility` cutoff a star of that
-  magnitude would, so it is correctly absent from the naked-eye sky at every
-  field of view and every sky brightness. It is still fully searchable and
-  selectable, and **selection reveals it**: a selected dwarf planet is drawn
-  at full strength with the selection ring around it, so searching "Pluto"
-  ends on a marked point at Pluto's true place rather than an empty patch of
-  sky.
+Every `julianDay` in the app comes from `Date`, which is UTC; the planetary and
+lunar theories want **Terrestrial Time**. The difference is about 69 s in the
+2020s, which moves the Moon by 35 arcseconds — far from cosmetic at the fields
+this app reaches. Sidereal time, by contrast, is a function of UT (it is the
+Earth's rotation angle), so the rule throughout `Core/` is: *positions of
+bodies use TT, where the observer is looking uses UT.*
 
-### Other dwarf planets — deliberately **not** included
+- **1600–2000**: the polynomial expressions of Espenak & Meeus, *Five
+  Millennium Canon of Solar Eclipses* (NASA/TP-2006-214141).
+- **2000–2026**: annual observed values (IERS bulletins), linearly
+  interpolated. The NASA 2005–2050 polynomial is *not* used: it predicted a
+  faster rise than the Earth's rotation actually delivered, giving ~75 s for
+  2026 against an observed 69 s.
+- **After 2026**: one continuous quadratic anchored on the last observed value.
+  Deliberately *not* handing over to the canonical long-term parabola later,
+  which is wrong about the present era by more than two minutes and would make
+  the sky jump as the time machine crossed the handover.
 
-Ceres, Eris, Makemake, Haumea and the rest are **not in the JPL major-planet
-Keplerian table**, and no elements for them are bundled or invented. Adding
-them properly means a second, separately-documented source — JPL Small-Body
-Database or MPC osculating elements — which also means osculating elements
-with a stated epoch rather than the mean-elements-plus-secular-rates form this
-file is built around, and (for Ceres in the main belt) perturbation handling
-this two-body solver does not have. Rather than fabricate an element row, they
-are left out. Pluto is included because, and only because, it is in the source
-this app already uses.
+### Planets, Mercury–Neptune — VSOP87D (`Core/Astronomy/VSOP87.swift`)
 
-### Accuracy caveats
+- **Source**: the VSOP87 planetary theory (Bretagnon & Francou, *Astronomy &
+  Astrophysics* **202**, 309 (1988)), variant **D** — spherical coordinates
+  referred to the mean dynamical ecliptic and equinox of the date. Original
+  files `VSOP87D.mer` … `VSOP87D.nep` from the IMCCE
+  (ftp.imcce.fr/pub/ephem/planets/vsop87).
+- **Licence**: published by the IMCCE for unrestricted scientific use; the
+  theory and its coefficients are a scientific publication, not a licensed
+  software asset.
+- **Bundled as** `Data/Catalogs/vsop87d.json` (264 KB): `{body: {L|B|R:
+  [[A,B,C, A,B,C, …] per power of T]}}`, angles in radians, R in AU.
+- **Truncation rule, reproducible**: a term is kept when its contribution
+  `A·|T|^n` over 1800–2050 (|T| ≤ 0.2 millennia) is at least **3×10⁻⁸** — about
+  0.006 arcseconds, or 4.5 km in R. That keeps **6,771 of 31,577** terms. The
+  worst case (every dropped term in phase at once) bounds the truncation error
+  at 1.6″ in heliocentric longitude for Saturn and under 0.7″ for the Earth;
+  the realised error is far smaller, as the Horizons comparison shows.
+- **Why this replaced the Keplerian element table**: the previous source was
+  JPL's low-precision mean elements with no planetary perturbations at all. The
+  mutual pull of Jupiter and Saturn alone moves each of them by tens of
+  arcminutes over a synodic cycle — a whole Moon diameter at the narrow fields
+  this app reaches.
+- **Light-time**: each planet is located where it *was* when the light now
+  arriving left it (Meeus Ch. 33), iterated twice, which converges to well
+  under a millisecond of light-time for every planet.
+- **Measured against JPL Horizons** (apparent RA/Dec of date, geocentric, six
+  epochs from 1850 to 2045): worst residual **0.5″** for Mercury through
+  Saturn, **1.1″** Uranus, **2.0″** Neptune. Distances agree to 2 parts in
+  10⁵.
 
-- All of the above are *low-precision* methods by design (per the task's
-  explicit "arcminute precision is fine" requirement) — they will not match
-  JPL Horizons or VSOP87 full-series results to the arcsecond.
-- The Moon and outer planets carry the largest error budgets; treat marker
-  positions as visually indicative, not observation-grade.
-- No atmospheric refraction correction is applied to Alt/Az output.
+### Sun (`Core/Astronomy/SunPosition.swift`)
 
-### Reference frame — everything is now "of date"
+The Sun is the Earth's VSOP87 position negated (Meeus Ch. 25, "higher
+accuracy"), then reduced through the same frame as everything else. Worst
+residual against Horizons: **0.35″**. This replaced the reduced-precision
+method of Meeus Ch. 25 (0.01°, or 36″), which was the largest error in where
+the Sun was drawn and, more visibly, in where its light fell on the Moon's
+terminator.
 
-All three sources produce positions referred to the **mean equinox and equator
-of the displayed date**, which is the frame the observer's sidereal time is in.
-Getting this consistent matters: mixing frames puts objects out of register with
-each other, which is exactly how a conjunction renders wrong.
+### Moon (`Core/Astronomy/MoonPosition.swift`)
 
-- The **Sun** (Meeus Ch. 25) and **Moon** (Ch. 47) series are of-date natively.
-- The **planets** are not. Standish's Keplerian elements are referred to the
-  **J2000.0 ecliptic**, so `PlanetPosition` now rotates by the J2000 obliquity
-  and then applies `Precession` from J2000 to the date. Previously it rotated by
-  the *of-date* obliquity and stopped there, which was a partial and
-  inconsistent version of the same correction and left the planets about 0.36°
-  out of register with the Sun and Moon in 2026.
+- **Series**: the **full** table from Meeus Ch. 47 — 60 terms in longitude and
+  distance (Table 47.A), 60 in latitude (Table 47.B), plus the additive terms
+  for Venus, Jupiter and the flattening of the Earth. Meeus quotes about 10″ in
+  longitude and 4″ in latitude; the measured residual against Horizons is
+  **3.8″** worst over 1850–2045.
+- **This replaced a ten-term truncation** whose error was 0.2–0.3° — half a
+  Moon diameter, and visibly wrong the moment the Moon passed a bright star.
+- **Topocentric parallax** is now applied (see below), which for the Moon is
+  the single largest term of all: up to a full degree, two Moon widths.
+
+### Topocentric places
+
+`EphemerisService.solarSystemObjects(julianDay:observer:)` subtracts the
+observer's geocentric position vector — WGS-84 ellipsoid, rotated by the
+*apparent* sidereal time — from each body's. The diurnal parallax is therefore
+exact for every body rather than modelled for none: up to 1° for the Moon, 20″
+for Mars at a close opposition, 9″ for the Sun. Verified against Horizons with
+a geodetic site at 122.42 W, 37.77 N: apparent alt/az agrees to **under 5″**
+for the Moon and under 1″ for the Sun and planets.
+
+### Pluto
+
+Pluto is not in VSOP87, so it keeps the ninth row of JPL's Keplerian element
+table (E. M. Standish, "Keplerian Elements for Approximate Positions of the
+Major Planets"), a two-body fit valid 1800–2050, reduced through the same
+nutation and aberration as everything else. Measured residual against Horizons:
+**39″ worst** over the window, about 5″ near its middle — the least accurate
+body in the app, and documented as such. It remains classified
+`CelestialObjectKind.dwarfPlanet` and subject to the limiting-magnitude cutoff;
+see the note further down on why that is load-bearing.
+
+### Apparent magnitudes (`Core/Astronomy/PlanetMagnitude.swift`)
+
+- **Source**: A. Mallama & J. L. Hilton, "Computing apparent planetary
+  magnitudes for The Astronomical Almanac", *Astronomy and Computing* **25**,
+  10 (2018) — the polynomials the Almanac adopted in 2019 — with the classic
+  `5 log₁₀(rΔ)` distance term. Saturn's includes the ring-tilt term, which is
+  why it brightens and dims over its 29-year cycle.
+- The Moon uses Allen's phase law (−12.73 at full, mean distance) with the
+  0.026|α| + 4×10⁻⁹α⁴ dependence; Pluto uses H = −1.0 with a linear phase
+  coefficient, since Mallama & Hilton do not cover it.
+- **Why it matters beyond the info panel**: the renderer sizes and blooms a
+  planet by its magnitude, so Mars running from +1.8 at conjunction to −2.9 at
+  a perihelic opposition — a factor of 75 in brightness — is now something the
+  sky actually shows. Previously every planet carried a single fixed number.
+- Agreement with Horizons is within 0.15 mag for the planets, 0.3 for Saturn
+  (its ring model differs slightly) and 0.35 for the Moon.
+
+### Nutation and the obliquity (`Core/Astronomy/Nutation.swift`)
+
+- **Δψ, Δε**: the abridged series of Meeus Ch. 22 (four terms), accurate to
+  0.5″ and 0.1″ respectively. **ε₀**: Laskar's polynomial (Meeus 22.3), good to
+  0.01″ over this window.
+- Nutation is up to 17″, which is invisible at a wide field and *fourteen
+  pixels* at the narrowest field this app draws. The same terms turn mean
+  sidereal time into **apparent** sidereal time (the equation of the equinoxes,
+  up to 1.1 s of time), which fixes the hour angle of every object at once.
+- Verified against Meeus Example 22.a.
+
+### Annual aberration
+
+Applied as the classical first-order displacement `v' = normalize(v + V/c)`
+toward the apex of the Earth's motion, with **V taken from the VSOP87 Earth
+velocity** rather than from a tabulated constant — the constant of aberration
+(20.4955″) falls out of it, which `AberrationTests` checks. Up to 20.5″.
+
+### Atmospheric refraction (`Core/Astronomy/Refraction.swift`)
+
+- **Formula**: Sæmundsson (1986), as given by Meeus eq. 16.4, plus Meeus's
+  constant so R is exactly zero at the zenith. Standard atmosphere (1010 mb,
+  10 °C); the app has no barometer, so no pressure/temperature scaling is
+  attempted.
+- **Why it is in the render path, not just the info panel**: the rise and set
+  times the app prints already include it — the Sun "sets" at a geometric
+  altitude of −0.8333° *because* refraction lifts its upper limb to the
+  horizon. Without refraction in the drawing, the time bar said "sunset" while
+  the disk sat most of a degree below the skyline.
+- **Below the horizon** the correction fades smoothly to zero between −1° and
+  −4°: the see-through-Earth view is not a sightline through air, and a step
+  would be visible as an object set.
+- It is applied to *every* frame, never skipped for being small. Gating it on
+  "is anything in this viewport low enough to matter" is tempting and wrong:
+  turning the model off shifts every object in the frame, so panning across the
+  threshold would step the whole sky. `Refraction.Table` exists to make
+  always-on affordable — 16,384 entries indexed by the vertical component of
+  the direction vector, two interpolations and no trigonometry per object.
+
+### What is still not modelled
+
+- **Proper motion**: the bundled catalogue carries no per-star velocity. The
+  largest remaining error over long spans — Barnard's Star moves 10.3″/yr — but
+  sub-pixel over decades at any field this app draws.
+- **Stellar parallax** (< 0.8″), **gravitational light deflection** (1.7″ at
+  the Sun's limb, < 0.02″ more than 10° away), **polar motion** (0.3″),
+  **diurnal aberration** (0.3″). Each is under a quarter of a pixel at the
+  narrowest field offered.
 
 ### Validity window — 1800-2050, and what the app does about it
 
-Standish publishes two element tables: one fitted for **1800 AD - 2050 AD** and a
-lower-accuracy one for 3000 BC - 3000 AD. This app carries the first, so
-1800-2050 is where the few-arcminute claim above actually holds. The truncated
-lunar series is likewise quoted for the modern era.
+Standish publishes two Keplerian element tables: one fitted for **1800 AD -
+2050 AD** and a lower-accuracy one for 3000 BC - 3000 AD. Pluto carries the
+first, so 1800-2050 is where its accuracy claim holds. VSOP87 itself is good
+over several millennia, but the app's window is set by its weakest component.
 
 **The decision (`EphemerisService.validYearRange`): the time machine is clamped
 to that window.** The date/time picker will not select outside it and the
@@ -215,6 +296,20 @@ would still produce numbers, and they would still look exactly like a sky —
 degrees wrong, with nothing on screen to say so. Refusing to leave the window is
 the only behaviour that cannot mislead, and 1800-2050 is far wider than any
 "what does my sky look like in two months" question needs.
+
+## Galilean moons — `Core/Astronomy/JupiterMoons.swift`
+
+- **Source**: Meeus Ch. 44, the "lower accuracy" method — circular orbits in
+  Jupiter's equatorial plane with the principal perturbation terms, and the
+  light-time to Jupiter taken out of the satellite phases. Quoted at about 0.1
+  Jupiter radii (a few arcseconds).
+- **Verified** against JPL Horizons (targets 501–504 against 599) in
+  `AccuracyTests`: all four within 0.15 Jupiter radii.
+- The model's X/Y are in Jupiter's own equatorial frame, so they are rotated by
+  the planet's pole position angle (from `PlanetaryOrientation`) before being
+  placed on the sky. Transits and occultations fall out of the line-of-sight
+  coordinate; **eclipses in Jupiter's shadow are not modelled**, so a moon in
+  eclipse is drawn where it is rather than hidden.
 
 ## Precession of the equinoxes — `Core/Astronomy/Precession.swift`
 
@@ -253,6 +348,41 @@ truncated Meeus series for full VSOP87/ELP2000 term tables, or bundling
 precomputed short-arc ephemeris data — the `EphemerisService` facade is the
 single seam to change; nothing downstream (`SkyRenderer`, `SkyViewModel`)
 depends on how positions are computed.
+
+## Constellation boundaries — `Data/Catalogs/constellation_boundaries.json`
+
+- **Source**: the 781 boundary edges of the Stellarium project's "modern" sky
+  culture (`skycultures/modern/index.json`, the `edges` array), which carries
+  Pierre Barbier's machine-readable reduction of Delporte's tables
+  (https://pbarbier.com/constellations/edges_18.txt).
+- **Licence**: Stellarium's sky-culture data is CC BY-SA 4.0, the same licence
+  family as the star and constellation-line data already bundled.
+  Attribution: Stellarium project, modern IAU sky culture, CC BY-SA 4.0.
+- **Epoch: B1875**, and that is the point. Delporte (1930) drew the boundaries
+  as arcs of constant right ascension and constant declination *in the B1875
+  frame*. Keeping them in it is the definition, not an inconvenience: in that
+  frame every edge is exactly a straight line in (RA, Dec), so the
+  point-in-region test is exact, and the drawn curve comes from subdividing
+  along the edge in B1875 and rotating each sample forward to J2000.
+  Converting the endpoints once and drawing straight lines between them would
+  bow every long edge away from the true boundary. It is also why the
+  boundaries are visibly *not* axis-aligned today — precession has turned the
+  grid they were ruled against by about two degrees.
+- **Contents**: 781 edges over **89 regions** — the 88 constellations, with
+  Serpens in its two traditional halves (`SER1`, `SER2`, both displayed as
+  "Ser"). Each edge records its two endpoints and the two constellations it
+  separates.
+- **Why edges and not polygons**: an earlier attempt used CDS VI/49's
+  `bound_20.dat`, which is a list of boundary *vertices sorted by right
+  ascension*. Grouping those by constellation yields point sets in arbitrary
+  order, not rings, and the polygons that came out were nonsense — the region
+  test built on them reported gaps over most of the sky. Ray casting needs the
+  *set* of edges bounding a region, never their order, so the model is built
+  around that and there is no ordering to get wrong.
+- **Verified**: `ConstellationBoundaryTests` checks that a grid of 2,592
+  directions covering the whole sky falls in **exactly one** region each — no
+  gaps, no overlaps — and that a dozen well-known objects land in the
+  constellation every catalogue agrees they are in.
 
 ## Constellation names/centres — `Astronomy/Data/Catalogs/constellation_names.json`
 
@@ -368,6 +498,16 @@ comment block there for the full derivation.
     literally wrong about how many stars an unaided eye could resolve.
   The honest function, `SkyBrightness.limitingMagnitude` (`0.55 μ − 5.55`),
   is untouched, separately unit-tested, and is what should be cited.
+- **Light pollution (`bortleMagnitudePenalty`)**: the Bortle scale (Sky &
+  Telescope, 2001) describes classes 1–3 as skies where the naked-eye limit is
+  6.5–7, which is what the app's dark-sky look was already tuned for, so those
+  cost nothing. From class 4 the published limits fall by roughly 0.45
+  magnitude per class (class 4: 6.1–6.5 … class 9: ≤ 4.0) and the penalty
+  follows that slope, subtracted from the *display* curve above and scaled by
+  the same darkness ramp so it does nothing at noon — by day the Sun is
+  already the binding constraint. It is a display adjustment on an admittedly
+  generous curve, not photometry, and it only shows where the sky rather than
+  the field of view is the binding limit, which is to say as you zoom in.
   Representative drawn limits: 5.60 at Sun +45°, 5.84 at 0°, 7.38 at −6°,
   8.70 at −12°, 9.00 at −18° and below.
 - **Field-of-view limit**: independently, `StarAppearance.limitingMagnitude`
@@ -453,10 +593,19 @@ carried in each sample, before any trigonometry.
   is the geocentric distance from the ephemeris, so disks grow and shrink
   correctly as a planet approaches or recedes. A documented
   minimum-visualization size keeps bodies clickable at wide field.
-- **Limitations**: Saturn's ring tilt is a fixed tasteful approximation, not
-  computed from true ring-plane geometry; oblateness is ignored (equatorial
-  radius used as a sphere); no limb darkening; procedural banding on Jupiter
-  is decorative, not a map of real belts and zones.
+- **Saturn's rings are now real geometry.** The ring plane is Saturn's
+  equatorial plane, so its opening angle *B* — the saturnicentric latitude of
+  the Earth — comes from Saturn's IAU 2015 pole (`PlanetaryOrientation`, body
+  699) and its axis on screen from that pole's position angle. The rings
+  therefore open and close over Saturn's 29-year orbit and go edge-on at the
+  crossings (most recently March 2025) instead of sitting at a fixed tilt, and
+  the ring arc crossing in front of the globe is drawn over it. The elements
+  for the ring plane's own inclination and node (Meeus Ch. 45) are carried in
+  `SaturnRings` and feed the magnitude model.
+- **Limitations**: oblateness is ignored (equatorial radius used as a sphere);
+  no limb darkening; the ring's shadow on the globe and the globe's on the
+  rings are not modelled; procedural banding on Jupiter is decorative, not a
+  map of real belts and zones.
 
 ## Deep-sky catalogue — `Data/Catalogs/deepsky.json`
 

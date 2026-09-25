@@ -2,16 +2,27 @@
 //  PlanetPosition.swift
 //  Astronomy
 //
-//  Low-precision planetary positions using mean Keplerian orbital elements
-//  and their secular (linear-in-time) rates, valid for the years 1800-2050.
+//  Geocentric apparent positions of the planets.
 //
-//  Reference: "Keplerian Elements for Approximate Positions of the Major
-//  Planets" by E.M. Standish (JPL/Solar System Dynamics Group), the same
-//  low-precision element set summarized in Meeus's "Astronomical
-//  Algorithms" Chapter 31 ("Elements of Planetary Orbits"). Two-body
-//  Keplerian motion only (no planetary perturbations), giving accuracy on
-//  the order of a few arcminutes for the inner planets and somewhat worse
-//  for the outer planets — adequate for sky-chart visualization.
+//  Mercury through Neptune come from the VSOP87D planetary theory (see
+//  `VSOP87.swift`): heliocentric ecliptic coordinates of date for the planet
+//  and for the Earth, differenced to a geocentric vector, corrected for the
+//  light-time (the planet is seen where it *was* when the light left it —
+//  Meeus Ch. 33, iterated twice), then reduced through `EarthState` for the
+//  FK5 frame correction, nutation and aberration. Against JPL Horizons this
+//  is good to a few arcseconds across 1800-2050.
+//
+//  Pluto is the exception. VSOP87 does not include it, so it keeps the
+//  Keplerian element row from JPL's "Keplerian Elements for Approximate
+//  Positions of the Major Planets" (E. M. Standish), a two-body fit valid for
+//  1800-2050 and good to well under an arcminute over that span — see the
+//  note on `Planet.pluto` and `PlutoTests`. It is reduced through the same
+//  nutation and aberration as everything else, so it sits in the same frame.
+//
+//  Apparent magnitudes are from Mallama & Hilton, "Computing apparent
+//  planetary magnitudes for The Astronomical Almanac", Astronomy and
+//  Computing 25, 10 (2018) — the current Almanac formulae — with the classic
+//  5 log₁₀(rΔ) distance term.
 //
 
 import Foundation
@@ -38,9 +49,23 @@ enum Planet: String, CaseIterable, Identifiable {
     }
 
     /// Pluto is a dwarf planet (IAU 2006 resolution B5), not a major planet.
-    /// It rides in this enum because it rides in the same element table; it is
-    /// classified honestly everywhere it is shown.
+    /// It is classified honestly everywhere it is shown.
     var isDwarfPlanet: Bool { self == .pluto }
+
+    /// The VSOP87 series for this body, or nil for Pluto, which the theory
+    /// does not cover.
+    var vsopBody: VSOP87.Body? {
+        switch self {
+        case .mercury: return .mercury
+        case .venus: return .venus
+        case .mars: return .mars
+        case .jupiter: return .jupiter
+        case .saturn: return .saturn
+        case .uranus: return .uranus
+        case .neptune: return .neptune
+        case .pluto: return nil
+        }
+    }
 }
 
 /// Mean orbital elements at J2000.0 and their rates per Julian century.
@@ -54,63 +79,8 @@ private struct OrbitalElements {
     let node0: Double, nodeDot: Double
 }
 
+/// Keplerian elements are kept only for Pluto; see the file comment.
 private let elementsTable: [Planet: OrbitalElements] = [
-    .mercury: OrbitalElements(
-        a0: 0.38709927, aDot: 0.00000037,
-        e0: 0.20563593, eDot: 0.00001906,
-        i0: 7.00497902, iDot: -0.00594749,
-        l0: 252.25032350, lDot: 149472.67411175,
-        peri0: 77.45779628, periDot: 0.16047689,
-        node0: 48.33076593, nodeDot: -0.12534081
-    ),
-    .venus: OrbitalElements(
-        a0: 0.72333566, aDot: 0.00000390,
-        e0: 0.00677672, eDot: -0.00004107,
-        i0: 3.39467605, iDot: -0.00078890,
-        l0: 181.97909950, lDot: 58517.81538729,
-        peri0: 131.60246718, periDot: 0.00268329,
-        node0: 76.67984255, nodeDot: -0.27769418
-    ),
-    .mars: OrbitalElements(
-        a0: 1.52371034, aDot: 0.00001847,
-        e0: 0.09339410, eDot: 0.00007882,
-        i0: 1.84969142, iDot: -0.00813131,
-        l0: -4.55343205, lDot: 19140.30268499,
-        peri0: -23.94362959, periDot: 0.44441088,
-        node0: 49.55953891, nodeDot: -0.29257343
-    ),
-    .jupiter: OrbitalElements(
-        a0: 5.20288700, aDot: -0.00011607,
-        e0: 0.04838624, eDot: -0.00013253,
-        i0: 1.30439695, iDot: -0.00183714,
-        l0: 34.39644051, lDot: 3034.74612775,
-        peri0: 14.72847983, periDot: 0.21252668,
-        node0: 100.47390909, nodeDot: 0.20469106
-    ),
-    .saturn: OrbitalElements(
-        a0: 9.53667594, aDot: -0.00125060,
-        e0: 0.05386179, eDot: -0.00050991,
-        i0: 2.48599187, iDot: 0.00193609,
-        l0: 49.95424423, lDot: 1222.49362201,
-        peri0: 92.59887831, periDot: -0.41897216,
-        node0: 113.66242448, nodeDot: -0.28867794
-    ),
-    .uranus: OrbitalElements(
-        a0: 19.18916464, aDot: -0.00196176,
-        e0: 0.04725744, eDot: -0.00004397,
-        i0: 0.77263783, iDot: -0.00242939,
-        l0: 313.23810451, lDot: 428.48202785,
-        peri0: 170.95427630, periDot: 0.40805281,
-        node0: 74.01692503, nodeDot: 0.04240589
-    ),
-    .neptune: OrbitalElements(
-        a0: 30.06992276, aDot: 0.00026291,
-        e0: 0.00859048, eDot: 0.00005105,
-        i0: 1.77004347, iDot: 0.00035372,
-        l0: -55.12002969, lDot: 218.45945325,
-        peri0: 44.96476227, periDot: -0.32241464,
-        node0: 131.78422574, nodeDot: -0.00508664
-    ),
     // Ninth row of the same JPL table, valid 1800-2050. See the note on
     // `Planet` above: this is the least accurate entry in the set, and the
     // validity window is the binding constraint for it in a way it is not for
@@ -125,108 +95,129 @@ private let elementsTable: [Planet: OrbitalElements] = [
     ),
 ]
 
-// Earth-Moon barycenter elements, needed to compute Earth's heliocentric
-// position for the geocentric correction of other planets.
-private let earthElements = OrbitalElements(
-    a0: 1.00000261, aDot: 0.00000562,
-    e0: 0.01671123, eDot: -0.00004392,
-    i0: -0.00001531, iDot: -0.01294668,
-    l0: 100.46457166, lDot: 35999.37244981,
-    peri0: 102.93768193, periDot: 0.32327364,
-    node0: 0.0, nodeDot: 0.0
-)
-
-/// Everything the renderer needs about a planet at one instant: where it is,
-/// how far away it is (so its disk can be sized truthfully), and how much of
-/// the disk the Sun lights up (so Mercury and Venus can show a phase).
-struct PlanetState {
+/// Everything the renderer and the planner need about a planet at one
+/// instant: where it is, how far away it is (so its disk can be sized
+/// truthfully), how much of the disk the Sun lights up, and how bright it is.
+struct PlanetState: Sendable {
+    /// Apparent RA/Dec, true equator and equinox of date.
     let equatorial: EquatorialCoordinate
-    /// Earth-planet distance, AU. Drives the apparent angular diameter.
+    /// Earth-planet distance, AU (light-time corrected). Drives the apparent
+    /// angular diameter.
     let geocentricDistanceAU: Double
     /// Sun-planet distance, AU.
     let heliocentricDistanceAU: Double
     /// Illuminated fraction of the disk, 0 (new) ... 1 (full).
     let illuminatedFraction: Double
+    /// Sun-planet-Earth angle, degrees.
+    let phaseAngleDegrees: Double
+    /// Sun-Earth-planet angle, degrees: how far from the Sun the planet
+    /// appears in the sky.
+    let elongationDegrees: Double
+    /// Apparent visual magnitude.
+    let magnitude: Double
+    /// Geocentric ecliptic longitude and latitude of date, degrees, before
+    /// nutation — what Saturn's ring geometry is expressed in.
+    let eclipticLongitudeDegrees: Double
+    let eclipticLatitudeDegrees: Double
 }
 
 enum PlanetPosition {
 
-    /// Geocentric apparent RA/Dec for a planet at the given Julian Day.
+    /// Geocentric apparent RA/Dec for a planet at the given **UT** Julian Day.
     static func equatorialCoordinate(planet: Planet, julianDay jd: Double) -> EquatorialCoordinate {
         state(planet: planet, julianDay: jd).equatorial
     }
 
-    /// Full geocentric state: direction, both distances, and phase.
-    ///
-    /// The distances fall straight out of the heliocentric position vectors the
-    /// Keplerian solution already produces — no extra model is introduced.
-    /// The phase angle `i` comes from the Sun-planet-Earth triangle,
-    ///
-    ///     cos(i) = (r^2 + delta^2 - R^2) / (2 * r * delta)
-    ///
-    /// with `r` the Sun-planet distance, `delta` the Earth-planet distance and
-    /// `R` the Sun-Earth distance (Meeus, *Astronomical Algorithms*, 2nd ed.,
-    /// eq. 41.2), and then the illuminated fraction `k = (1 + cos i) / 2`
-    /// (eq. 41.1) — the same relation `MoonPhase` uses, generalised to any
-    /// planet. For the superior planets `i` never exceeds a few degrees to
-    /// about 47 degrees (Mars), so `k` stays close to 1; for Mercury and Venus
-    /// it sweeps the full crescent-to-full range.
+    /// Full geocentric state for a UT Julian Day.
     static func state(planet: Planet, julianDay jd: Double) -> PlanetState {
-        let t = JulianDate.julianCenturies(fromJulianDay: jd)
+        state(planet: planet, earth: EarthState(julianDayUT: jd))
+    }
 
-        let earthHelio = heliocentricEclipticPosition(elements: earthElements, t: t)
-        let planetHelio = heliocentricEclipticPosition(elements: elementsTable[planet]!, t: t)
+    /// Full geocentric state, from an Earth already computed for the instant.
+    static func state(planet: Planet, earth: EarthState) -> PlanetState {
+        let tt = earth.julianDayTT
+        let earthPosition = earth.position
 
-        // Geocentric ecliptic vector = planet heliocentric - Earth heliocentric.
-        let gx = planetHelio.x - earthHelio.x
-        let gy = planetHelio.y - earthHelio.y
-        let gz = planetHelio.z - earthHelio.z
-
-        let delta = (gx * gx + gy * gy + gz * gz).squareRoot()
-        let r = (planetHelio.x * planetHelio.x + planetHelio.y * planetHelio.y
-            + planetHelio.z * planetHelio.z).squareRoot()
-        let bigR = (earthHelio.x * earthHelio.x + earthHelio.y * earthHelio.y
-            + earthHelio.z * earthHelio.z).squareRoot()
-
-        let denominator = 2 * r * delta
-        let cosPhaseAngle: Double
-        if denominator > 1e-9 {
-            cosPhaseAngle = max(-1.0, min(1.0, (r * r + delta * delta - bigR * bigR) / denominator))
-        } else {
-            cosPhaseAngle = 1.0
+        // Heliocentric position of the planet at the instant the light now
+        // arriving left it. Two passes of the light-time iteration (Meeus
+        // Ch. 33) converge to well under a millisecond of light-time for
+        // every planet.
+        var planetPosition = heliocentricEclipticOfDate(planet: planet, julianDayTT: tt)
+        var geocentric = planetPosition - earthPosition
+        var delta = simd_length(geocentric)
+        for _ in 0..<2 {
+            let lightTime = delta * EarthState.lightDaysPerAU
+            planetPosition = heliocentricEclipticOfDate(planet: planet, julianDayTT: tt - lightTime)
+            geocentric = planetPosition - earthPosition
+            delta = simd_length(geocentric)
         }
+
+        let r = simd_length(planetPosition)
+        let bigR = simd_length(earthPosition)
+
+        // Phase angle from the Sun-planet-Earth triangle (Meeus 41.2) and the
+        // illuminated fraction k = (1 + cos i) / 2 (41.1).
+        let denominator = 2 * r * delta
+        let cosPhaseAngle = denominator > 1e-12
+            ? max(-1.0, min(1.0, (r * r + delta * delta - bigR * bigR) / denominator))
+            : 1.0
+        let phaseAngle = Angle.radiansToDegrees(acos(cosPhaseAngle))
         let k = max(0.0, min(1.0, (1 + cosPhaseAngle) / 2))
 
-        // The JPL Keplerian elements are referred to the **J2000.0 ecliptic**,
-        // so the geocentric vector above is in the J2000 frame. Rotating it by
-        // the J2000 obliquity gives J2000 equatorial coordinates.
-        let epsilonJ2000 = Angle.degreesToRadians(23.4392911)
+        // Elongation from the Sun-Earth-planet triangle.
+        let elongationDenominator = 2 * bigR * delta
+        let cosElongation = elongationDenominator > 1e-12
+            ? max(-1.0, min(1.0, (bigR * bigR + delta * delta - r * r) / elongationDenominator))
+            : 1.0
+        let elongation = Angle.radiansToDegrees(acos(cosElongation))
 
-        // Rotate ecliptic -> equatorial.
-        let xEq = gx
-        let yEq = gy * cos(epsilonJ2000) - gz * sin(epsilonJ2000)
-        let zEq = gy * sin(epsilonJ2000) + gz * cos(epsilonJ2000)
-
-        // ...and then precess J2000 -> equinox of date, because everything the
-        // planets are drawn against is of-date: the observer's sidereal time,
-        // the Sun (Meeus Ch. 25) and the Moon (Ch. 47) all are, and as of
-        // `Precession` the star catalogue is too. Leaving the planets in J2000
-        // put them 0.36 degrees out of register with the rest of the sky in
-        // 2026 — small, but exactly the kind of quiet inconsistency that makes
-        // a conjunction render wrong. The obliquity term above was previously
-        // evaluated at the date, which was a partial and inconsistent version
-        // of this same correction.
-        let ofDate = Precession.precess(
-            Precession.equatorial(fromVector: SIMD3(xEq, yEq, zEq)),
-            julianDay: jd
-        )
+        let equatorial = earth.apparentEquatorial(geocentricEcliptic: geocentric)
 
         return PlanetState(
-            equatorial: ofDate,
+            equatorial: equatorial,
             geocentricDistanceAU: delta,
             heliocentricDistanceAU: r,
-            illuminatedFraction: k
+            illuminatedFraction: k,
+            phaseAngleDegrees: phaseAngle,
+            elongationDegrees: elongation,
+            magnitude: PlanetMagnitude.apparentMagnitude(
+                planet: planet, heliocentricDistanceAU: r, geocentricDistanceAU: delta,
+                phaseAngleDegrees: phaseAngle,
+                saturnRingTiltDegrees: planet == .saturn
+                    ? SaturnRings.ringPlaneTiltDegrees(geocentricEclipticOfDate: geocentric, julianCenturiesTT: earth.julianCenturiesTT)
+                    : 0
+            ),
+            eclipticLongitudeDegrees: Angle.normalizeDegrees(Angle.radiansToDegrees(atan2(geocentric.y, geocentric.x))),
+            eclipticLatitudeDegrees: Angle.radiansToDegrees(
+                atan2(geocentric.z, (geocentric.x * geocentric.x + geocentric.y * geocentric.y).squareRoot())
+            )
         )
+    }
+
+    /// Heliocentric rectangular position in the ecliptic and equinox of date,
+    /// AU, for a TT Julian Day.
+    ///
+    /// VSOP87D for the eight planets. Pluto's Keplerian elements are J2000, so
+    /// its vector is precessed to the date here (ecliptic precession, Meeus
+    /// Ch. 21) to land in the same frame; the operation is a rotation by the
+    /// general precession in longitude, since the ecliptic's own tilt changes
+    /// by well under an arcminute over the window.
+    static func heliocentricEclipticOfDate(planet: Planet, julianDayTT tt: Double) -> SIMD3<Double> {
+        if let body = planet.vsopBody {
+            return VSOP87.heliocentricRectangular(body, julianDayTT: tt)
+        }
+        let t = JulianDate.julianCenturies(fromJulianDay: tt)
+        let j2000 = heliocentricEclipticPosition(elements: elementsTable[planet]!, t: t)
+        // Precess J2000 ecliptic -> ecliptic of date through the equatorial
+        // frame, using the same rotation the catalogues use, so the two
+        // agree by construction.
+        let toEquatorialJ2000 = Nutation.eclipticToEquatorial(obliquityDegrees: 23.4392911)
+        let precession = Precession.rotationMatrix(julianDay: tt)
+        let toEclipticOfDate = Nutation.eclipticToEquatorial(
+            obliquityDegrees: Nutation.meanObliquityDegrees(julianCenturies: t)
+        ).transpose
+        let v = toEclipticOfDate * precession * toEquatorialJ2000 * SIMD3(j2000.x, j2000.y, j2000.z)
+        return v
     }
 
     /// Solves Kepler's equation and returns the heliocentric ecliptic

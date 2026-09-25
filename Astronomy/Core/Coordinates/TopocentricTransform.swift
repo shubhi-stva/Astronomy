@@ -68,12 +68,29 @@ enum TopocentricTransform {
         julianDay: Double,
         heightMetres: Double = 0
     ) -> SIMD3<Double> {
-        let latitude = Angle.degreesToRadians(observer.latitudeDegrees)
-        let lst = Angle.degreesToRadians(
-            CoordinateTransformService.localSiderealTimeDegrees(
+        observerPositionEquatorial(
+            observer: observer,
+            localSiderealDegrees: CoordinateTransformService.localMeanSiderealTimeDegrees(
                 julianDay: julianDay, longitudeDegrees: observer.longitudeDegrees
-            )
+            ),
+            heightMetres: heightMetres
         )
+    }
+
+    /// Observer's geocentric position, km, in an equatorial frame whose x axis
+    /// points at the origin of the given local sidereal time.
+    ///
+    /// The frame is chosen by the sidereal time handed in: *mean* sidereal time
+    /// puts the observer in TEME for the satellites; *apparent* sidereal time
+    /// puts them in the true equator and equinox of date, which is what the
+    /// Moon's diurnal parallax wants (`MoonPosition.topocentric`).
+    static func observerPositionEquatorial(
+        observer: GeographicLocation,
+        localSiderealDegrees: Double,
+        heightMetres: Double = 0
+    ) -> SIMD3<Double> {
+        let latitude = Angle.degreesToRadians(observer.latitudeDegrees)
+        let lst = Angle.degreesToRadians(localSiderealDegrees)
 
         let sinLat = sin(latitude)
         let c = 1.0 / (1.0 - earthEccentricitySquared * sinLat * sinLat).squareRoot()
@@ -134,8 +151,10 @@ enum TopocentricTransform {
                 observer: observer, julianDay: julianDay, heightMetres: heightMetres
             )
             let latitude = Angle.degreesToRadians(observer.latitudeDegrees)
+            // Mean, not apparent, sidereal time: TEME's origin of right
+            // ascension is the mean equinox. See the frame note above.
             let lst = Angle.degreesToRadians(
-                CoordinateTransformService.localSiderealTimeDegrees(
+                CoordinateTransformService.localMeanSiderealTimeDegrees(
                     julianDay: julianDay, longitudeDegrees: observer.longitudeDegrees
                 )
             )

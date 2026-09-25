@@ -99,11 +99,12 @@ enum StarAppearance {
     /// faintest stars naturally and the FOV limit takes over again.
     static func effectiveLimitingMagnitude(
         fieldOfViewDegrees fov: Double,
-        sunAltitudeDegrees sunAltitude: Double
+        sunAltitudeDegrees sunAltitude: Double,
+        bortleClass: Int = 3
     ) -> Double {
         min(
             limitingMagnitude(fieldOfViewDegrees: fov),
-            SkyBrightness.displayLimitingMagnitude(sunAltitudeDegrees: sunAltitude)
+            SkyBrightness.displayLimitingMagnitude(sunAltitudeDegrees: sunAltitude, bortleClass: bortleClass)
         )
     }
 
@@ -118,11 +119,13 @@ enum StarAppearance {
     static func visibility(
         magnitude: Double,
         fieldOfViewDegrees fov: Double,
-        sunAltitudeDegrees sunAltitude: Double = -90
+        sunAltitudeDegrees sunAltitude: Double = -90,
+        bortleClass: Int = 3
     ) -> Double {
         let limit = effectiveLimitingMagnitude(
             fieldOfViewDegrees: fov,
-            sunAltitudeDegrees: sunAltitude
+            sunAltitudeDegrees: sunAltitude,
+            bortleClass: bortleClass
         )
         // A bright sky lowers contrast rather than removing stars, so the
         // field stays legible at noon while still reading as daylight.
@@ -393,7 +396,7 @@ enum StarAppearance {
             ))
             color = whitened(tint, by: 0.35)
 
-        case .star, .deepSky, .satellite, .constellation:
+        case .star, .deepSky, .satellite, .constellation, .planetMoon:
             return nil
         }
 
@@ -514,6 +517,9 @@ enum StarAppearance {
         // metres across at 400 km, which is a few arcseconds. There is nothing
         // to zoom into, so the marker stays a marker.
         case .satellite: return 16
+        // Galilean moons are drawn as star-like points; a resolved disk of
+        // Ganymede is 1.8 arcsec and never resolves here.
+        case .planetMoon: return 13
         // Never drawn. Present for exhaustiveness only.
         case .constellation: return 0
         }
@@ -547,6 +553,7 @@ enum StarAppearance {
         case .deepSky: return deepSkyMinimumSize
         case .satellite: return satelliteMarkerSize
         case .constellation: return 0
+        case .planetMoon: return max(4.0, byMagnitude)
         }
     }
 

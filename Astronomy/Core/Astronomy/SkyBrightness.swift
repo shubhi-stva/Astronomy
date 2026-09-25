@@ -170,12 +170,48 @@ enum SkyBrightness {
     ///
     /// Roughly: 5.6 at Sun +45 deg, 5.7 at 0 deg, 7.4 at -6 deg, 8.5 at
     /// -12 deg, 9.0 at -18 deg and below.
-    static func displayLimitingMagnitude(sunAltitudeDegrees alt: Double) -> Double {
+    static func displayLimitingMagnitude(sunAltitudeDegrees alt: Double, bortleClass: Int = 3) -> Double {
         let mu = zenithMagnitudesPerSquareArcsecond(sunAltitudeDegrees: alt)
         let dayMu = 3.0, nightMu = 21.4
         let t = min(1.0, max(0.0, (mu - dayMu) / (nightMu - dayMu)))
         let eased = t * t * (3 - 2 * t)
-        return daylightDisplayFloor + (darkSkyDisplayCeiling - daylightDisplayFloor) * eased
+        let limit = daylightDisplayFloor + (darkSkyDisplayCeiling - daylightDisplayFloor) * eased
+        // Light pollution only bites once the sky is dark enough for it to be
+        // the thing setting the limit; by day the Sun already is.
+        return limit - bortleMagnitudePenalty(bortleClass: bortleClass) * eased
+    }
+
+    // MARK: - Light pollution
+
+    /// How many magnitudes of the dark-sky display limit a light-polluted site
+    /// costs.
+    ///
+    /// The Bortle scale (Sky & Telescope, 2001) describes classes 1-3 as skies
+    /// where the naked-eye limit is 6.5-7+, and the app's dark-sky look was
+    /// tuned for exactly that, so those classes cost nothing. From class 4 the
+    /// published naked-eye limits fall by roughly 0.4-0.5 magnitude per class
+    /// (class 4: 6.1-6.5, class 5: 5.6-6.0, class 6: ~5.5, class 7: ~5.0,
+    /// class 8: ~4.5, class 9: ≤4.0); the penalty follows that slope. It is a
+    /// display adjustment, applied on the same product curve as the rest of
+    /// `displayLimitingMagnitude`, and is documented as such.
+    static func bortleMagnitudePenalty(bortleClass: Int) -> Double {
+        let bortle = max(1, min(9, bortleClass))
+        return bortle <= 3 ? 0 : 0.45 * Double(bortle - 3)
+    }
+
+    /// Plain-language name for a Bortle class.
+    static func bortleDescription(bortleClass: Int) -> String {
+        switch max(1, min(9, bortleClass)) {
+        case 1: return "Excellent dark sky"
+        case 2: return "Truly dark sky"
+        case 3: return "Rural sky"
+        case 4: return "Rural/suburban transition"
+        case 5: return "Suburban sky"
+        case 6: return "Bright suburban sky"
+        case 7: return "Suburban/urban transition"
+        case 8: return "City sky"
+        default: return "Inner-city sky"
+        }
     }
 
     // MARK: - The sky below the horizon (the see-through-Earth view)

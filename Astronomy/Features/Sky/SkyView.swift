@@ -33,6 +33,7 @@ struct SkyView: View {
                         viewModel.handleZoomFactor(factor)
                     },
                     onSelect: { object in
+                        if viewModel.handleMeasureClick(on: object) { return }
                         viewModel.selectedObject = object
                     },
                     onFocus: { object in
@@ -75,8 +76,31 @@ struct SkyView: View {
                         viewModel.nightVision.toggle()
                     }
                     return true
-                case .openCommandPalette, .dismiss:
-                    return false
+                case .measure:
+                    // A second press clears, so the same key both arms and
+                    // cancels rather than needing the palette to undo it.
+                    if viewModel.measureAnchor == nil {
+                        viewModel.beginMeasure()
+                    } else {
+                        viewModel.clearMeasure()
+                    }
+                    return true
+                case .toggleGrid:
+                    viewModel.equatorialGridEnabled.toggle()
+                    return true
+                case .togglePasses:
+                    viewModel.isPassesPanelPresented.toggle()
+                    return true
+                case .openCommandPalette:
+                    viewModel.presentPalette()
+                    return true
+                case .dismiss:
+                    // Only claimed when the palette is open. Esc has to keep
+                    // working for everything else — closing a text field's
+                    // editing session, for instance — the rest of the time.
+                    guard viewModel.palette.isPresented else { return false }
+                    viewModel.palette.escape()
+                    return true
                 }
             }
         )
@@ -101,6 +125,8 @@ struct SkyView: View {
 
                         TonightToggleView(viewModel: viewModel)
 
+                        PassesToggleView(viewModel: viewModel)
+
                         NightVisionToggleView(controller: viewModel.nightVision)
 
                         SatelliteControlView(viewModel: viewModel)
@@ -115,6 +141,9 @@ struct SkyView: View {
                         InfoPanelView(
                             object: selected,
                             onDismiss: { viewModel.selectedObject = nil },
+                            facts: viewModel.selectedObjectFacts,
+                            timeZone: viewModel.location.timeZone,
+                            constellationNames: InfoPanelView.constellationNames,
                             pathRange: viewModel.pathRange,
                             onSelectPathRange: { viewModel.togglePath(range: $0) },
                             pathTruncated: viewModel.skyPath?.truncatedForAccuracy ?? false
@@ -141,10 +170,14 @@ struct SkyView: View {
                 // right, so the middle of the sky stays clear. Side by side
                 // when both are open, rather than stacked: two panels down the
                 // right edge would run off the bottom of a small window.
-                if viewModel.isTonightPanelPresented || viewModel.isCalendarPresented {
+                if viewModel.isTonightPanelPresented || viewModel.isCalendarPresented
+                    || viewModel.isPassesPanelPresented {
                     VStack {
                         HStack(alignment: .top, spacing: SkyMetrics.paddingSnug) {
                             Spacer()
+                            if viewModel.isPassesPanelPresented {
+                                PassesPanelView(viewModel: viewModel)
+                            }
                             if viewModel.isCalendarPresented {
                                 CalendarPanelView(viewModel: viewModel)
                             }
@@ -158,6 +191,11 @@ struct SkyView: View {
                     .padding(.top, 44)
                     .transition(.opacity)
                 }
+
+                // Always present; it decides for itself whether it is on
+                // screen, which keeps the palette's per-keystroke state out of
+                // every body above this one. See `CommandPaletteModel`.
+                CommandPaletteOverlay(viewModel: viewModel)
 
                 if viewModel.isLoadingCatalog {
                     VStack(spacing: SkyMetrics.paddingSnug) {

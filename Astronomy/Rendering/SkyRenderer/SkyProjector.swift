@@ -63,12 +63,16 @@ import simd
 nonisolated struct SkyProjector {
 
     /// J2000 mean equatorial -> horizontal Cartesian (X east, Y zenith,
-    /// Z south), including precession to the equinox of date.
+    /// Z south), including precession and nutation to the true equinox of
+    /// date. Aberration is applied separately per object (`aberration`).
     let j2000ToHorizontal: simd_double3x3
-    /// Equinox-of-date equatorial -> horizontal Cartesian. Used by the
-    /// solar-system bodies, whose ephemerides already produce of-date
-    /// positions.
+    /// True-equinox-of-date equatorial -> horizontal Cartesian. Used by the
+    /// solar-system bodies, whose ephemerides already produce apparent
+    /// of-date positions.
     let ofDateToHorizontal: simd_double3x3
+    /// Annual aberration displacement in the horizontal frame: added to a
+    /// catalogue direction before renormalising. See `ApparentFrame`.
+    let aberration: SIMD3<Double>
 
     /// Camera direction and its screen basis, in the horizontal frame.
     let centerDirection: SIMD3<Double>
@@ -80,12 +84,63 @@ nonisolated struct SkyProjector {
     /// Viewport aspect correction applied to Y.
     let aspectScaleY: Double
 
+    /// Whether directions are lifted by atmospheric refraction before
+    /// projection.
+    ///
+    /// Set only by the frame.
+    ///
+    /// Deliberately *not* also gated on "is anything in this viewport low
+    /// enough for refraction to matter". That optimisation is tempting — the
+    /// correction is 3.5 arcminutes at 15 degrees and falls off fast — and it
+    /// is wrong: turning the model off for the whole frame shifts every object
+    /// in it, so panning across the threshold would step the entire sky by an
+    /// arcminute or two. At the narrowest field this app offers that is several
+    /// pixels, and a jump the user can see while panning is far worse than the
+    /// cost of the lookup that avoids it. See `Refraction.Table`, which is
+    /// built to make always-on affordable.
+    let refractionEnabled: Bool
+    private let refraction = Refraction.Table.shared
+
+    /// The full reduction: precession, nutation, aberration, apparent sidereal
+    /// time, and (if the frame asks for it) refraction.
+    init(frameData: SkyFrameData, apparentFrame: ApparentFrame) {
+        self.init(
+            frameData: frameData,
+            j2000ToTrueOfDate: apparentFrame.j2000ToTrueOfDate,
+            aberration: apparentFrame.aberration,
+            greenwichSiderealDegrees: apparentFrame.greenwichApparentSiderealDegrees
+        )
+    }
+
+    /// Precession only: no nutation, no aberration, no refraction.
+    ///
+    /// Kept for the equivalence tests, which pin the fused `M·H·P` matrix
+    /// against the step-by-step chain through `CoordinateTransformService`.
+    /// The sidereal time is whatever that chain uses — apparent, since the
+    /// app's places are apparent — so the two sides differ only in the
+    /// corrections this initialiser deliberately omits, which is exactly what
+    /// makes the comparison meaningful.
     init(frameData: SkyFrameData, precessionMatrix: simd_double3x3) {
-        let lst = Angle.degreesToRadians(
-            CoordinateTransformService.localSiderealTimeDegrees(
-                julianDay: frameData.julianDay,
-                longitudeDegrees: frameData.observerLocation.longitudeDegrees
+        var reduced = frameData
+        reduced.refractionEnabled = false
+        self.init(
+            frameData: reduced,
+            j2000ToTrueOfDate: precessionMatrix,
+            aberration: .zero,
+            greenwichSiderealDegrees: CoordinateTransformService.greenwichApparentSiderealTimeDegrees(
+                julianDay: frameData.julianDay
             )
+        )
+    }
+
+    private init(
+        frameData: SkyFrameData,
+        j2000ToTrueOfDate: simd_double3x3,
+        aberration: SIMD3<Double>,
+        greenwichSiderealDegrees: Double
+    ) {
+        let lst = Angle.degreesToRadians(
+            Angle.normalizeDegrees(greenwichSiderealDegrees + frameData.observerLocation.longitudeDegrees)
         )
         let latitude = Angle.degreesToRadians(frameData.observerLocation.latitudeDegrees)
 
@@ -108,7 +163,12 @@ nonisolated struct SkyProjector {
         )
 
         ofDateToHorizontal = m * h
-        j2000ToHorizontal = ofDateToHorizontal * precessionMatrix
+        j2000ToHorizontal = ofDateToHorizontal * j2000ToTrueOfDate
+        // A rotation commutes with normalise(v + a): rotating the aberration
+        // vector into the horizontal frame once lets every star pay a single
+        // matrix product.
+        self.aberration = ofDateToHorizontal * aberration
+        refractionEnabled = frameData.refractionEnabled
 
         centerDirection = CoordinateTransformService.unitDirection(
             fromHorizontal: frameData.cameraCenter
@@ -132,7 +192,7 @@ nonisolated struct SkyProjector {
     /// Horizontal-frame unit vector for a J2000 catalogue position.
     @inline(__always)
     func direction(j2000 equatorial: EquatorialCoordinate) -> SIMD3<Double> {
-        j2000ToHorizontal * Self.unitVector(equatorial)
+        direction(j2000Unit: Self.unitVector(equatorial))
     }
 
     /// Horizontal-frame unit vector for a J2000 catalogue position whose unit
@@ -141,14 +201,33 @@ nonisolated struct SkyProjector {
     /// into that vector.
     @inline(__always)
     func direction(j2000Unit v: SIMD3<Double>) -> SIMD3<Double> {
-        j2000ToHorizontal * v
+        // `simd_fast_normalize` rather than `simd_normalize`: it is accurate to
+        // about one part in 10^7, which is a thousandth of an arcsecond of
+        // direction, against an aberration term of 20 arcseconds and a pixel
+        // worth 0.36 arcseconds at the narrowest field. The exact reciprocal
+        // square root buys nothing here and this runs a few thousand times a
+        // frame.
+        apparent(simd_fast_normalize(j2000ToHorizontal * v + aberration))
+    }
+
+    /// Lifts a geometric horizontal direction by refraction, when enabled.
+    @inline(__always)
+    func apparent(_ d: SIMD3<Double>) -> SIMD3<Double> {
+        refractionEnabled ? refraction.apparent(direction: d) : d
     }
 
     /// Horizontal-frame unit vector for a position already referred to the
     /// equinox of date (Sun, Moon, planets).
     @inline(__always)
     func direction(ofDate equatorial: EquatorialCoordinate) -> SIMD3<Double> {
-        ofDateToHorizontal * Self.unitVector(equatorial)
+        apparent(ofDateToHorizontal * Self.unitVector(equatorial))
+    }
+
+    /// Horizontal-frame unit vector for a *geometric* horizontal direction
+    /// (satellites, sky paths), lifted by refraction.
+    @inline(__always)
+    func direction(geometricHorizontal d: SIMD3<Double>) -> SIMD3<Double> {
+        apparent(d)
     }
 
     @inline(__always)
@@ -198,7 +277,8 @@ nonisolated struct SkyProjector {
     /// compass points): the direction is already horizontal, so no rotation
     /// is involved.
     @inline(__always)
-    func project(horizontal coordinate: HorizontalCoordinate) -> SIMD2<Double>? {
-        project(direction: CoordinateTransformService.unitDirection(fromHorizontal: coordinate))
+    func project(horizontal coordinate: HorizontalCoordinate, refract: Bool = true) -> SIMD2<Double>? {
+        let d = CoordinateTransformService.unitDirection(fromHorizontal: coordinate)
+        return project(direction: refract ? apparent(d) : d)
     }
 }

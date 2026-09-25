@@ -41,6 +41,11 @@ final class RenderPerformanceTests: XCTestCase {
     private static let starIndex: StarIndex? = stars.isEmpty ? nil : StarIndex(stars: stars)
     private static let deepSky: [DeepSkyObject] =
         (decode("deepsky") as [DeepSkyObject]?)?.filter { $0.type.isRenderable } ?? []
+    private static let deepSkyIndex: DeepSkyIndex? =
+        deepSky.isEmpty ? nil : DeepSkyIndex(objects: deepSky)
+    private static let figureIndex: ConstellationFigureIndex? =
+        (lines.isEmpty || starsByID.isEmpty)
+            ? nil : ConstellationFigureIndex(segments: lines, starsByID: starsByID)
     private static let lines: [ConstellationLineSegment] = decode("constellations") ?? []
     private static let constellations: [Constellation] = decode("constellation_names") ?? []
     private static let starsByID: [Int: Star] =
@@ -110,13 +115,22 @@ final class RenderPerformanceTests: XCTestCase {
     )
     private static let viewport = CGSize(width: 1512, height: 900)
 
+    /// Computed once. It is a real ephemeris — VSOP87 for eight planets, the
+    /// full lunar series, and the light-time iteration — which costs more than
+    /// everything else the fixture does put together, and the app computes it
+    /// a few times a second rather than per frame. Recomputing it here would
+    /// mean `testFrameSnapshotConstructionDoesNotCopyTheCatalogues` measured
+    /// the ephemeris instead of the copy it exists to rule out.
+    private static let solarSystem: [CelestialObject] =
+        EphemerisService.solarSystemObjects(julianDay: julianDay)
+
     private static func frameData(
         fieldOfViewDegrees: Double,
         sunAltitudeDegrees: Double = -40
     ) -> SkyFrameData {
         var frame = SkyFrameData(
             stars: stars,
-            solarSystemObjects: EphemerisService.solarSystemObjects(julianDay: julianDay),
+            solarSystemObjects: solarSystem,
             constellationLines: lines,
             constellations: constellations,
             deepSkyObjects: deepSky,
@@ -131,6 +145,8 @@ final class RenderPerformanceTests: XCTestCase {
         frame.sunHorizontal = HorizontalCoordinate(
             altitudeDegrees: sunAltitudeDegrees, azimuthDegrees: 0
         )
+        frame.deepSkyIndex = deepSkyIndex
+        frame.constellationFigures = figureIndex
         frame.satelliteSnapshot = satelliteSnapshot
         frame.satelliteDescriptors = satelliteDescriptors
         frame.satellitesEnabled = true
@@ -320,9 +336,7 @@ final class RenderPerformanceTests: XCTestCase {
         XCTAssertGreaterThan(checksum, 0)
         // A single memcpy of the star array alone would be milliseconds. This
         // bound is loose enough to survive a slow machine and tight enough to
-        // fail instantly if a copy ever creeps in. Note the fixture also
-        // recomputes the solar-system ephemeris on every call, which the real
-        // view model does not.
+        // fail instantly if a copy ever creeps in.
         XCTAssertLessThan(
             microsecondsEach, 500.0,
             "frame snapshot construction costs \(microsecondsEach) us -- something is copying"

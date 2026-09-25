@@ -1005,19 +1005,36 @@ fragment float4 starFragmentShader(
         // opening angle, which varies from edge-on to ~27 deg over Saturn's
         // 29-year orbit, is NOT computed. See DATA_SOURCES.md.
         if (code == kPlanetSaturn) {
-            const float ringTiltY = 0.42;      // foreshortening of the ring plane
+            // The ring plane's foreshortening is sin(B), the saturnicentric
+            // latitude of the Earth, computed per frame from Saturn's IAU pole
+            // (`param4`); the ring axis is rotated on screen by `param6`
+            // (expressed in the bright-limb-rotated frame `q` lives in). The
+            // rings therefore open and close over Saturn's 29-year orbit and
+            // vanish at the edge-on crossings, as they do in a telescope.
+            float ringTiltY = max(abs(in.param4), 0.012);
             const float ringInner = 1.15;      // in units of the planet's radius
             const float ringOuter = 2.28;      // outer edge of the A ring
-            float2 ringP = float2(p.x, p.y / ringTiltY);
+            float ringAngle = in.param6 - in.param1;
+            float rc = cos(ringAngle), rs = sin(ringAngle);
+            // Rotate so the ring axis (planet north) lies along +y.
+            float2 rq = float2(q.x * rc + q.y * rs, -q.x * rs + q.y * rc);
+            float2 ringP = float2(rq.x, rq.y / ringTiltY);
             float ringR = length(ringP) / max(diskEdge, 1e-4);
             float ring = smoothstep(ringInner - 0.10, ringInner + 0.05, ringR)
                        * (1.0 - smoothstep(ringOuter - 0.10, ringOuter + 0.06, ringR));
-            // Cassini-like gap: one soft dark annulus, nothing more.
+            // Cassini division: one soft dark annulus.
             ring *= 1.0 - 0.45 * exp(-0.5 * pow((ringR - 1.95) / 0.06, 2.0));
-            ring *= detail * 0.85;
-            // Disk draws over the ring; the ring arc that crosses in front of
-            // the globe is not modelled.
+            // Edge-on the rings are a thin bright line; scale their weight
+            // with the opening so they fade through the crossing.
+            ring *= detail * 0.85 * smoothstep(0.0, 0.08, abs(in.param4) + 0.02);
+            // The near half of the ring passes in front of the globe: the
+            // side toward the observer is the one where the planet's pole
+            // tilts away, i.e. rq.y with the opposite sign to B.
+            float inFront = (in.param4 >= 0.0) ? step(rq.y, 0.0) : step(0.0, rq.y);
+            float overGlobe = ring * inFront * (1.0 - smoothstep(diskEdge - 0.02, diskEdge, dist));
             alpha = saturate(alpha + ring * (1.0 - alpha));
+            // Brighten the disk where the front ring arc crosses it.
+            rgb = mix(rgb, in.color.rgb * 1.08, saturate(overGlobe));
         }
 
         // Bloom, tightly bounded, so a planet still reads as a bright point at

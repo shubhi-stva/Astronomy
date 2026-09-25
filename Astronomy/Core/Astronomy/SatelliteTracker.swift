@@ -127,6 +127,40 @@ actor SatelliteTracker {
         }
     }
 
+    // MARK: - Passes
+
+    /// Upcoming passes for the given catalogue numbers, soonest first. Runs
+    /// on the actor because it drives the propagators; a two-day search over
+    /// a couple of satellites is a few thousand propagations, well under a
+    /// tenth of a second, and it is never on the frame path.
+    func predictPasses(
+        catalogNumbers: [Int], observer: GeographicLocation,
+        fromJulianDay start: Double, spanDays: Double
+    ) -> [SatellitePass] {
+        var passes: [SatellitePass] = []
+        for number in catalogNumbers {
+            guard let satellite = satellites.first(where: { $0.catalogNumber == number }) else { continue }
+            // Elements only mean something near their epoch; refuse rather
+            // than list nonsense. See `SatelliteAccuracy`.
+            guard SatelliteAccuracy.isReliable(julianDay: start, epochJulianDay: satellite.epochJulianDay)
+            else { continue }
+            passes += SatellitePassPredictor.passes(
+                catalogNumber: number, name: satellite.name, observer: observer,
+                fromJulianDay: start, spanDays: spanDays,
+                position: { jd in satellite.propagate(julianDay: jd)?.position },
+                isSunlit: { position, jd in
+                    let sun = SunPosition.state(julianDay: jd)
+                    return TopocentricTransform.illumination(
+                        satellitePositionTEME: position,
+                        sunDirection: TopocentricTransform.sunDirection(equatorial: sun.equatorial),
+                        sunDistanceKm: sun.radiusVectorAU * AstronomicalConstants.astronomicalUnitKilometres
+                    ).isSunlit
+                }
+            )
+        }
+        return passes.sorted { $0.riseJulianDay < $1.riseJulianDay }
+    }
+
     // MARK: - Loading
 
     /// Loads the catalogue and initialises every propagator. Safe to call more
@@ -184,8 +218,10 @@ actor SatelliteTracker {
             observer: observer, julianDay: julianDay
         )
         let latitude = Angle.degreesToRadians(observer.latitudeDegrees)
+        // Mean sidereal time: the satellites are in TEME. See
+        // `TopocentricTransform`.
         let lst = Angle.degreesToRadians(
-            CoordinateTransformService.localSiderealTimeDegrees(
+            CoordinateTransformService.localMeanSiderealTimeDegrees(
                 julianDay: julianDay, longitudeDegrees: observer.longitudeDegrees
             )
         )

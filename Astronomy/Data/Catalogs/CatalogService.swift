@@ -25,6 +25,9 @@ actor CatalogService {
     private var cachedConstellationLines: [ConstellationLineSegment]?
     private var cachedConstellations: [Constellation]?
     private var cachedDeepSky: [DeepSkyObject]?
+    private var cachedBoundaries: ConstellationBoundaries?
+    private var cachedDeepSkyIndex: DeepSkyIndex?
+    private var cachedFigureIndex: ConstellationFigureIndex?
 
     /// Loads (and caches) the constellation name/centre table used for labels.
     func loadConstellations() async throws -> [Constellation] {
@@ -79,6 +82,40 @@ actor CatalogService {
         let items = all.filter { $0.type.isRenderable }
         cachedDeepSky = items
         return items
+    }
+
+    /// Loads (and caches) the deep-sky catalogue with its cull index. See
+    /// `DeepSkyIndex`.
+    func loadDeepSkyIndex() async throws -> DeepSkyIndex {
+        if let cachedDeepSkyIndex { return cachedDeepSkyIndex }
+        let index = DeepSkyIndex(objects: try await loadDeepSkyObjects())
+        cachedDeepSkyIndex = index
+        return index
+    }
+
+    /// Loads (and caches) the constellation figures with their endpoints
+    /// already joined against the star catalogue. See
+    /// `ConstellationFigureIndex` for the per-frame cost this removes.
+    func loadConstellationFigures() async throws -> ConstellationFigureIndex {
+        if let cachedFigureIndex { return cachedFigureIndex }
+        let stars = try await loadStars()
+        let byID = Dictionary(stars.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        let index = ConstellationFigureIndex(
+            segments: try await loadConstellationLines(), starsByID: byID
+        )
+        cachedFigureIndex = index
+        return index
+    }
+
+    /// Loads (and caches) the IAU constellation boundaries. See
+    /// `ConstellationBoundary`.
+    func loadConstellationBoundaries() async throws -> ConstellationBoundaries {
+        if let cachedBoundaries { return cachedBoundaries }
+        let edges: [ConstellationBoundaryEdge] =
+            try Self.decodeBundledJSON(named: "constellation_boundaries")
+        let boundaries = ConstellationBoundaries(edges: edges)
+        cachedBoundaries = boundaries
+        return boundaries
     }
 
     /// Loads (and caches) the bundled constellation line segments.

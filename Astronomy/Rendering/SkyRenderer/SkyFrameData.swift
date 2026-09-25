@@ -35,6 +35,15 @@ struct SkyFrameData {
     /// true, the entire catalogue is eligible, gated by zoom.
     var showAllSatellites: Bool = false
 
+    /// Cull index over `deepSkyObjects`. When present the builder rejects by
+    /// sky position before evaluating any brightness model; when nil it falls
+    /// back to the linear scan, which produces identical output. See
+    /// `DeepSkyIndex`.
+    var deepSkyIndex: DeepSkyIndex?
+    /// Constellation figures with endpoints pre-joined and grouped into
+    /// bounding cones. Same contract: nil falls back to `constellationLines`.
+    var constellationFigures: ConstellationFigureIndex?
+
     /// Spatial index over `stars`. When present the geometry builder culls by
     /// sky cell before projecting anything; when nil (catalogue still loading,
     /// or a test constructing a snapshot by hand) it falls back to a full scan
@@ -67,6 +76,47 @@ struct SkyFrameData {
     /// Sun/Moon equatorial positions, kept for phase computation.
     var sunEquatorial: EquatorialCoordinate?
     var moonEquatorial: EquatorialCoordinate?
+
+    // MARK: Layers
+    //
+    // Each of these is an on/off the command palette can reach. They default to
+    // the sky the app has always drawn, so a frame built by a test or by an
+    // older call site is unchanged by their existence.
+
+    /// Constellation figures.
+    var constellationLinesEnabled: Bool = true
+    /// The deep-sky catalogue's markers and labels.
+    var deepSkyEnabled: Bool = true
+    /// Parallels of declination and meridians of right ascension. Off by
+    /// default: a grid is a reference overlay, not scenery. See
+    /// `SkyGridBuilder`.
+    var equatorialGridEnabled: Bool = false
+
+    /// Atmospheric refraction lifts everything near the horizon; on by default
+    /// because the rise/set times already assume it. See `Refraction`.
+    var refractionEnabled: Bool = true
+    /// Horizon (altitude/azimuth) grid. Off by default, like the equatorial one.
+    var horizontalGridEnabled: Bool = false
+    /// The ecliptic, drawn as a great circle with the meridian and equator
+    /// treatment of `SkyGridBuilder`.
+    var eclipticEnabled: Bool = false
+    /// The observer's meridian.
+    var meridianEnabled: Bool = false
+    /// Constellation boundaries (IAU), when loaded.
+    var constellationBoundariesEnabled: Bool = false
+    var constellationBoundaries: ConstellationBoundaryGeometry?
+    /// Meteor shower radiants active on the displayed date.
+    var meteorRadiantsEnabled: Bool = true
+    /// Galilean moons around Jupiter.
+    var planetMoonsEnabled: Bool = true
+    /// Field-of-view circles (eyepiece / binocular) centred on the view, in
+    /// degrees of true field. Empty means none.
+    var fieldOfViewCirclesDegrees: [Double] = []
+    /// Angular measurement: two endpoints on the sky, if the tool is active.
+    var measureEndpoints: [EquatorialCoordinate] = []
+    /// Bortle-class light pollution, 1 (pristine) ... 9 (inner city). Shifts the
+    /// displayed limiting magnitude. See `SkyBrightness.bortleMagnitudePenalty`.
+    var bortleClass: Int = 3
 
     /// Overall Milky Way opacity multiplier (0 disables the layer).
     var milkyWayStrength: Double = 1.0

@@ -187,6 +187,39 @@ enum MeteorShowers {
         return events.sorted { $0.julianDay < $1.julianDay }
     }
 
+    /// Activity windows as solar-longitude ranges (J2000, degrees), from the
+    /// IMO working list's activity dates. Keyed by the shower code; a range
+    /// that wraps through 360° (the Quadrantids) is stored as two.
+    static let activityWindows: [String: [ClosedRange<Double>]] = [
+        "QUA": [276.0...360.0, 0.0...292.0],
+        "LYR": [24.0...40.0],
+        "ETA": [29.0...67.0],
+        "SDA": [110.0...150.0],
+        "CAP": [101.0...142.0],
+        "PER": [115.0...151.0],
+        "STA": [167.0...238.0],
+        "ORI": [189.0...225.0],
+        "NTA": [207.0...258.0],
+        "LEO": [224.0...248.0],
+        "GEM": [252.0...268.0],
+        "URS": [265.0...274.0],
+    ]
+
+    /// The showers active at a solar longitude, with a 0...1 strength that
+    /// peaks at the maximum and falls off linearly to the edges of the window.
+    static func active(solarLongitudeJ2000 lambda: Double) -> [(shower: MeteorShower, strength: Double)] {
+        let l = Angle.normalizeDegrees(lambda)
+        return all.compactMap { shower in
+            guard let windows = activityWindows[shower.id],
+                  windows.contains(where: { $0.contains(l) }) else { return nil }
+            var distance = abs(l - shower.maximumSolarLongitudeDegrees)
+            if distance > 180 { distance = 360 - distance }
+            let halfWidth = windows.reduce(0.0) { $0 + ($1.upperBound - $1.lowerBound) } / 2
+            let strength = max(0.15, 1.0 - distance / max(halfWidth, 1))
+            return (shower, strength)
+        }
+    }
+
     static func event(shower: MeteorShower, julianDay: Double) -> AstronomicalEvent {
         // The radiant is a J2000 catalogue place, exactly like a star's, so it
         // is precessed to the equinox of date before it meets the observer's

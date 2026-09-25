@@ -28,11 +28,31 @@ enum CoordinateTransformService {
         return gmst
     }
 
-    /// Local Apparent/Mean Sidereal Time in degrees for an observer longitude
-    /// (east-positive) at the given Julian Day. Ignores the small
-    /// nutation-in-longitude correction (mean, not apparent) — sufficient at
-    /// arcminute precision for MVP.
+    /// Greenwich **Apparent** Sidereal Time, in degrees: mean sidereal time
+    /// plus the equation of the equinoxes, Δψ cos ε (Meeus 12.4).
+    ///
+    /// This is the sidereal time the true equinox of date is measured from,
+    /// and therefore the one to pair with apparent places — every position
+    /// this app now produces. The difference from mean sidereal time is up to
+    /// 1.1 s of time (17"), which is a dozen pixels at the narrowest field.
+    static func greenwichApparentSiderealTimeDegrees(julianDay jd: Double) -> Double {
+        let nutation = Nutation.angles(julianDayTT: DeltaT.terrestrialJulianDay(fromUniversal: jd))
+        return Angle.normalizeDegrees(
+            greenwichMeanSiderealTimeDegrees(julianDay: jd) + nutation.equationOfEquinoxesDegrees
+        )
+    }
+
+    /// Local **apparent** sidereal time in degrees for an observer longitude
+    /// (east-positive) at the given UT Julian Day. The default for everything
+    /// that pairs an apparent RA/Dec with the observer's meridian.
     static func localSiderealTimeDegrees(julianDay jd: Double, longitudeDegrees: Double) -> Double {
+        Angle.normalizeDegrees(greenwichApparentSiderealTimeDegrees(julianDay: jd) + longitudeDegrees)
+    }
+
+    /// Local **mean** sidereal time in degrees. Only for the satellite frame:
+    /// SGP4's TEME is referred to the mean equinox, so it is the mean sidereal
+    /// time that rotates an observer into it (see `TopocentricTransform`).
+    static func localMeanSiderealTimeDegrees(julianDay jd: Double, longitudeDegrees: Double) -> Double {
         Angle.normalizeDegrees(greenwichMeanSiderealTimeDegrees(julianDay: jd) + longitudeDegrees)
     }
 

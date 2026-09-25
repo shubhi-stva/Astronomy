@@ -27,6 +27,9 @@ enum CelestialObjectKind: String, Codable {
     /// not just when they look, so they never travel the RA/Dec path the other
     /// kinds do. See `TopocentricTransform`.
     case satellite
+    /// A natural satellite of another planet — the Galilean moons. Placed
+    /// relative to its planet by `JupiterMoons`, never by its own RA/Dec path.
+    case planetMoon
 }
 
 struct CelestialObject: Identifiable, Hashable {
@@ -48,6 +51,11 @@ struct CelestialObject: Identifiable, Hashable {
     /// Illuminated fraction of the disk, 0 (new) ... 1 (full). Populated for
     /// the Moon and the planets; nil for the Sun and stars.
     var illuminatedFraction: Double?
+
+    /// Sun-body-Earth angle in degrees, for the planets and Moon.
+    var phaseAngleDegrees: Double?
+    /// Angular distance from the Sun in degrees, for the planets.
+    var elongationDegrees: Double?
 
     /// Morphological class, populated only for `.deepSky` objects.
     var deepSkyType: DeepSkyType?

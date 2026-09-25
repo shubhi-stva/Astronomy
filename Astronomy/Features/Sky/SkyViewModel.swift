@@ -54,6 +54,8 @@ final class SkyViewModel {
 
     private(set) var constellations: [Constellation] = []
     private(set) var deepSkyObjects: [DeepSkyObject] = []
+    private(set) var deepSkyIndex: DeepSkyIndex?
+    private(set) var constellationFigures: ConstellationFigureIndex?
 
     // MARK: Satellites
 
@@ -66,23 +68,46 @@ final class SkyViewModel {
     /// in the time bar's tooltip and for tests.
     private(set) var lastSatellitePropagationSeconds: TimeInterval = 0
 
+    // MARK: Layers
+    //
+    // The switches the command palette reaches. Defaults are the sky the app
+    // has always drawn; each is handed to the renderer in the frame snapshot.
+
+    var constellationLinesEnabled = true
+    var deepSkyEnabled = true
+    var equatorialGridEnabled = false
+    var horizontalGridEnabled = false
+    var eclipticEnabled = false
+    var meridianEnabled = false
+    var constellationBoundariesEnabled = false
+    var meteorRadiantsEnabled = true
+    var planetMoonsEnabled = true
+    /// Atmospheric refraction. On by default; see `Refraction`.
+    var refractionEnabled = true
+    /// Light pollution as a Bortle class, 1...9. See `SkyBrightness.bortleMagnitudePenalty`.
+    var bortleClass = 3
+    /// Eyepiece/binocular field circles, in degrees of true field.
+    var fieldOfViewCirclesDegrees: [Double] = []
+    private(set) var constellationBoundaries: ConstellationBoundaries?
+    private(set) var constellationBoundaryGeometry: ConstellationBoundaryGeometry?
+
     /// Master switch for the satellite layer.
     var satellitesEnabled = true
     /// Reveals the whole catalogue rather than only what is genuinely visible.
     var showAllSatellites = false
 
-    private nonisolated(unsafe) var ephemerisRefreshTask: Task<Void, Never>?
     private nonisolated(unsafe) var satelliteTask: Task<Void, Never>?
     private nonisolated(unsafe) var satelliteRefreshTask: Task<Void, Never>?
 
     init() {
         Task { await loadCatalog() }
-        startEphemerisRefresh()
+        refreshEphemeris()
         startSatelliteTracking()
     }
 
     deinit {
-        ephemerisRefreshTask?.cancel()
+        dailyFactsTask?.cancel()
+        passesTask?.cancel()
         satelliteTask?.cancel()
         satelliteRefreshTask?.cancel()
         calendarTask?.cancel()
@@ -394,6 +419,9 @@ final class SkyViewModel {
             async let linesResult = CatalogService.shared.loadConstellationLines()
             async let namesResult = CatalogService.shared.loadConstellations()
             async let deepSkyResult = CatalogService.shared.loadDeepSkyObjects()
+            async let boundariesResult = CatalogService.shared.loadConstellationBoundaries()
+            async let deepSkyIndexResult = CatalogService.shared.loadDeepSkyIndex()
+            async let figuresResult = CatalogService.shared.loadConstellationFigures()
             let (loadedIndex, loadedLines, loadedNames) = try await (indexResult, linesResult, namesResult)
             let loadedDeepSky = try await deepSkyResult
             let loadedStars = try await CatalogService.shared.loadStars()
@@ -405,27 +433,48 @@ final class SkyViewModel {
             self.constellationLines = loadedLines
             self.constellations = loadedNames
             self.deepSkyObjects = loadedDeepSky
+            self.deepSkyIndex = try? await deepSkyIndexResult
+            self.constellationFigures = try? await figuresResult
+            self.constellationBoundaries = try? await boundariesResult
+            self.constellationBoundaryGeometry = self.constellationBoundaries
+                .map(ConstellationBoundaryGeometry.init)
         } catch {
             self.loadError = "Failed to load star catalog: \(error.localizedDescription)"
         }
         self.isLoadingCatalog = false
     }
 
-    /// Recomputes Sun/Moon/planet positions periodically since they move
-    /// (slowly) as time advances.
-    private func startEphemerisRefresh() {
-        refreshEphemeris()
-        ephemerisRefreshTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(30))
-                guard !Task.isCancelled else { return }
-                self?.refreshEphemeris()
-            }
-        }
+    /// The simulated instant and observer the held `solarSystemObjects` were
+    /// computed for.
+    private var ephemerisJulianDay: Double = 0
+    private var ephemerisObserver: GeographicLocation?
+
+    /// How far simulated time may drift from the held ephemeris before it is
+    /// recomputed, in simulated seconds. The Moon moves 0.55"/s, so two
+    /// seconds is about a tenth of a pixel at the narrowest field. At 1×
+    /// playback that is a recompute every two seconds (0.3 ms of work); under
+    /// the time machine at a day per second it is every frame, which is where
+    /// the old 30-second wall-clock timer was drawing the Moon up to a month
+    /// out of place.
+    static let ephemerisToleranceSeconds = 2.0
+
+    /// Recomputes the solar-system places for the current instant and
+    /// observer — topocentric, so the Moon's parallax is the observer's own.
+    private func refreshEphemeris() {
+        let jd = time.julianDay
+        let observer = location.currentLocation
+        solarSystemObjects = EphemerisService.solarSystemObjects(julianDay: jd, observer: observer)
+        ephemerisJulianDay = jd
+        ephemerisObserver = observer
     }
 
-    private func refreshEphemeris() {
-        solarSystemObjects = EphemerisService.solarSystemObjects(julianDay: time.julianDay)
+    /// Refreshes only if the displayed instant or the observer has moved.
+    private func refreshEphemerisIfStale(julianDay jd: Double) {
+        let observer = location.currentLocation
+        if observer != ephemerisObserver
+            || abs(jd - ephemerisJulianDay) * 86_400.0 > Self.ephemerisToleranceSeconds {
+            refreshEphemeris()
+        }
     }
 
     // MARK: - Object sky paths
@@ -520,9 +569,11 @@ final class SkyViewModel {
                 observer: observer, julianDay: julianDay
             )
         case .moon:
+            // Topocentric, like the drawn Moon, so the track passes through
+            // the disk rather than a degree beside it.
             return SkyPathBuilder.build(
                 objectID: object.id, kind: .moon, range: range,
-                equatorialAt: MoonPosition.equatorialCoordinate(julianDay:),
+                equatorialAt: { MoonPosition.topocentricEquatorial(julianDay: $0, observer: observer) },
                 observer: observer, julianDay: julianDay
             )
         case .planet, .dwarfPlanet:
@@ -542,8 +593,8 @@ final class SkyViewModel {
             // equinox of date, exactly as the renderer does.
             return SkyPathBuilder.build(
                 objectID: object.id, kind: object.kind, range: range,
-                fixedEquatorialOfDate: Precession.precess(
-                    object.equatorial, julianDay: julianDay
+                fixedEquatorialOfDate: ApparentFrame.apparent(
+                    j2000: object.equatorial, julianDayUT: julianDay
                 ),
                 observer: observer, julianDay: julianDay
             )
@@ -654,7 +705,7 @@ final class SkyViewModel {
     /// detached task — it is several hundred thousand ephemeris evaluations,
     /// and none of them belong on the thread drawing the sky.
     func refreshCalendar(force: Bool = false) {
-        guard isCalendarPresented else { return }
+        guard isCalendarPresented || calendarWantedByPalette else { return }
         let observer = location.currentLocation
         let julianDay = time.julianDay
         let key = "\(julianDay.rounded(.down))|\(observer.latitudeDegrees),\(observer.longitudeDegrees)"
@@ -698,7 +749,10 @@ final class SkyViewModel {
         let horizontal = CoordinateTransformService.horizontal(
             from: equatorial, observer: location.currentLocation, julianDay: event.julianDay
         )
-        camera.flyTo(horizontal, fieldOfViewDegrees: min(camera.fieldOfViewDegrees, 60))
+        camera.flyTo(
+            refractionEnabled ? Refraction.apparent(horizontal) : horizontal,
+            fieldOfViewDegrees: min(camera.fieldOfViewDegrees, 60)
+        )
     }
 
     func currentFrameData() -> SkyFrameData {
@@ -711,6 +765,7 @@ final class SkyViewModel {
         refreshSkyPathIfNeeded()
         refreshTonightReport()
         refreshCalendar()
+        refreshPasses()
 
         // Sample the clock exactly once per frame. `time.julianDay` is
         // continuous — it reads the system clock on every access — so calling
@@ -718,6 +773,7 @@ final class SkyViewModel {
         // instants. Physically that difference is microseconds and harmless,
         // but a frame should be a single moment.
         let frameJulianDay = time.julianDay
+        refreshEphemerisIfStale(julianDay: frameJulianDay)
 
         let sun = solarSystemObjects.first { $0.kind == .sun }
         let moon = solarSystemObjects.first { $0.kind == .moon }
@@ -749,6 +805,8 @@ final class SkyViewModel {
             moonEquatorial: moon?.equatorial,
             selectedObjectID: selectedObject?.id
         )
+        frame.deepSkyIndex = deepSkyIndex
+        frame.constellationFigures = constellationFigures
         frame.satelliteSnapshot = satelliteSnapshot
         frame.satelliteDescriptors = satelliteDescriptors
         frame.satellitesEnabled = satellitesEnabled
@@ -757,6 +815,20 @@ final class SkyViewModel {
         // "the time machine is a month out". See `SatelliteAccuracy`.
         frame.nowJulianDay = JulianDate.julianDay(from: Date())
         frame.showAllSatellites = showAllSatellites
+        frame.constellationLinesEnabled = constellationLinesEnabled
+        frame.deepSkyEnabled = deepSkyEnabled
+        frame.equatorialGridEnabled = equatorialGridEnabled
+        frame.horizontalGridEnabled = horizontalGridEnabled
+        frame.eclipticEnabled = eclipticEnabled
+        frame.meridianEnabled = meridianEnabled
+        frame.constellationBoundariesEnabled = constellationBoundariesEnabled
+        frame.constellationBoundaries = constellationBoundaryGeometry
+        frame.meteorRadiantsEnabled = meteorRadiantsEnabled
+        frame.planetMoonsEnabled = planetMoonsEnabled
+        frame.refractionEnabled = refractionEnabled
+        frame.bortleClass = bortleClass
+        frame.fieldOfViewCirclesDegrees = fieldOfViewCirclesDegrees
+        frame.measureEndpoints = measureEndpoints
         // Sampled per frame so the transition is a continuous wash at whatever
         // rate the display runs at, rather than a step per SwiftUI update.
         frame.nightVisionStrength = nightVision.strength
@@ -804,11 +876,19 @@ final class SkyViewModel {
     private static let resultsPerCategory = 20
 
     func updateSearchResults() {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else {
-            searchResults = []
-            return
-        }
+        searchResults = searchMatches(for: searchText)
+    }
+
+    /// The app's one object search.
+    ///
+    /// Factored out of `updateSearchResults` when the command palette arrived,
+    /// so the palette can offer "Go to Jupiter" from the *same* index, ranking
+    /// and satellite accuracy gates the search bar uses. A second search would
+    /// be a second set of results for the same query, which is exactly the kind
+    /// of divergence users notice and cannot explain.
+    func searchMatches(for text: String) -> [CelestialObject] {
+        let query = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return [] }
         let lowered = query.lowercased()
         let condensedQuery = StarSearchIndex.normalize(query)
 
@@ -851,7 +931,7 @@ final class SkyViewModel {
 
         results.append(contentsOf: deepSkyMatches)
         results.append(contentsOf: satelliteMatches(lowered: lowered, query: query))
-        searchResults = results
+        return results
     }
 
     /// Constellations match on their name ("Orion", "Ursa Major") or on their
@@ -944,25 +1024,28 @@ final class SkyViewModel {
     /// star it just found, and further still under the time machine. Everything
     /// else (solar-system bodies, topocentric satellite places) is already
     /// of-date and must not be rotated again.
-    private static func horizontalForCamera(
+    private func horizontalForCamera(
         object: CelestialObject, observer: GeographicLocation, julianDay: Double
     ) -> HorizontalCoordinate {
         // Constellation centroids are J2000 catalogue places like the star
-        // and deep-sky ones, so they precess with them.
-        let needsPrecession = object.kind == .star || object.kind == .deepSky
+        // and deep-sky ones, so they are reduced with them.
+        let needsReduction = object.kind == .star || object.kind == .deepSky
             || object.kind == .constellation
-        let equatorial = needsPrecession
-            ? Precession.precess(object.equatorial, julianDay: julianDay)
+        let equatorial = needsReduction
+            ? ApparentFrame.apparent(j2000: object.equatorial, julianDayUT: julianDay)
             : object.equatorial
-        return CoordinateTransformService.horizontal(
+        let geometric = CoordinateTransformService.horizontal(
             from: equatorial, observer: observer, julianDay: julianDay
         )
+        // The camera aims at where the object is *drawn*, which includes the
+        // refraction lift.
+        return refractionEnabled ? Refraction.apparent(geometric) : geometric
     }
 
     /// Recenters the camera on an object and selects it, instantly (used by
     /// search, where the object may currently be off-screen).
     func focus(on object: CelestialObject) {
-        let horizontal = Self.horizontalForCamera(object: object, observer: location.currentLocation, julianDay: time.julianDay)
+        let horizontal = horizontalForCamera(object: object, observer: location.currentLocation, julianDay: time.julianDay)
         camera.center(on: horizontal)
         selectedObject = object
         searchText = ""
@@ -988,10 +1071,401 @@ final class SkyViewModel {
 
     func flyToFocus(on object: CelestialObject?) {
         guard let object else { return }
-        let horizontal = Self.horizontalForCamera(object: object, observer: location.currentLocation, julianDay: time.julianDay)
+        let horizontal = horizontalForCamera(object: object, observer: location.currentLocation, julianDay: time.julianDay)
         let targetFOV = min(camera.fieldOfViewDegrees, 30)
         camera.flyTo(horizontal, fieldOfViewDegrees: targetFOV)
         selectedObject = object
+    }
+
+    // MARK: - Command palette
+
+    /// The palette's own state. Deliberately a separate object — see
+    /// `CommandPaletteModel` for why the query must not live here.
+    let palette = CommandPaletteModel()
+
+    /// Set when the palette wants events, so the calendar is computed even
+    /// though its panel is closed.
+    private var calendarWantedByPalette = false
+
+    /// A snapshot of app state for the provider, rebuilt per keystroke.
+    ///
+    /// Cheap by construction: the only non-constant part is the object search,
+    /// which is the same index lookup the search bar already does on every
+    /// keystroke, and it is skipped entirely for a query too short to be worth
+    /// searching.
+    func paletteContext() -> PaletteContext {
+        var context = PaletteContext()
+        context.layers = [
+            .constellationLines: constellationLinesEnabled,
+            .deepSky: deepSkyEnabled,
+            .equatorialGrid: equatorialGridEnabled,
+            .horizontalGrid: horizontalGridEnabled,
+            .ecliptic: eclipticEnabled,
+            .meridian: meridianEnabled,
+            .constellationBoundaries: constellationBoundariesEnabled,
+            .meteorRadiants: meteorRadiantsEnabled,
+            .planetMoons: planetMoonsEnabled,
+            .refraction: refractionEnabled,
+            .satellites: satellitesEnabled,
+            .allSatellites: showAllSatellites,
+        ]
+        context.isNightVisionEnabled = nightVision.isEnabled
+        context.bortleClass = bortleClass
+        context.hasFieldOfViewCircle = !fieldOfViewCirclesDegrees.isEmpty
+        context.hasSelection = selectedObject != nil
+        context.isMeasuring = measureAnchor != nil
+        context.isPassesPanelOpen = isPassesPanelPresented
+        if isTonightPanelPresented { context.openPanels.insert(.tonight) }
+        if isCalendarPresented { context.openPanels.insert(.calendar) }
+        let query = palette.query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if query.count >= 2 {
+            context.objectMatches = searchMatches(for: query)
+        }
+        context.upcomingEvents = calendarEvents
+        return context
+    }
+
+    /// Opens the palette, and makes sure the calendar it can offer exists.
+    func presentPalette() {
+        calendarWantedByPalette = true
+        refreshCalendar()
+        palette.present()
+        palette.refresh(context: paletteContext())
+    }
+
+    /// Runs a chosen command. The single place a `PaletteAction` becomes an
+    /// effect, which is what makes the palette's behaviour reviewable in one
+    /// screenful and testable one case at a time.
+    func perform(_ action: PaletteAction) {
+        switch action {
+        case .focus(let object):
+            flyToFocus(on: object)
+            palette.dismiss()
+
+        case .toggleLayer(let layer):
+            switch layer {
+            case .constellationLines: constellationLinesEnabled.toggle()
+            case .deepSky: deepSkyEnabled.toggle()
+            case .equatorialGrid: equatorialGridEnabled.toggle()
+            case .horizontalGrid: horizontalGridEnabled.toggle()
+            case .ecliptic: eclipticEnabled.toggle()
+            case .meridian: meridianEnabled.toggle()
+            case .constellationBoundaries: constellationBoundariesEnabled.toggle()
+            case .meteorRadiants: meteorRadiantsEnabled.toggle()
+            case .planetMoons: planetMoonsEnabled.toggle()
+            case .refraction: refractionEnabled.toggle()
+            case .satellites: satellitesEnabled.toggle()
+            case .allSatellites: showAllSatellites.toggle()
+            }
+            palette.dismiss()
+
+        case .setBortleClass(let bortle):
+            bortleClass = max(1, min(9, bortle))
+            palette.dismiss()
+
+        case .setFieldOfViewCircle(let preset):
+            fieldOfViewCirclesDegrees = preset.map { [$0.fieldDegrees] } ?? []
+            palette.dismiss()
+
+        case .beginMeasure:
+            beginMeasure()
+            palette.dismiss()
+
+        case .clearMeasure:
+            clearMeasure()
+            palette.dismiss()
+
+        case .togglePassesPanel:
+            isPassesPanelPresented.toggle()
+            palette.dismiss()
+
+        case .toggleNightVision:
+            nightVision.toggle()
+            palette.dismiss()
+
+        case .togglePanel(let panel):
+            switch panel {
+            case .tonight: isTonightPanelPresented.toggle()
+            case .calendar: isCalendarPresented.toggle()
+            }
+            palette.dismiss()
+
+        case .time(let timeAction):
+            perform(timeAction)
+            palette.dismiss()
+
+        case .jumpToEvent(let event):
+            open(event: event)
+            palette.dismiss()
+
+        case .beginLocationEntry:
+            // The one action that does not dismiss: it changes what the palette
+            // is asking for.
+            palette.beginLocationEntry()
+            palette.refresh(context: paletteContext())
+
+        case .setLocation(_, let latitude, let longitude):
+            location.setManualLocation(latitudeDegrees: latitude, longitudeDegrees: longitude)
+            // Both dashboards are location-dependent and their keys include the
+            // observer, so they rebuild on their own next tick; forcing here
+            // means the panels are not showing the old place while they do.
+            refreshTonightReport(force: true)
+            refreshCalendar(force: true)
+            palette.dismiss()
+        }
+    }
+
+    /// Time-machine destinations.
+    ///
+    /// Sunset, sunrise and "tonight" are resolved through the same
+    /// `TonightPlanner.nightWindow` the Tonight dashboard shows, so the palette
+    /// and the panel can never disagree about when sunset is.
+    func perform(_ action: PaletteTimeAction) {
+        switch action {
+        case .now:
+            time.resetToNow()
+        case .togglePlaying:
+            time.togglePlaying()
+        case .setRate(let rate):
+            time.setPlaybackRate(rate)
+        case .shiftHours(let hours):
+            time.step(.hour, by: hours)
+        case .shiftDays(let days):
+            time.step(.day, by: days)
+        case .midnight:
+            let calendar = time.calendar
+            if let tomorrow = calendar.date(byAdding: .day, value: 1, to: time.date) {
+                time.jump(to: calendar.startOfDay(for: tomorrow))
+            }
+        case .sunset, .sunrise, .tonight:
+            jumpToNightBoundary(action)
+        }
+        refreshEphemeris()
+    }
+
+    private func jumpToNightBoundary(_ action: PaletteTimeAction) {
+        let observer = location.currentLocation
+        let night = TonightPlanner.nightWindow(observer: observer, julianDay: time.julianDay)
+        let target: Double?
+        switch action {
+        case .sunset:
+            target = night.sun.eveningJulianDay
+        case .sunrise:
+            target = night.sun.morningJulianDay
+        default:
+            // Full darkness where there is any; otherwise the darkest the night
+            // gets, so a summer request at high latitude still lands somewhere
+            // useful instead of doing nothing.
+            target = night.astronomical.eveningJulianDay
+                ?? night.nautical.eveningJulianDay
+                ?? night.civil.eveningJulianDay
+                ?? night.sun.eveningJulianDay
+        }
+        guard let target else { return }
+        time.jump(to: JulianDate.date(fromJulianDay: target))
+    }
+
+    // MARK: - Object facts
+
+    private var dailyFactsKey: String?
+    private var dailyFacts: ObjectFacts.Daily?
+    private var pendingDailyKey: String?
+    private nonisolated(unsafe) var dailyFactsTask: Task<Void, Never>?
+
+    /// Facts for the selected object at the displayed second. The live half is
+    /// one transform; the daily half is served from the cache and recomputed
+    /// off the main actor when its key changes.
+    ///
+    /// Read from a SwiftUI body, so it is deliberately cheap: everything
+    /// expensive (a day of rise/set root-finding, a point-in-polygon walk over
+    /// 12,948 boundary vertices) happens once per object per day on a detached
+    /// task, and this returns whatever is ready.
+    var selectedObjectFacts: ObjectFacts? {
+        guard let object = selectedObject else { return nil }
+        // The once-a-second display clock, not the continuous one: the panel
+        // shows whole degrees and re-deriving it per frame would be waste.
+        let jd = time.displayJulianDay
+        let observer = location.currentLocation
+        let apparent: EquatorialCoordinate
+        switch object.kind {
+        case .star, .deepSky, .constellation:
+            apparent = ApparentFrame.apparent(j2000: object.equatorial, julianDayUT: jd)
+        default:
+            apparent = object.equatorial
+        }
+        // A satellite already carries its own look angles, computed
+        // topocentrically every frame by `refreshSelectedSatellite`.
+        let horizontal = object.satelliteDetails?.horizontal
+            ?? CoordinateTransformService.horizontal(from: apparent, observer: observer, julianDay: jd)
+        let live = ObjectFacts.Live(
+            horizontal: horizontal,
+            apparentAltitudeDegrees: refractionEnabled
+                ? Refraction.apparentAltitudeDegrees(trueAltitudeDegrees: horizontal.altitudeDegrees)
+                : horizontal.altitudeDegrees
+        )
+        let key = dailyKey(object: object, observer: observer, julianDay: jd)
+        refreshDailyFactsIfNeeded(object: object, observer: observer, key: key)
+        return ObjectFacts(live: live, daily: dailyFactsKey == key ? dailyFacts : nil)
+    }
+
+    private func dailyKey(
+        object: CelestialObject, observer: GeographicLocation, julianDay: Double
+    ) -> String {
+        "\(object.id)|\((julianDay - 0.5).rounded(.down))|\(observer.latitudeDegrees),\(observer.longitudeDegrees)"
+    }
+
+    private func refreshDailyFactsIfNeeded(
+        object: CelestialObject, observer: GeographicLocation, key: String
+    ) {
+        guard key != dailyFactsKey, key != pendingDailyKey else { return }
+        pendingDailyKey = key
+        let boundaries = constellationBoundaries
+        // The observer's own day, so "rises at" means today on their clock.
+        let startJD = JulianDate.julianDay(from: time.calendar.startOfDay(for: time.currentDate))
+        dailyFactsTask?.cancel()
+        dailyFactsTask = Task { [weak self] in
+            let daily = await Task.detached(priority: .userInitiated) {
+                ObjectFacts.daily(
+                    for: object, observer: observer, startJulianDay: startJD, boundaries: boundaries
+                )
+            }.value
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard let self, self.pendingDailyKey == key else { return }
+                self.dailyFacts = daily
+                self.dailyFactsKey = key
+                self.pendingDailyKey = nil
+            }
+        }
+    }
+
+    // MARK: - Measure tool
+
+    /// The first endpoint of an angular measurement, or nil when not measuring.
+    private(set) var measureAnchor: CelestialObject?
+    /// The second endpoint, once chosen.
+    private(set) var measureTarget: CelestialObject?
+
+    /// Starts a measurement from the selected object. The next click on any
+    /// object completes it; further clicks move the second end.
+    func beginMeasure() {
+        guard let selected = selectedObject else { return }
+        measureAnchor = selected
+        measureTarget = nil
+    }
+
+    func clearMeasure() {
+        measureAnchor = nil
+        measureTarget = nil
+    }
+
+    /// Handles a click while the measure tool is armed. Returns true if the
+    /// click was consumed as the second endpoint.
+    func handleMeasureClick(on object: CelestialObject?) -> Bool {
+        guard measureAnchor != nil, let object else { return false }
+        measureTarget = object
+        return true
+    }
+
+    /// The two endpoints as apparent equatorial places of date, for the
+    /// renderer. Catalogue objects are reduced the way the renderer reduces
+    /// them; solar-system and satellite places already are.
+    var measureEndpoints: [EquatorialCoordinate] {
+        guard let anchor = measureAnchor else { return [] }
+        let jd = time.julianDay
+        func place(_ object: CelestialObject) -> EquatorialCoordinate {
+            switch object.kind {
+            case .star, .deepSky, .constellation:
+                return ApparentFrame.apparent(j2000: object.equatorial, julianDayUT: jd)
+            case .satellite:
+                // Live: the anchor may be moving.
+                return liveSatellitePlace(object) ?? object.equatorial
+            default:
+                return solarSystemObjects.first { $0.id == object.id }?.equatorial ?? object.equatorial
+            }
+        }
+        var points = [place(anchor)]
+        if let target = measureTarget { points.append(place(target)) }
+        return points
+    }
+
+    /// Angular separation between the two measured objects, degrees.
+    var measuredSeparationDegrees: Double? {
+        let points = measureEndpoints
+        guard points.count == 2 else { return nil }
+        return AngularSeparation.degrees(points[0], points[1])
+    }
+
+    private func liveSatellitePlace(_ object: CelestialObject) -> EquatorialCoordinate? {
+        guard let details = object.satelliteDetails,
+              let sample = satelliteSnapshot.sample(descriptorIndex: details.descriptorIndex)
+        else { return nil }
+        let jd = time.julianDay
+        let elapsed = min(2.0, max(-2.0, (jd - satelliteSnapshot.julianDay) * 86_400.0))
+        let look = TopocentricTransform.lookAngles(
+            satellitePositionTEME: sample.position + sample.velocity * elapsed,
+            observer: location.currentLocation, julianDay: jd
+        )
+        return CoordinateTransformService.equatorial(
+            from: look.horizontal, observer: location.currentLocation, julianDay: jd
+        )
+    }
+
+    // MARK: - Satellite passes
+
+    private(set) var passes: [SatellitePass] = []
+    private(set) var isComputingPasses = false
+    var isPassesPanelPresented = false {
+        didSet { if isPassesPanelPresented { refreshPasses() } }
+    }
+    private var passesKey: String?
+    private nonisolated(unsafe) var passesTask: Task<Void, Never>?
+
+    /// Which satellites the passes panel predicts for: the selected satellite
+    /// if there is one, plus the ISS.
+    private var passTargets: [Int] {
+        var numbers = [Satellite.issCatalogNumber]
+        if let details = selectedObject?.satelliteDetails, details.catalogNumber != Satellite.issCatalogNumber {
+            numbers.insert(details.catalogNumber, at: 0)
+        }
+        return numbers
+    }
+
+    /// Recomputes the pass list when the day, place or targets change.
+    func refreshPasses(force: Bool = false) {
+        guard isPassesPanelPresented else { return }
+        let observer = location.currentLocation
+        let julianDay = time.julianDay
+        let targets = passTargets
+        let key = "\((julianDay * 24).rounded(.down))|\(observer.latitudeDegrees),\(observer.longitudeDegrees)|\(targets)"
+        guard force || key != passesKey else { return }
+        passesKey = key
+        isComputingPasses = true
+        passesTask?.cancel()
+        let tracker = satelliteTracker
+        passesTask = Task { [weak self] in
+            let found = await tracker.predictPasses(
+                catalogNumbers: targets, observer: observer,
+                fromJulianDay: julianDay, spanDays: 2
+            )
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard let self else { return }
+                self.passes = found
+                self.isComputingPasses = false
+            }
+        }
+    }
+
+    /// Jumps the time machine to a pass's peak and looks at it.
+    func open(pass: SatellitePass) {
+        time.jump(to: JulianDate.date(fromJulianDay: pass.peakJulianDay))
+        refreshEphemeris()
+        let target = pass.peakHorizontal
+        camera.flyTo(
+            refractionEnabled ? Refraction.apparent(target) : target,
+            fieldOfViewDegrees: min(camera.fieldOfViewDegrees, 60)
+        )
     }
 
     // MARK: - Trackpad/pinch handlers

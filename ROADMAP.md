@@ -21,7 +21,27 @@
 - SwiftData model stubs (`SavedLocation`, `UserPreference`) wired into the app.
 - Unit tests for Julian Date, RA/Dec -> Alt/Az, and Sun position.
 
-## Phase 2 — Observation Planner (future)
+## Phase 2 — Observation Planner (done)
+Rise/set/transit for every object, a "Tonight" dashboard rating targets by a
+limiting-factor visibility model, a sky calendar of upcoming events, and
+satellite pass prediction. See `TonightReport`, `EventCalendar`,
+`SatellitePasses`.
+
+## Phase 2b — Apparent places (done)
+The ephemeris rebuilt on VSOP87D and the full lunar series, with ΔT, nutation,
+annual aberration, light-time, topocentric parallax and atmospheric refraction.
+Everything the app draws is now an *apparent* place, agreeing with JPL Horizons
+to under an arcsecond for the Sun and planets and under four for the Moon; the
+residuals are pinned in `AstronomyTests/AccuracyTests.swift`.
+
+## Phase 2c — Sky guide features (done)
+Constellation boundaries (IAU/Delporte, B1875), equatorial and horizon grids,
+the ecliptic and the meridian, the Galilean moons, meteor-shower radiants,
+eyepiece field circles, an angular-measurement tool, Bortle light-pollution
+setting, and a per-object facts panel (altitude/azimuth, containing
+constellation, rise/transit/set, distance, apparent size, phase, elongation).
+
+## Phase 3 — Observation Planner (superseded)
 Plan observing sessions: rise/set/transit times, "best time to view" for a
 target given the current location and date, a simple night-of checklist.
 
@@ -40,12 +60,15 @@ different times/locations side by side.
 Framing/field-of-view overlays for common telescope + camera/eyepiece
 combinations, exposure planning aids, moon-phase-aware "best night" scoring.
 
-## Phase 6 — Satellites, Weather, Command Palette, Night Mode, Favorites (future)
-- Satellite pass predictions (ISS, Starlink, etc.) via bundled/updatable TLE data.
-- Local weather/cloud-cover overlay to help decide when to observe.
+## Phase 6 — Satellites, Weather, Command Palette, Night Mode, Favorites
+- Satellite pass predictions (ISS, Starlink, etc.) via bundled/updatable TLE
+  data. **Done** — see `SatellitePasses` and the Passes panel.
 - A command palette (⌘K-style) for fast navigation across all features.
+  **Done** — see `Features/Palette`.
 - A true red-shifted "night mode" theme to preserve dark adaptation.
-- Favoriting objects/locations for quick access across sessions.
+  **Done** — see `DesignSystem/NightVision.swift`.
+- Local weather/cloud-cover overlay to help decide when to observe. *Future.*
+- Favoriting objects/locations for quick access across sessions. *Future.*
 
 Phases 2-6 are intentionally out of scope for this milestone and are noted
 here only to show where the architecture is headed; none of their code

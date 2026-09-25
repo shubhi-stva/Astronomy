@@ -302,6 +302,13 @@ final class SatelliteNarrowFieldSmoothnessTests: XCTestCase {
             frame.cameraFieldOfViewDegrees = fov
             frame.viewportSize = Self.viewport
             frame.sunHorizontal = HorizontalCoordinate(altitudeDegrees: -40, azimuthDegrees: 0)
+            // The camera is aimed at the *geometric* look angle, so the marker's
+            // offset from screen centre is the extrapolation error and nothing
+            // else. Refraction would lift the drawn marker off that centre by
+            // its own arcminutes and drown the quantity being measured — it is
+            // real, it is tested in `RefractionTests`, and it is not what this
+            // trace is about.
+            frame.refractionEnabled = false
             frame.satellitesEnabled = true
             frame.satelliteSnapshot = elapsed < tick ? first : second
             frame.satelliteDescriptors = descriptors
@@ -616,6 +623,13 @@ final class SatelliteShadowEntryTests: XCTestCase {
             frame.cameraFieldOfViewDegrees = 60
             frame.viewportSize = CGSize(width: 1512, height: 900)
             frame.sunHorizontal = HorizontalCoordinate(altitudeDegrees: -40, azimuthDegrees: 0)
+            // The camera is aimed at the *geometric* look angle, so the marker's
+            // offset from screen centre is the extrapolation error and nothing
+            // else. Refraction would lift the drawn marker off that centre by
+            // its own arcminutes and drown the quantity being measured — it is
+            // real, it is tested in `RefractionTests`, and it is not what this
+            // trace is about.
+            frame.refractionEnabled = false
             frame.satellitesEnabled = true
             frame.satelliteSnapshot = SatelliteSnapshot(
                 julianDay: julianDay, samples: [sample], propagationDuration: 0, altitudeOrder: [0]

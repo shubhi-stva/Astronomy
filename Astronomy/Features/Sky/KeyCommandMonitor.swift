@@ -87,6 +87,13 @@ enum KeyCommand: Equatable {
     case openCommandPalette
     /// N — toggle night vision. Suppressed while text is being edited.
     case toggleNightVision
+    /// M — start (or clear) the angular-measurement tool.
+    case measure
+    /// G — the equatorial grid. The one reference layer common enough to earn
+    /// a bare letter.
+    case toggleGrid
+    /// P — the satellite passes panel.
+    case togglePasses
     /// Esc — dismiss whatever transient surface is open.
     case dismiss
 
@@ -126,10 +133,12 @@ enum KeyCommand: Equatable {
         // Bare letters only, and never while something is being typed into.
         let bare = modifiers.subtracting([.function, .numericPad]).isEmpty
         guard !isEditing, bare else { return nil }
-        if characters == "n" {
-            self = .toggleNightVision
-            return
+        switch characters {
+        case "n": self = .toggleNightVision
+        case "m": self = .measure
+        case "g": self = .toggleGrid
+        case "p": self = .togglePasses
+        default: return nil
         }
-        return nil
     }
 }

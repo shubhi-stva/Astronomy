@@ -31,12 +31,22 @@ final class PlanetaryOrientationTests: XCTestCase {
 
     // MARK: - Which bodies are covered
 
-    func testOnlyTheThreeMappedBodiesHaveRotationElements() {
+    /// Rotation elements and surface maps are no longer the same set.
+    ///
+    /// Saturn carries IAU rotation elements because its *rings* need them —
+    /// the ring plane is its equatorial plane, so the pole gives both the
+    /// opening angle B and the ring axis on screen (see `SaturnRings` and
+    /// `SkyExtrasBuilder.saturnRingParameters`) — but no photographic map is
+    /// bundled for it, so it must stay out of the textured set.
+    func testRotationElementsCoverTheMappedBodiesPlusSaturn() {
         for id in ["mars", "jupiter", "moon"] {
             XCTAssertNotNil(PlanetaryOrientation.rotationElements(objectID: id), id)
             XCTAssertTrue(PlanetaryOrientation.hasSurfaceMap(objectID: id), id)
         }
-        for id in ["mercury", "venus", "saturn", "uranus", "neptune", "sun", "pluto", "sirius"] {
+        XCTAssertNotNil(PlanetaryOrientation.rotationElements(objectID: "saturn"))
+        XCTAssertFalse(PlanetaryOrientation.hasSurfaceMap(objectID: "saturn"))
+
+        for id in ["mercury", "venus", "uranus", "neptune", "sun", "pluto", "sirius"] {
             XCTAssertNil(PlanetaryOrientation.rotationElements(objectID: id), id)
             XCTAssertFalse(PlanetaryOrientation.hasSurfaceMap(objectID: id), id)
         }

@@ -103,7 +103,7 @@ nonisolated enum SkyPathBuilder {
         case .satellite: return 1
         case .moon: return 60
         case .sun, .planet, .dwarfPlanet: return 300
-        case .star, .deepSky, .constellation: return 300
+        case .star, .deepSky, .constellation, .planetMoon: return 300
         }
     }
 

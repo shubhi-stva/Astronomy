@@ -115,6 +115,16 @@ enum PlanetaryOrientation {
                 poleDeclination: 66.5392, poleDeclinationRate: 0.0130,
                 primeMeridian: 38.3213, primeMeridianRate: 13.17635815
             )
+        case "saturn":
+            // IAU 2015, body 699. Used for the ring geometry: the rings lie in
+            // Saturn's equatorial plane, so the sub-Earth latitude this yields
+            // *is* the ring opening angle B and the pole angle is the ring
+            // axis on the sky. No surface map is bundled for Saturn.
+            return RotationElements(
+                poleRightAscension: 40.589, poleRightAscensionRate: -0.036,
+                poleDeclination: 83.537, poleDeclinationRate: -0.004,
+                primeMeridian: 38.90, primeMeridianRate: 810.7939024
+            )
         default:
             return nil
         }
@@ -122,8 +132,9 @@ enum PlanetaryOrientation {
 
     /// True when this body has both rotation elements and a bundled map.
     static func hasSurfaceMap(objectID id: String) -> Bool {
-        rotationElements(objectID: id) != nil
+        rotationElements(objectID: id) != nil && id != "saturn"
     }
+
 
     /// The sub-Earth point and pole direction for a body seen in a given
     /// direction at a given time.
@@ -196,6 +207,20 @@ enum PlanetaryOrientation {
             subEarthLatitudeDegrees: latitude,
             poleDirection: pole
         )
+    }
+
+    /// Position angle of a body's north pole on the sky — its angle east of
+    /// north in the local frame at the body's direction — in degrees.
+    static func polePositionAngleDegrees(
+        poleDirection: SIMD3<Double>, equatorial: EquatorialCoordinate
+    ) -> Double? {
+        let bodyDirection = simd_normalize(Precession.unitVector(equatorial))
+        let z = SIMD3<Double>(0, 0, 1)
+        let eastVector = simd_cross(z, bodyDirection)
+        guard simd_length(eastVector) > 1e-9 else { return nil }
+        let east = simd_normalize(eastVector)
+        let north = simd_cross(bodyDirection, east)
+        return atan2(simd_dot(poleDirection, east), simd_dot(poleDirection, north)) * 180.0 / .pi
     }
 
     /// Reduces an angle to 0 ..< 360 degrees.

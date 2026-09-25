@@ -12,6 +12,15 @@ struct InfoPanelView: View {
     let object: CelestialObject
     var onDismiss: () -> Void
 
+    /// Where the object is right now and what its day looks like. Optional so
+    /// the panel still renders (and previews) without a view model behind it.
+    var facts: ObjectFacts?
+    /// Formats instants in the observer's own time zone.
+    var timeZone: TimeZone = .current
+    /// Constellation names by IAU abbreviation, so "Ori" can be printed as
+    /// "Orion". Empty is fine — the abbreviation is shown alone.
+    var constellationNames: [String: String] = [:]
+
     /// Sky-path controls. Optional so the panel remains usable (and previewable)
     /// on its own; when a handler is supplied the "Show path" row appears.
     var pathRange: SkyPathRange?
@@ -61,8 +70,14 @@ struct InfoPanelView: View {
                 if let major = object.majorAxisArcmin {
                     infoRow("Size", angularSizeString(major: major, minor: object.minorAxisArcmin))
                 }
+                solarSystemRows
+
                 infoRow("Right Ascension", raString)
                 infoRow("Declination", decString)
+
+                if let facts {
+                    positionRows(facts)
+                }
 
                 if let onSelectPathRange {
                     pathControls(onSelectPathRange)
@@ -70,6 +85,102 @@ struct InfoPanelView: View {
             }
         }
         .frame(width: 280)
+    }
+
+    /// Where the object is in *this* observer's sky, and what it does today.
+    ///
+    /// This is the half of the panel that makes the app a guide rather than a
+    /// chart: altitude and azimuth say where to point, the constellation says
+    /// what you are looking at, and rise/transit/set say whether it is worth
+    /// waiting. A satellite gets only the live half — a pass is not a daily
+    /// rise, and the passes panel predicts those properly.
+    @ViewBuilder
+    private func positionRows(_ facts: ObjectFacts) -> some View {
+        let live = facts.live
+        infoRow("Altitude", altitudeString(live))
+        infoRow("Azimuth", String(format: "%.1f° %@", live.horizontal.azimuthDegrees,
+                                  Self.compassPoint(live.horizontal.azimuthDegrees)))
+
+        if let constellation = facts.daily?.constellationAbbreviation, object.kind != .constellation {
+            infoRow("In", constellationNames[constellation] ?? constellation)
+        }
+
+        if let daily = facts.daily, object.kind != .satellite {
+            Divider().overlay(SkyPalette.panelStroke)
+            switch daily.circumstance {
+            case .alwaysUp:
+                Text("Circumpolar from here — it never sets.")
+                    .font(SkyType.footnote)
+                    .foregroundStyle(SkyPalette.chromeSecondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            case .neverUp:
+                Text("Never rises from this latitude today.")
+                    .font(SkyType.footnote)
+                    .foregroundStyle(SkyPalette.chromeSecondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            default:
+                if let rise = daily.riseJulianDay {
+                    infoRow("Rises", clockString(rise))
+                }
+            }
+            if let transit = daily.transitJulianDay, let altitude = daily.transitAltitudeDegrees {
+                infoRow("Highest", String(format: "%@ · %.0f°", clockString(transit), altitude))
+            }
+            if daily.circumstance == .risesAndSets, let set = daily.setJulianDay {
+                infoRow("Sets", clockString(set))
+            }
+        }
+    }
+
+    /// Distance, apparent size, phase and elongation — the facts that make a
+    /// planet a place rather than a dot.
+    @ViewBuilder
+    private var solarSystemRows: some View {
+        if let distance = object.distanceKilometres, object.kind != .satellite {
+            infoRow("Distance", ObjectFacts.distanceDescription(kilometres: distance))
+            let diameter = StarAppearance.angularDiameterDegrees(
+                objectID: object.id, distanceKilometres: distance
+            )
+            if diameter > 0 {
+                infoRow("Apparent size", ObjectFacts.angularDiameterDescription(degrees: diameter))
+            }
+        }
+        if let illuminated = object.illuminatedFraction, object.kind != .sun {
+            infoRow("Illuminated", String(format: "%.0f%%", illuminated * 100))
+        }
+        if let elongation = object.elongationDegrees, object.kind == .planet || object.kind == .dwarfPlanet {
+            infoRow("From the Sun", String(format: "%.0f°", elongation))
+        }
+    }
+
+    private func altitudeString(_ live: ObjectFacts.Live) -> String {
+        let geometric = String(format: "%+.1f°", live.horizontal.altitudeDegrees)
+        // Refraction is only worth spelling out where it is worth more than a
+        // tenth of a degree, which is to say near the horizon — exactly where
+        // it changes whether the object is up at all.
+        let lift = live.apparentAltitudeDegrees - live.horizontal.altitudeDegrees
+        guard lift >= 0.05 else { return geometric }
+        return String(format: "%@ (%+.1f° refracted)", geometric, live.apparentAltitudeDegrees)
+    }
+
+    private func clockString(_ julianDay: Double) -> String {
+        let formatter = DateFormatter()
+        formatter.timeZone = timeZone
+        formatter.dateFormat = "HH:mm"
+        return formatter.string(from: JulianDate.date(fromJulianDay: julianDay))
+    }
+
+    /// IAU abbreviation -> constellation name, for the "In" row. Taken from
+    /// the same normative table search uses, so the two can never disagree.
+    static let constellationNames: [String: String] = ConstellationDesignations.byAbbreviation
+        .reduce(into: [:]) { $0[$1.key] = $1.value.name }
+
+    /// Sixteen-point compass bearing for an azimuth.
+    static func compassPoint(_ azimuthDegrees: Double) -> String {
+        let points = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+                      "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
+        let index = Int((Angle.normalizeDegrees(azimuthDegrees) / 22.5).rounded()) % points.count
+        return points[index]
     }
 
     /// "Show path" — one segmented row of spans, and a caveat line when the
@@ -132,6 +243,7 @@ struct InfoPanelView: View {
         case .planet: return "Planet"
         case .dwarfPlanet: return "Dwarf Planet"
         case .constellation: return "Constellation"
+        case .planetMoon: return "Moon of Jupiter"
         case .deepSky: return object.deepSkyType?.displayName ?? "Deep-Sky Object"
         case .satellite: return object.satelliteDetails?.regime.displayName ?? "Satellite"
         }

@@ -8,6 +8,7 @@
 //
 
 import Foundation
+import simd
 
 enum EphemerisService {
 
@@ -52,73 +53,91 @@ enum EphemerisService {
         min(max(date, validDateRange.lowerBound), validDateRange.upperBound)
     }
 
-    /// Computes the current positions of the Sun, Moon, the seven other major
-    /// planets and Pluto for the given Julian Day.
-    static func solarSystemObjects(julianDay jd: Double) -> [CelestialObject] {
+    /// Computes the apparent positions of the Sun, Moon, the seven other major
+    /// planets and Pluto for a **UT** Julian Day.
+    ///
+    /// With an `observer`, every position is **topocentric**: the observer's
+    /// geocentric position vector (WGS-84, rotated by the apparent sidereal
+    /// time) is subtracted from each body's, so the diurnal parallax is exact
+    /// for all of them. For the Moon that is up to a degree; for Mars at a
+    /// close opposition 20"; for the Sun 9". Without an observer the places
+    /// are geocentric, which is what the event solvers and almanac-style
+    /// comparisons want.
+    static func solarSystemObjects(
+        julianDay jd: Double, observer: GeographicLocation? = nil
+    ) -> [CelestialObject] {
         var objects: [CelestialObject] = []
+        let frame = ApparentFrame(julianDayUT: jd)
+        let earth = frame.earth
+        let observerVector: SIMD3<Double>? = observer.map {
+            TopocentricTransform.observerPositionEquatorial(
+                observer: $0,
+                localSiderealDegrees: frame.greenwichApparentSiderealDegrees + $0.longitudeDegrees
+            )
+        }
 
-        let sunEq = SunPosition.equatorialCoordinate(julianDay: jd)
-        let sunDistanceKm = SunPosition.radiusVectorAU(julianDay: jd)
-            * AstronomicalConstants.astronomicalUnitKilometres
+        /// Applies the diurnal parallax to a geocentric place at a distance.
+        func topocentric(
+            _ equatorial: EquatorialCoordinate, distanceKilometres: Double
+        ) -> (EquatorialCoordinate, Double) {
+            guard let observerVector else { return (equatorial, distanceKilometres) }
+            let vector = Precession.unitVector(equatorial) * distanceKilometres - observerVector
+            return (Precession.equatorial(fromVector: vector), simd_length(vector))
+        }
+
+        let sun = SunPosition.state(earth: earth)
+        let sunDistanceKm = sun.radiusVectorAU * AstronomicalConstants.astronomicalUnitKilometres
+        let (sunEq, sunTopoDistance) = topocentric(sun.equatorial, distanceKilometres: sunDistanceKm)
         objects.append(CelestialObject(
             id: "sun",
             name: "Sun",
             kind: .sun,
             equatorial: sunEq,
-            magnitude: -26.7,
-            distanceKilometres: sunDistanceKm
+            magnitude: SunPosition.magnitude(radiusVectorAU: sun.radiusVectorAU),
+            distanceKilometres: sunTopoDistance
         ))
 
-        let moonEq = MoonPosition.equatorialCoordinate(julianDay: jd)
+        let moon = MoonPosition.geocentricState(earth: earth)
+        let (moonEq, moonDistance) = topocentric(moon.equatorial, distanceKilometres: moon.distanceKilometres)
+        // Phase from the topocentric places, which is what the observer sees.
+        let moonPhaseAngle = Angle.radiansToDegrees(acos(
+            -MoonPhase.cosineOfElongation(sun: sunEq, moon: moonEq)
+        ))
         objects.append(CelestialObject(
             id: "moon",
             name: "Moon",
             kind: .moon,
             equatorial: moonEq,
-            magnitude: -12.7,
-            distanceKilometres: MoonPosition.distanceKilometres(julianDay: jd),
+            magnitude: MoonPosition.magnitude(
+                phaseAngleDegrees: moonPhaseAngle, distanceKilometres: moonDistance
+            ),
+            distanceKilometres: moonDistance,
             illuminatedFraction: MoonPhase.illuminatedFraction(sun: sunEq, moon: moonEq)
         ))
 
         for planet in Planet.allCases {
-            let state = PlanetPosition.state(planet: planet, julianDay: jd)
-            objects.append(CelestialObject(
+            let state = PlanetPosition.state(planet: planet, earth: earth)
+            let distanceKm = state.geocentricDistanceAU * AstronomicalConstants.astronomicalUnitKilometres
+            let (planetEq, planetDistance) = topocentric(state.equatorial, distanceKilometres: distanceKm)
+            var object = CelestialObject(
                 id: planet.rawValue,
                 name: planet.displayName,
                 kind: planet.isDwarfPlanet ? .dwarfPlanet : .planet,
-                equatorial: state.equatorial,
-                magnitude: approximateMagnitude(for: planet),
-                distanceKilometres: state.geocentricDistanceAU
-                    * AstronomicalConstants.astronomicalUnitKilometres,
+                equatorial: planetEq,
+                magnitude: state.magnitude,
+                distanceKilometres: planetDistance,
                 illuminatedFraction: state.illuminatedFraction
-            ))
+            )
+            object.phaseAngleDegrees = state.phaseAngleDegrees
+            object.elongationDegrees = state.elongationDegrees
+            objects.append(object)
         }
 
         return objects
     }
 
-    /// Rough, static apparent-magnitude estimate per planet (ignores phase
-    /// angle / distance variation) — sufficient for marker sizing in the MVP.
-    private static func approximateMagnitude(for planet: Planet) -> Double {
-        switch planet {
-        case .mercury: return -0.4
-        case .venus: return -4.2
-        case .mars: return -0.5
-        case .jupiter: return -2.2
-        case .saturn: return 0.5
-        case .uranus: return 5.7
-        case .neptune: return 7.8
-        // Pluto ranges roughly 13.7-16.3 over its orbit; ~14.4 is where it
-        // sits in the 2020s. Far below any naked-eye limit, which is exactly
-        // why it is classified `.dwarfPlanet` and left subject to the cutoff.
-        case .pluto: return 14.4
-        }
-    }
-
-    /// The same estimate, exposed for the "Tonight" planner, which needs a
-    /// planet's magnitude without building the whole solar-system object list
-    /// for an instant it is not otherwise drawing.
-    static func approximateMagnitudeForPlanning(_ planet: Planet) -> Double {
-        approximateMagnitude(for: planet)
+    /// A planet's magnitude for the "Tonight" planner, at the given instant.
+    static func approximateMagnitudeForPlanning(_ planet: Planet, julianDay jd: Double) -> Double {
+        PlanetPosition.state(planet: planet, julianDay: jd).magnitude
     }
 }

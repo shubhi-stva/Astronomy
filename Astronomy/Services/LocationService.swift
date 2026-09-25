@@ -50,6 +50,17 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
     /// formatted coordinates, so geocoding never blocks anything.
     private(set) var placeName: String?
 
+    /// The observer's own time zone, resolved by the same reverse geocode that
+    /// produces `placeName`.
+    ///
+    /// This matters as soon as the app says *when* rather than *where*. A user
+    /// in California asking what the sky over Reykjavík looks like should read
+    /// "sunset 22:41", Reykjavík's own clock, not 15:41 on theirs — the number
+    /// is about that place. Until the geocoder answers (and whenever it
+    /// cannot), this is the machine's own zone, which is right for the common
+    /// case of looking at the sky where you are standing.
+    private(set) var timeZone: TimeZone = .current
+
     private let manager = CLLocationManager()
     private let geocoder = CLGeocoder()
     private nonisolated(unsafe) var geocodeTask: Task<Void, Never>?
@@ -111,6 +122,10 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
     private func resolvePlaceName() {
         geocodeTask?.cancel()
         placeName = nil
+        // Deliberately *not* reset to .current: the previous place's zone is a
+        // better guess than the machine's for the second or two the geocode
+        // takes, and resetting would make every clock in the UI flicker
+        // through the local zone on each location change.
         let location = CLLocation(
             latitude: currentLocation.latitudeDegrees,
             longitude: currentLocation.longitudeDegrees
@@ -120,6 +135,7 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
             let placemarks = try? await self.geocoder.reverseGeocodeLocation(location)
             guard !Task.isCancelled, let placemark = placemarks?.first else { return }
             self.placeName = Self.displayName(for: placemark)
+            self.timeZone = placemark.timeZone ?? .current
         }
     }
 

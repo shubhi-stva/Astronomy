@@ -13,8 +13,11 @@ Astronomy/
   Core/
     Time/               JulianDate, TimeController — no SwiftUI/Metal imports.
     Coordinates/         CoordinateTransformService, spherical coordinate types.
-    Astronomy/            SunPosition, MoonPosition, PlanetPosition, EphemerisService,
-                          RiseSetCalculator, VisibilityRating, TonightReport, SkyPath.
+    Time/                JulianDate, TimeController, DeltaT (TT - UT).
+    Astronomy/            SunPosition, MoonPosition, PlanetPosition, VSOP87,
+                          Nutation, Refraction, PlanetMagnitude, JupiterMoons,
+                          EphemerisService, RiseSetCalculator, VisibilityRating,
+                          TonightReport, SkyPath, SatellitePasses, ObjectFacts.
     Models/              CelestialObject, Star, SavedLocation (SwiftData).
   Data/
     Catalogs/            Bundled stars.json / constellations.json + CatalogService.
@@ -152,14 +155,72 @@ Codable/JSON store or Core Data because:
   `CatalogService`, which is the right separation: SwiftData is for
   *user* data, not bundled reference data.
 
+## Apparent places
+
+Everything the app draws is an **apparent** place: where the object actually
+appears to an observer on the moving, spinning, atmosphere-wrapped Earth at
+that instant, not its catalogue position. The reduction lives in two files and
+happens in exactly one place each, which is what keeps every body in a frame in
+the same frame.
+
+`Core/Coordinates/ApparentFrame.swift` holds both halves:
+
+- **`EarthState`** — where the Earth is and how fast it is moving, plus the
+  nutation angles, for one instant. Every solar-system ephemeris starts from
+  it: the Sun is the Earth's heliocentric position negated, a planet is its own
+  minus the Earth's with the light-time iteration, the Moon's geocentric series
+  needs only the nutation. Building it once and handing it to all of them is
+  cheaper and, more importantly, makes it impossible for two bodies to disagree
+  about the frame they are drawn in.
+- **`ApparentFrame`** — the same information packaged for the *catalogue*: one
+  rotation (precession then nutation, J2000 -> true equator and equinox of
+  date), one vector (annual aberration) and one angle (apparent sidereal time).
+  `SkyProjector` folds the rotation into its per-frame matrix and applies the
+  vector per star, so tens of thousands of stars are reduced for the price of a
+  matrix product and a vector add each.
+
+What the reduction includes, and what each is worth in 2026:
+
+| Effect | Size | Where |
+|---|---|---|
+| Precession | 0.36°, growing | `Precession` |
+| ΔT (TT − UT) | 69 s — 35″ on the Moon | `DeltaT` |
+| Nutation | up to 17″ | `Nutation` |
+| Annual aberration | up to 20.5″ | `ApparentFrame` |
+| Light-time | up to 1.4° for Jupiter's own motion | `PlanetPosition` |
+| Topocentric parallax | up to 1° for the Moon | `EphemerisService` |
+| Atmospheric refraction | 34′ at the horizon | `Refraction` |
+
+The ordering rule that runs through all of it: **positions of bodies use TT,
+where the observer is looking uses UT.** Sidereal time is the Earth's rotation
+angle, so it must keep being fed UT; the planetary and lunar theories are
+expressed in TT. Mixing them is a 69-second error, which on the Moon is half an
+arcminute.
+
+One deliberate exception: satellites stay on **mean** sidereal time, because
+SGP4 emits TEME, whose origin of right ascension is the mean equinox. That is
+why `CoordinateTransformService` exposes both `localSiderealTimeDegrees`
+(apparent, the default for everything else) and `localMeanSiderealTimeDegrees`
+(the satellite frame).
+
+Accuracy is pinned against JPL Horizons in `AstronomyTests/AccuracyTests.swift`
+over 1850-2045: under 0.5″ for the Sun and the inner planets, 2″ for Neptune,
+3.8″ for the Moon, and under 5″ for the full topocentric alt/az chain.
+
 ## Coordinate transform pipeline
 
 ```
 RA/Dec (equatorial, J2000, from catalog/ephemeris)
+        │  ApparentFrame: precession -> nutation -> aberration
+        ▼
+RA/Dec (apparent, true equator and equinox of date)
         │  CoordinateTransformService.horizontal(from:observer:julianDay:)
-        │  — needs: observer lat/lon, current time (-> Local Sidereal Time)
+        │  — needs: observer lat/lon, current time (-> apparent sidereal time)
         ▼
 Alt/Az (horizontal, observer- and time-dependent)
+        │  Refraction.Table — the atmosphere lifts everything near the horizon
+        ▼
+Alt/Az (apparent)
         │  CoordinateTransformService.stereographicProject(horizontal:center:fieldOfViewDegrees:)
         │  — needs: camera center Alt/Az, field of view
         ▼

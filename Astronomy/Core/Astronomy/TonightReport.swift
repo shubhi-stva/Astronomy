@@ -387,7 +387,7 @@ nonisolated enum TonightPlanner {
                     kind: .planet,
                     designation: nil,
                     typeDescription: "Planet",
-                    magnitude: EphemerisService.approximateMagnitudeForPlanning(planet),
+                    magnitude: EphemerisService.approximateMagnitudeForPlanning(planet, julianDay: night.anchorJulianDay + 0.5),
                     majorAxisArcmin: nil,
                     minorAxisArcmin: nil,
                     equatorialAt: { PlanetPosition.equatorialCoordinate(planet: planet, julianDay: $0) },

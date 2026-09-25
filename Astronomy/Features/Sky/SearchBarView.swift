@@ -31,6 +31,7 @@ struct SearchBarView: View {
         case .deepSky: return "hurricane"
         case .satellite: return "antenna.radiowaves.left.and.right"
         case .constellation: return "point.topleft.down.to.point.bottomright.curvepath"
+        case .planetMoon: return "circle.dotted.circle"
         }
     }
 
@@ -46,6 +47,7 @@ struct SearchBarView: View {
         case .deepSky: return object.deepSkyType?.displayName ?? "Deep-sky"
         case .satellite: return "Satellite"
         case .constellation: return "Constellation"
+        case .planetMoon: return "Moon of Jupiter"
         }
     }
 

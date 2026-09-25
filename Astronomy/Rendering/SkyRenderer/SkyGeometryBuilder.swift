@@ -34,14 +34,19 @@ struct SkyGeometryBuilder {
     let frameData: SkyFrameData
 
     private(set) var pointVertices: [PointVertex] = []
-    private(set) var lineVertices: [LineVertex] = []
+    var lineVertices: [LineVertex] = []
     private(set) var projectedObjects: [ProjectedObject] = []
-    private(set) var labelCandidates: [SkyLabelCandidate] = []
+    var labelCandidates: [SkyLabelCandidate] = []
 
     /// Glow haloes are accumulated separately and emitted *before* the cores,
     /// so a bright star's core always sits on top of its own bloom.
     private var glowVertices: [PointVertex] = []
     private var coreVertices: [PointVertex] = []
+
+    /// For the extension files: appends a core sprite.
+    mutating func pointVerticesAppend(_ vertex: PointVertex) { coreVertices.append(vertex) }
+    mutating func projectedObjectsAppend(_ object: ProjectedObject) { projectedObjects.append(object) }
+    mutating func labelCandidatesAppend(_ candidate: SkyLabelCandidate) { labelCandidates.append(candidate) }
 
     // "See-through Earth": nothing is culled, and as of the layered terrain
     // nothing is occluded either. The dunes are translucent, so every object
@@ -49,24 +54,22 @@ struct SkyGeometryBuilder {
     // terrain coverage lies in its direction (see `TerrainProfile.dimming`),
     // matching the same haze the shader composites over the background.
 
-    /// J2000 -> mean-equinox-of-date rotation for this frame's instant.
-    ///
-    /// Built once here and shared by every catalogue object. The catalogues are
-    /// J2000; the observer's celestial equator is not, and by 2026 the two are
-    /// already 0.36 degrees apart. See `Precession`.
-    private let precessionMatrix: simd_double3x3
+    /// The reduction of this frame's instant: precession, nutation, aberration
+    /// and apparent sidereal time, built once and shared by every catalogue
+    /// object. See `ApparentFrame`.
+    let apparentFrame: ApparentFrame
 
     /// Everything about the projection that does not depend on the object:
     /// the fused J2000 -> horizontal rotation, the camera basis, the field-of-
     /// view scale and the aspect correction. Built once per frame; see
     /// `SkyProjector` for why that matters.
-    private let projector: SkyProjector
+    let projector: SkyProjector
 
     init(frameData: SkyFrameData) {
         self.frameData = frameData
-        let precessionMatrix = Precession.rotationMatrix(julianDay: frameData.julianDay)
-        self.precessionMatrix = precessionMatrix
-        self.projector = SkyProjector(frameData: frameData, precessionMatrix: precessionMatrix)
+        let apparentFrame = ApparentFrame(julianDayUT: frameData.julianDay)
+        self.apparentFrame = apparentFrame
+        self.projector = SkyProjector(frameData: frameData, apparentFrame: apparentFrame)
     }
 
     /// Optional per-stage timing. Nil in the ordinary path so the stage
@@ -81,6 +84,8 @@ struct SkyGeometryBuilder {
             buildDeepSky()
             buildSatellites()
             buildSolarSystem()
+            buildJupiterMoons()
+            buildMeteorRadiants()
             buildConstellationLabels()
             buildCardinalPoints()
             pointVertices = glowVertices + coreVertices
@@ -103,7 +108,9 @@ struct SkyGeometryBuilder {
         buildLines();               lap(.lines)
         buildDeepSky();             lap(.deepSky)
         buildSatellites();          lap(.satellites)
-        buildSolarSystem();         lap(.solarSystem)
+        buildSolarSystem()
+        buildJupiterMoons()
+        buildMeteorRadiants();      lap(.solarSystem)
         buildConstellationLabels(); lap(.constellationLabels)
         buildCardinalPoints();      lap(.cardinalPoints)
         pointVertices = glowVertices + coreVertices
@@ -157,7 +164,9 @@ struct SkyGeometryBuilder {
                 altitudeDegrees: TerrainProfile.skylineAltitudeDegrees(azimuthDegrees: point.azimuth) + 0.4,
                 azimuthDegrees: point.azimuth
             )
-            guard let ndc = project(horizontal: horizontal),
+            // Horizon markers stay on the geometric horizon: the terrain is
+            // drawn there, and it is the sky that refraction lifts, not the ground.
+            guard let ndc = projector.project(horizontal: horizontal, refract: false),
                   isOnScreen(ndc, margin: 0.02) else { continue }
 
             labelCandidates.append(
@@ -235,13 +244,13 @@ struct SkyGeometryBuilder {
     /// Pure projection. Terrain no longer rejects anything — the dunes are
     /// translucent, so visibility is a multiplier (`TerrainProfile.dimming`),
     /// never a cull.
-    private func project(horizontal: HorizontalCoordinate) -> SIMD2<Double>? {
+    func project(horizontal: HorizontalCoordinate) -> SIMD2<Double>? {
         projector.project(horizontal: horizontal)
     }
 
     /// Generous off-screen margin: sprites and labels whose centre is just
     /// outside the frame can still contribute pixels.
-    private func isOnScreen(_ ndc: SIMD2<Double>, margin: Double = 0.15) -> Bool {
+    func isOnScreen(_ ndc: SIMD2<Double>, margin: Double = 0.15) -> Bool {
         abs(ndc.x) <= 1 + margin && abs(ndc.y) <= 1 + margin
     }
 
@@ -254,9 +263,11 @@ struct SkyGeometryBuilder {
         // so the field stays visible through a bright sky, the way a
         // planetarium needs it to be. Positions are unaffected — only how
         // many stars are drawn, and how strongly.
+        let bortle = frameData.bortleClass
         let aboveHorizonLimit = StarAppearance.effectiveLimitingMagnitude(
             fieldOfViewDegrees: fov,
-            sunAltitudeDegrees: sunAltitude
+            sunAltitudeDegrees: sunAltitude,
+            bortleClass: bortle
         )
 
         // The see-through-Earth hemisphere is a *different sky*, and it gets
@@ -275,7 +286,8 @@ struct SkyGeometryBuilder {
             fieldOfViewDegrees: fov,
             sunAltitudeDegrees: SkyBrightness.darkestSightlineSunAltitudeDegrees(
                 sunAltitudeDegrees: sunAltitude
-            )
+            ),
+            bortleClass: bortle
         )
         let magnitudeLimit = max(aboveHorizonLimit, darkestSubHorizonLimit)
         // When the two agree there is nothing to model per star, so the whole
@@ -341,7 +353,8 @@ struct SkyGeometryBuilder {
             let baseVisibility = StarAppearance.visibility(
                 magnitude: star.magnitude,
                 fieldOfViewDegrees: fov,
-                sunAltitudeDegrees: skySunAltitude
+                sunAltitudeDegrees: skySunAltitude,
+                bortleClass: bortle
             )
             guard baseVisibility > 0.02 else { continue }
             // Sub-horizon stars are folded into the same alpha every other
@@ -513,11 +526,23 @@ struct SkyGeometryBuilder {
         // draw call — rather than adding a pass of its own. It is built first
         // so the constellation figures overdraw it rather than the reverse.
         buildObjectPath()
-        guard !frameData.starsByID.isEmpty else { return }
+        // Reference layers go under the figures.
+        buildReferenceLines()
+        guard frameData.constellationLinesEnabled else { return }
         let color = StarAppearance.constellationLineColor(
             fieldOfViewDegrees: frameData.cameraFieldOfViewDegrees
         )
         guard color.w > 0.005 else { return }
+
+        // Prefer the pre-joined figures: their endpoints are already unit
+        // vectors and they are grouped into bounding cones, so a narrow field
+        // rejects whole constellations with one dot product instead of doing
+        // 1,380 dictionary lookups. See `ConstellationFigureIndex`.
+        if let figures = frameData.constellationFigures {
+            buildConstellationFigures(figures, color: color)
+            return
+        }
+        guard !frameData.starsByID.isEmpty else { return }
 
         lineVertices.reserveCapacity(frameData.constellationLines.count * 2)
 
@@ -541,6 +566,44 @@ struct SkyGeometryBuilder {
             c2.w *= Float(dimming(direction: d2))
             lineVertices.append(LineVertex(positionNDC: SIMD2(Float(ndc1.x), Float(ndc1.y)), color: c1))
             lineVertices.append(LineVertex(positionNDC: SIMD2(Float(ndc2.x), Float(ndc2.y)), color: c2))
+        }
+    }
+
+    /// The figures, culled a constellation at a time.
+    ///
+    /// Identical output to the segment scan above — same seam guard, same
+    /// per-endpoint terrain dimming — with the two rejections that scan could
+    /// not make: a group whose bounding cone cannot reach the viewport is
+    /// skipped whole, and no segment ever touches a dictionary.
+    private mutating func buildConstellationFigures(
+        _ figures: ConstellationFigureIndex, color: SIMD4<Float>
+    ) {
+        let projector = self.projector
+        let theta = StarIndex.fieldAngularRadiusRadians(
+            fieldOfViewDegrees: frameData.cameraFieldOfViewDegrees,
+            viewportSize: frameData.viewportSize
+        )
+        // Camera centre in the J2000 frame the groups are built in. The
+        // projector's rotation is orthonormal, so its transpose inverts it.
+        let centerJ2000 = simd_normalize(projector.j2000ToHorizontal.transpose * projector.centerDirection)
+
+        for group in figures.groups {
+            let separation = acos(max(-1.0, min(1.0, simd_dot(centerJ2000, group.coneAxis))))
+            guard separation <= theta + group.coneRadius else { continue }
+            lineVertices.reserveCapacity(lineVertices.count + group.segments.count * 2)
+            for segment in group.segments {
+                let d1 = projector.direction(j2000Unit: segment.start)
+                let d2 = projector.direction(j2000Unit: segment.end)
+                guard let ndc1 = projector.project(direction: d1),
+                      let ndc2 = projector.project(direction: d2) else { continue }
+                if simd_distance(ndc1, ndc2) > 1.5 { continue }
+                if !isOnScreen(ndc1, margin: 1.0) && !isOnScreen(ndc2, margin: 1.0) { continue }
+                var c1 = color, c2 = color
+                c1.w *= Float(dimming(direction: d1))
+                c2.w *= Float(dimming(direction: d2))
+                lineVertices.append(LineVertex(positionNDC: SIMD2(Float(ndc1.x), Float(ndc1.y)), color: c1))
+                lineVertices.append(LineVertex(positionNDC: SIMD2(Float(ndc2.x), Float(ndc2.y)), color: c2))
+            }
         }
     }
 
@@ -681,7 +744,7 @@ struct SkyGeometryBuilder {
     /// star cores, so a cluster's real member stars sit on top of its haze
     /// rather than under it.
     private mutating func buildDeepSky() {
-        guard !frameData.deepSkyObjects.isEmpty else { return }
+        guard frameData.deepSkyEnabled, !frameData.deepSkyObjects.isEmpty else { return }
 
         let fov = frameData.cameraFieldOfViewDegrees
         let sunAltitude = frameData.sunAltitudeDegrees
@@ -697,7 +760,30 @@ struct SkyGeometryBuilder {
         let twilightFactor = StarAppearance.deepSkyTwilightFactor(sunAltitudeDegrees: sunAltitude)
         guard twilightFactor > 0.01 else { return }
 
-        for dso in frameData.deepSkyObjects {
+        // Which objects can reach the frame at all. One dot product each,
+        // before any brightness model runs — see `DeepSkyIndex` for the
+        // measurement that motivated it. Without an index this is the whole
+        // catalogue, which is what the linear scan always was.
+        let candidates: [DeepSkyObject]
+        if let index = frameData.deepSkyIndex {
+            let theta = StarIndex.fieldAngularRadiusRadians(
+                fieldOfViewDegrees: fov, viewportSize: frameData.viewportSize
+            )
+            let horizontalToEquatorial = SkyBackgroundUniforms.horizontalToEquatorial(
+                observer: frameData.observerLocation, julianDay: frameData.julianDay
+            )
+            let centerDirection = simd_normalize(
+                horizontalToEquatorial
+                    * CoordinateTransformService.unitDirection(fromHorizontal: frameData.cameraCenter)
+            )
+            candidates = index
+                .visibleIndices(centerDirection: centerDirection, angularRadiusRadians: theta)
+                .map { index.objects[$0] }
+        } else {
+            candidates = frameData.deepSkyObjects
+        }
+
+        for dso in candidates {
             guard dso.type.isRenderable else { continue }
             let type = dso.renderType
 
@@ -714,7 +800,8 @@ struct SkyGeometryBuilder {
             let baseVisibility = StarAppearance.visibility(
                 magnitude: detectionMagnitude,
                 fieldOfViewDegrees: fov,
-                sunAltitudeDegrees: sunAltitude
+                sunAltitudeDegrees: sunAltitude,
+                bortleClass: frameData.bortleClass
             ) * twilightFactor
             guard baseVisibility > 0.02 else { continue }
 
@@ -827,10 +914,11 @@ struct SkyGeometryBuilder {
     /// Going through the projection is what keeps the angle correct as the
     /// camera pans and the sky rotates — a closed-form formula would have to
     /// re-derive the local frame's rotation, and this does not.
-    private func majorAxisScreenAngle(
+    func majorAxisScreenAngle(
         equatorial: EquatorialCoordinate,
         positionAngleDegrees: Double,
-        centerNDC: SIMD2<Double>
+        centerNDC: SIMD2<Double>,
+        precess: Bool = true
     ) -> Double? {
         let pa = positionAngleDegrees * .pi / 180.0
         // Small step along the great circle in the direction of the position
@@ -844,10 +932,7 @@ struct SkyGeometryBuilder {
             declinationDegrees: max(-89.99, min(89.99, dec + delta * cos(pa)))
         )
 
-        let horizontal = CoordinateTransformService.horizontal(
-            from: offset, observer: frameData.observerLocation, julianDay: frameData.julianDay
-        )
-        guard let offsetNDC = project(horizontal: horizontal) else { return nil }
+        guard let offsetNDC = project(offset, precess: precess) else { return nil }
         let d = offsetNDC - centerNDC
         guard simd_length(d) > 1e-9 else { return nil }
         return atan2(d.y, d.x)
@@ -893,7 +978,8 @@ struct SkyGeometryBuilder {
         guard let poleScreenAngle = majorAxisScreenAngle(
             equatorial: object.equatorial,
             positionAngleDegrees: positionAngle,
-            centerNDC: centerNDC
+            centerNDC: centerNDC,
+            precess: false
         ) else { return nil }
 
         return (
@@ -1093,7 +1179,8 @@ struct SkyGeometryBuilder {
             // Straight from the range vector to a projectable direction: the
             // south/east/zenith basis *is* the horizontal frame, so an
             // off-screen satellite is rejected without ever forming alt/az.
-            let (direction, _) = observerFrame.horizontalDirection(satellitePositionTEME: position)
+            let (geometricDirection, _) = observerFrame.horizontalDirection(satellitePositionTEME: position)
+            let direction = projector.direction(geometricHorizontal: geometricDirection)
             guard let ndc = projector.project(direction: direction) else { continue }
             guard isOnScreen(ndc, margin: 0.08) else { continue }
 
@@ -1221,7 +1308,7 @@ struct SkyGeometryBuilder {
         let (ahead, _) = observerFrame.horizontalDirection(
             satellitePositionTEME: position + velocity
         )
-        guard let aheadNDC = projector.project(direction: ahead)
+        guard let aheadNDC = projector.project(direction: projector.direction(geometricHorizontal: ahead))
         else { return 0 }
         let d = aheadNDC - centerNDC
         guard simd_length(d) > 1e-9 else { return 0 }
@@ -1240,10 +1327,7 @@ struct SkyGeometryBuilder {
         // No precession: `SunPosition` returns an apparent place already
         // referred to the equinox of date.
         let sunScreen: SIMD2<Double>? = frameData.sunEquatorial.flatMap { eq in
-            let horizontal = CoordinateTransformService.horizontal(
-                from: eq, observer: frameData.observerLocation, julianDay: frameData.julianDay
-            )
-            return project(horizontal: horizontal)
+            projector.project(direction: projector.direction(ofDate: eq))
         }
 
         let sunAltitude = frameData.sunAltitudeDegrees
@@ -1385,6 +1469,10 @@ struct SkyGeometryBuilder {
                 }
 
                 let planetMap = surfaceMapParameters(for: object, centerNDC: ndc)
+                // Saturn has no map, so its orientation slots carry the ring
+                // geometry instead: `param4` = sin(B), `param6` = ring axis
+                // angle on screen. See `saturnRingParameters`.
+                let rings = object.id == "saturn" ? saturnRingParameters(for: object, centerNDC: ndc) : nil
                 coreVertices.append(
                     PointVertex(
                         positionNDC: position,
@@ -1395,14 +1483,14 @@ struct SkyGeometryBuilder {
                         param1: Float(limbAngle),
                         param2: detail,
                         param3: StarAppearance.planetShaderCode(id: object.id),
-                        param4: planetMap?.longitude ?? 0,
+                        param4: planetMap?.longitude ?? rings?.tiltSine ?? 0.42,
                         param5: planetMap?.latitude ?? 0,
-                        param6: planetMap?.poleScreenAngle ?? 0,
+                        param6: planetMap?.poleScreenAngle ?? rings?.axisScreenAngle ?? 0,
                         param7: planetMap?.slice ?? -1
                     )
                 )
 
-            case .star, .deepSky, .satellite, .constellation:
+            case .star, .deepSky, .satellite, .constellation, .planetMoon:
                 // Deep-sky objects and satellites never appear in
                 // `solarSystemObjects`; each has its own pass. This branch
                 // exists only for exhaustiveness and draws a plain point.
@@ -1527,7 +1615,7 @@ struct SkyGeometryBuilder {
                 fieldOfViewDegrees: frameData.cameraFieldOfViewDegrees,
                 viewportWidth: Double(frameData.viewportSize.width)
             ) * 1.15
-        case .constellation:
+        case .constellation, .planetMoon:
             // Constellations are never projected as objects, so this is
             // unreachable; a ring size is required for exhaustiveness.
             baseSize = 26
